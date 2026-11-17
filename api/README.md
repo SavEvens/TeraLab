@@ -41,6 +41,7 @@ the file:
 | `TERALAB_AGENT_SECRET_FILE` | `/etc/teralab/agent.secret` | Agent bearer secret |
 | `TERALAB_CONSOLE_PATH` | `/ws/console` | Same-origin serial console path |
 | `TERALAB_CONSOLE_VNC_PATH` | `/ws/vnc` | Same-origin VNC console path |
+| `TERALAB_CONSOLE_TCP_PATH` | `/ws/tcp` | Engine TCP console path |
 
 ## Development
 
@@ -97,8 +98,9 @@ also returns the generated VNC `password` for the browser client.
 
 Browsers cannot reach the agent's loopback WebSocket or VNC ports directly.
 Proxy both paths with the Apache snippet in `etc/teralab-console.conf`:
-`/ws/console` maps to `ws://127.0.0.1:8091/ws` and `/ws/vnc` maps to
-`ws://127.0.0.1:8091/vnc`.
+`/ws/console` maps to `ws://127.0.0.1:8091/ws`, `/ws/vnc` to
+`ws://127.0.0.1:8091/vnc`, and `/ws/tcp` to `ws://127.0.0.1:8091/tcp` for
+engines such as Dynamips that expose a TCP console.
 
 The legacy `html/api.php` entry point loads this application and serves both
 `/api/v2/*` and the v1 compatibility routes (`/api/auth`, `/api/status`,

@@ -73,7 +73,13 @@ final class NodeController
 
         $kind = $session['kind'] ?? 'telnet';
         $kind = is_string($kind) ? $kind : 'telnet';
-        $path = $kind === 'vnc' ? $this->config->consoleVncPath : $this->config->consolePath;
+        $port = $session['port'] ?? null;
+        $path = $this->config->consolePath;
+        if ($kind === 'vnc') {
+            $path = $this->config->consoleVncPath;
+        } elseif (is_int($port) && $port > 0) {
+            $path = $this->config->consoleTcpPath;
+        }
 
         $data = [
             'kind' => $kind,
@@ -83,6 +89,9 @@ final class NodeController
         ];
         if ($kind === 'vnc') {
             $data['password'] = $session['password'] ?? '';
+        }
+        if (is_int($port) && $port > 0) {
+            $data['port'] = $port;
         }
 
         return Json::response($response, ['data' => $data]);

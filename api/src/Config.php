@@ -22,6 +22,7 @@ final class Config
         public readonly string $agentSecretFile = '/etc/teralab/agent.secret',
         public readonly string $consolePath = '/ws/console',
         public readonly string $consoleVncPath = '/ws/vnc',
+        public readonly string $consoleTcpPath = '/ws/tcp',
         public readonly string $imagesDir = '/var/lib/teralab/images',
         public readonly int $maxUploadBytes = 34359738368,
     ) {
@@ -77,6 +78,10 @@ final class Config
             consoleVncPath: self::env(
                 'TERALAB_CONSOLE_VNC_PATH',
                 self::stringValue($values, 'console_vnc_path', '/ws/vnc'),
+            ),
+            consoleTcpPath: self::env(
+                'TERALAB_CONSOLE_TCP_PATH',
+                self::stringValue($values, 'console_tcp_path', '/ws/tcp'),
             ),
             imagesDir: self::env(
                 'TERALAB_IMAGES_DIR',
