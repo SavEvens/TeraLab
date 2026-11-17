@@ -218,6 +218,25 @@ final class LabController
     /**
      * @param array<string, string> $args
      */
+    public function move(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $body = Json::body($request);
+        $folder = $body['folder'] ?? '';
+        if (!is_string($folder)) {
+            throw new HttpException(422, 'folder must be a string.');
+        }
+        $moved = $this->service->move((string) $lab['id'], $folder, (string) $user['id']);
+        $this->audit->log((string) $user['id'], $this->ip($request), 'lab.move', (string) $lab['id'], 'success', ['folder' => $folder]);
+
+        return Json::response($response, ['status' => 'success', 'data' => $moved]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
     public function permissions(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);

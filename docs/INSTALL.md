@@ -13,6 +13,7 @@ the kernel remain separate components with their own licences.
 - `qemu-system-x86_64`, `qemu-img`
 - `composer` (only when `api/vendor` is absent)
 - Go 1.27+ (only when no prebuilt agent is supplied)
+- Node 20+ and npm (to build the Vue UI; prebuilt `ui/dist` is used when present)
 - Apache 2.4 with `mod_proxy`, `mod_proxy_wstunnel`, and `mod_rewrite`
 - Optional: `openvswitch-switch` for LACP forwarding
 - Optional: `teralab-dynamips` for the Dynamips engine
@@ -32,8 +33,9 @@ The installer:
 3. copies the tree to `/opt/teralab` and builds `/opt/teralab/bin/teralab-agent`;
 4. creates `/etc/teralab/agent.secret` if missing (never overwrites it);
 5. creates `/var/lib/teralab/{labs,images,run}` and `/run/teralab`;
-6. links `/opt/unetlab -> /opt/teralab` for legacy paths;
-7. writes the Apache configuration and enables the agent unit.
+6. builds the Vue UI and installs it at `html/ui`;
+7. links `/opt/unetlab -> /opt/teralab` for legacy paths;
+8. writes the Apache configuration and enables the agent unit.
 
 Options: `--root`, `--data`, `--source`, `--agent-binary`, `--no-systemd`.
 
@@ -53,6 +55,7 @@ The agent is the only privileged process; the web tier never starts QEMU.
 1. Open `http://<host>/` or call `GET /api/v2/health`.
 2. Create the administrator once with `POST /api/v2/setup`.
 3. Log in with the session cookie and use `/api/v2/labs` to create/start labs.
+4. Open the new UI at `http://<host>/ui/` (the legacy jQuery UI remains at `/`).
 
 There are no default accounts, no telemetry, and no `setcap` usage.
 

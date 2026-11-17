@@ -40,6 +40,18 @@ Exact versions and hashes: `api/composer.lock`.
 | github.com/gorilla/websocket | BSD-2-Clause | Console gateway |
 | golang.org/x/sys | BSD-3-Clause | TUN/TAP ioctls |
 
+## UI dependencies (`ui/package-lock.json`)
+
+| Package | Licence | Use |
+|---|---|---|
+| vue, vue-router | MIT | SPA shell and routing |
+| @vue-flow/core, background, controls, minimap | MIT | Topology canvas |
+| @xterm/xterm, @xterm/addon-fit | MIT | Telnet console |
+| @novnc/novnc | MPL-2.0 | VNC console client (unmodified, source available upstream) |
+| vite, @vitejs/plugin-vue, vitest, jsdom, @vue/test-utils | MIT | Build/test tooling |
+| playwright-core | Apache-2.0 | Browser E2E (dev/test only) |
+| ws | MIT | Mock WebSocket in E2E (dev/test only) |
+
 ## System components (separate processes/packages)
 
 | Component | Licence | Form |

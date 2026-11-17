@@ -134,6 +134,37 @@ final class LabServiceTest extends TestCase
         self::assertStringStartsWith((string) $lab['id'] . '-', (string) $starts[0]['payload']['id']);
     }
 
+    public function testTextObjectsAreSavedButNotStarted(): void
+    {
+        $service = $this->service();
+        $text = [
+            'id' => '9',
+            'name' => 'Notes',
+            'type' => 'text',
+            'image' => '',
+            'console' => 'telnet',
+            'cpu' => 1,
+            'ram' => 64,
+            'interfaces' => [],
+        ];
+        $lab = $service->create([
+            'name' => 'Text Lab',
+            'nodes' => [$text, $this->node('1', 'PC1', 'vpcs', '', [])],
+        ]);
+
+        $result = $service->start((string) $lab['id']);
+        self::assertCount(1, $result['nodes']);
+        $starts = array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => $call['path'] === '/v1/node.start',
+        ));
+        self::assertCount(1, $starts);
+
+        $export = $service->export((string) $lab['id']);
+        self::assertStringContainsString('type="text"', $export['xml']);
+        self::assertStringContainsString('name="Notes"', $export['xml']);
+    }
+
     public function testLegacySampleLabParses(): void
     {
         $fixture = dirname(__DIR__, 2) . '/labs/Featured/Cisco/Basic/STP.unl';
