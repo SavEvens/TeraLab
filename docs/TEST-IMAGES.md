@@ -47,12 +47,12 @@ The C8000v image must be tested with both SeaBIOS and OVMF and with the
 devices before adding a built-in template. Do not assume a QEMU 2.x machine
 type will exist in QEMU 10.
 
-First result (2026-11-17, QEMU 10.0.13, nested KVM): `-machine q35 -cpu host
--smp 4 -m 4096` with `virtio-blk` and SeaBIOS reaches the GRUB menu and boots
-IOS-XE 17.16.01a from `packages.conf`. The serial console is required. A
-4 GiB guest stalls during package verification; the image is being retested
-on the host with 8 GiB to determine the minimum memory. OVMF and `pc`
-variants remain to be tested.
+Result (2026-11-17, QEMU 10.0.13): `-machine q35 -cpu host -smp 4` with
+`virtio-blk` and SeaBIOS reaches the GRUB menu and boots IOS-XE 17.16.01a
+from `packages.conf`. A 4 GiB guest stalls during package verification; an
+8 GiB host-side run reaches IOS-XE AUTONOMOUS mode at ~300 s. Use 8 GiB as
+the baseline. The login prompt, OVMF, and `pc` variants remain to be tested.
+Evidence: `/home/savanna/vms/c8000v-test/serial.log` (outside the repository).
 
 ## IOL boot note
 

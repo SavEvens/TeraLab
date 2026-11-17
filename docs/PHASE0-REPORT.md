@@ -74,7 +74,7 @@ reused.
 |---|---|
 | Docker `alpine:3.20` | Pulled; `docker run --rm alpine:3.20 echo docker-ok` → `docker-ok` |
 | IOL x86-64 L3/L2 | Binary executes and prints IOL usage; an application ID starts it but it requires a NETMAP file. Full boot is deferred to the Phase 1 agent adapter, which will generate NETMAP and interfaces. |
-| QEMU C8000v 17.16.01a | Image metadata verified: qcow2, 8 GiB virtual, ~2 GiB actual, no backing file. With `q35` + SeaBIOS + virtio-blk, QEMU 10 reaches GRUB and begins booting IOS-XE 17.16.01a from `packages.conf`. A 4 GiB guest stalls during package verification; an 8 GiB host-side run is used to determine whether more RAM is required. OVMF/pc variants remain a follow-up. |
+| QEMU C8000v 17.16.01a | Image metadata verified: qcow2, 8 GiB virtual, ~2 GiB actual, no backing file. With `q35` + SeaBIOS + virtio-blk, QEMU 10 reaches GRUB and boots IOS-XE 17.16.01a from `packages.conf`. A 4 GiB guest stalls during package verification; an 8 GiB host-side run reaches IOS-XE AUTONOMOUS mode after ~300 s. Use 8 GiB as the baseline for further tests; the login prompt and OVMF/pc variants remain a follow-up. Evidence: `/home/savanna/vms/c8000v-test/serial.log` (outside the repository). |
 
 ## Guardrails verified
 
@@ -92,8 +92,9 @@ permitted without a tracked reason.
 
 ## Known issues and follow-ups
 
-1. **C8000v boot matrix** — run on the VM with SeaBIOS and OVMF, `pc` and
-   `q35`; record the working combination before adding a built-in template.
+1. **C8000v boot matrix** — 8 GiB is required (4 GiB stalls); `q35` +
+   SeaBIOS reaches IOS-XE AUTONOMOUS mode. Still to confirm: the login prompt,
+   OVMF, and `pc` machine variants before adding a built-in template.
 2. **IOL full boot** — the agent must generate the NETMAP and interface
    plumbing; the binary and `iourc` are valid.
 3. **Deeper reference capture** — editor, consoles, image upload, lab
