@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/asa.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: asa
+name: ASA
+kind: qemu
+license: BSD-3-Clause
+icon: ASA.png
+defaults:
+  cpu: 1
+  ram: 512
+  ethernet: 4
+  console: telnet
+options:
+  qemu_arch: i386
+  qemu_nic: i82559er
+  qemu_options: '-machine type=pc-1.0,accel=tcg -serial mon:stdio -nographic -nodefconfig -nodefaults -rtc base=utc -smbios type=1,product=asa5520 -icount 1'

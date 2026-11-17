@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/extremexos.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: extremexos
+name: ExtremeOs
+kind: qemu
+license: BSD-3-Clause
+icon: 'Switch L3.png'
+defaults:
+  cpu: 1
+  ram: 2048
+  ethernet: 3
+  console: telnet
+options:
+  qemu_arch: x86_64
+  qemu_options: '-machine type=pc-1.0,accel=kvm -cpu Nehalem -nographic -rtc base=utc'

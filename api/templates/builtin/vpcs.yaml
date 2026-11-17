@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/vpcs.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: vpcs
+name: VPC
+kind: vpcs
+license: BSD-3-Clause
+icon: Desktop.png
+defaults:
+  ethernet: 1
+options: {  }

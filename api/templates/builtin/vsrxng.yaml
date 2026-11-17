@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/vsrxng.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: vsrxng
+name: vSRX-NG
+kind: qemu
+license: BSD-3-Clause
+icon: JuniperSRX.png
+defaults:
+  cpu: 2
+  ram: 4096
+  ethernet: 4
+  console: telnet
+options:
+  qemu_arch: x86_64
+  qemu_options: '-machine type=pc-1.0,accel=kvm -cpu qemu64,+ssse3,+sse4.1,+sse4.2,+x2apic,+aes,pclmulqdq  -serial mon:stdio -nographic   -nodefconfig -nodefaults -rtc base=utc'

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/vwaas.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: vwaas
+name: WAAS
+kind: qemu
+license: BSD-3-Clause
+icon: 'Cisco WAAS.png'
+defaults:
+  cpu: 1
+  ram: 2048
+  ethernet: 2
+  console: vnc
+options:
+  qemu_arch: x86_64
+  qemu_options: '-machine type=pc-1.0,accel=kvm -smbios type=1,manufacturer=\"VMware Inc.\",product=\"VMware Virtual Platform\",serial=\"VMware-12 00 11 22 33 44 55 66-77 88 99 aa bb cc dd ee\"'

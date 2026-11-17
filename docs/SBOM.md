@@ -22,6 +22,7 @@ programs; none is linked into the AGPLv3 TeraLab code.
 | slim/slim, slim/psr7 | MIT | HTTP app and PSR-7 |
 | php-di/php-di | MIT | Container |
 | monolog/monolog | MIT | Logging |
+| symfony/yaml | MIT | Built-in/custom template parsing |
 | psr/http-message, psr/http-factory, psr/http-server-handler, psr/http-server-middleware, psr/container, psr/log | MIT | PSR interfaces |
 | nikic/fast-route | BSD-3-Clause | Routing |
 | fig/http-message-util | MIT | HTTP utilities |

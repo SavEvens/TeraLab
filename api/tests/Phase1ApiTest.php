@@ -37,8 +37,12 @@ final class Phase1ApiTest extends TestCase
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
         mkdir($this->root . '/html/templates', 0770, true);
-        file_put_contents($this->root . '/html/templates/linux.php', "<?php
-");
+        file_put_contents($this->root . '/html/templates/linux.php', "<?php\n");
+        mkdir($this->root . '/api/templates/builtin', 0770, true);
+        file_put_contents(
+            $this->root . '/api/templates/builtin/linux.yaml',
+            "schema: 1\nid: linux\nname: Linux\nkind: qemu\ndefaults:\n  cpu: 1\n  ram: 512\n  ethernet: 4\noptions:\n  qemu_arch: x86_64\n"
+        );
         $config = Config::forTests($this->root, $this->root . '/data');
         $agent = new AgentClient($config, static function (string $method, string $path, array $payload): array {
             if ($path === '/v1/lab.ensure') {
@@ -148,6 +152,18 @@ final class Phase1ApiTest extends TestCase
         self::assertSame('linux', $this->json($map)['data']['template']);
         $missing = $this->request('PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'does-not-exist'], [], $editorCookie, $editorCsrf);
         self::assertSame(404, $missing->getStatusCode());
+
+        $customYaml = "schema: 1\nid: custom1\nname: Custom\nkind: qemu\ndefaults:\n  cpu: 2\noptions:\n  qemu_arch: x86_64\n";
+        $savedTemplate = $this->request('PUT', '/api/v2/templates/custom1', ['yaml' => $customYaml], [], $editorCookie, $editorCsrf);
+        self::assertSame(200, $savedTemplate->getStatusCode(), (string) $savedTemplate->getBody());
+        self::assertSame('custom', $this->json($savedTemplate)['data']['source']);
+        $list = $this->request('GET', '/api/v2/templates', [], [], $editorCookie);
+        self::assertSame(200, $list->getStatusCode());
+        $ids = array_column($this->json($list)['data'], 'id');
+        self::assertContains('linux', $ids);
+        self::assertContains('custom1', $ids);
+        $removed = $this->request('DELETE', '/api/v2/templates/custom1', [], [], $editorCookie, $editorCsrf);
+        self::assertSame(200, $removed->getStatusCode());
     }
 
     public function testPasswordChangeRevokesOtherSessions(): void
@@ -200,7 +216,14 @@ final class Phase1ApiTest extends TestCase
     public function testAuditAndNodeUsage(): void
     {
         $lab = $this->createLab('Audit Lab', true);
-        $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/start', [], [], $this->adminCookie, $this->adminCsrf);
+        $start = $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/start', [], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(202, $start->getStatusCode());
+        $jobID = (string) $this->json($start)['job_id'];
+        $job = $this->request('GET', '/api/v2/jobs/' . $jobID, [], [], $this->adminCookie);
+        self::assertSame(200, $job->getStatusCode());
+        self::assertSame('succeeded', $this->json($job)['data']['state']);
+        self::assertSame(100, $this->json($job)['data']['progress']);
+        self::assertNotEmpty($this->json($this->request('GET', '/api/v2/jobs', [], [], $this->adminCookie))['data']);
         $nodes = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes', [], [], $this->adminCookie);
         self::assertSame(200, $nodes->getStatusCode());
 

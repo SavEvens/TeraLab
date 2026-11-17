@@ -81,8 +81,14 @@ for VNC the generated password.
 - `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol availability.
 - `GET /api/v2/system/host` reports agent load, disk, nodes, and engines.
 - `GET|POST /api/v2/images`, `GET|DELETE /api/v2/images/{id}`.
-- `GET /api/v2/templates` lists built-in template ids.
+- `GET /api/v2/templates` lists built-in and custom YAML templates.
+- `GET /api/v2/templates/{id}` returns a template and its YAML.
+- `PUT /api/v2/templates/{id}` creates/updates a custom YAML template (editor).
+- `DELETE /api/v2/templates/{id}` removes a custom template.
 - `PUT /api/v2/images/{id}/template` maps an image to a template.
+- `GET /api/v2/jobs`, `GET /api/v2/jobs/{id}` report job records; lab
+  start/stop/wipe return `job_id`. `POST /api/v2/jobs/{id}/cancel` cancels a
+  queued/running job.
 - `POST /api/v2/maintenance/reconcile` reclaims orphaned resources.
 
 ## v1 compatibility

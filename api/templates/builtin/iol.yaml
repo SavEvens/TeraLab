@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/iol.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: iol
+name: 'Cisco IOL'
+kind: iol
+license: BSD-3-Clause
+icon: Router.png
+defaults:
+  ethernet: 2
+  serial: 2
+  console: telnet
+options: {  }

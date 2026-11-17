@@ -23,12 +23,14 @@ use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\Controllers\AuthController;
 use TeraLab\Api\Http\Controllers\EngineController;
 use TeraLab\Api\Http\Controllers\ImageController;
+use TeraLab\Api\Http\Controllers\JobController;
 use TeraLab\Api\Http\Controllers\HealthController;
 use TeraLab\Api\Http\Controllers\HostController;
 use TeraLab\Api\Http\Controllers\LabController;
 use TeraLab\Api\Http\Controllers\NetworkController;
 use TeraLab\Api\Http\Controllers\NodeController;
 use TeraLab\Api\Http\Controllers\SystemController;
+use TeraLab\Api\Http\Controllers\TemplateController;
 use TeraLab\Api\Http\Controllers\V1Controller;
 use TeraLab\Api\Http\Controllers\VersionController;
 use TeraLab\Api\Http\Middleware\AuthMiddleware;
@@ -39,8 +41,10 @@ use TeraLab\Api\Http\Middleware\RoleMiddleware;
 use TeraLab\Api\Http\Middleware\SecurityHeadersMiddleware;
 use TeraLab\Api\Http\Middleware\V1AuthMiddleware;
 use TeraLab\Api\Image\ImageStore;
+use TeraLab\Api\Jobs\JobService;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\UnlParser;
+use TeraLab\Api\Templates\TemplateRepository;
 
 final class App
 {
@@ -95,14 +99,16 @@ final class App
         );
         $container->set(
             ImageStore::class,
-            static fn (Config $config, PDO $pdo): ImageStore => new ImageStore(
+            static fn (Config $config, PDO $pdo, TemplateRepository $templates): ImageStore => new ImageStore(
                 $config,
                 $pdo,
                 static fn (string $path): array => $container->get(AgentClient::class)->inspectImage($path),
+                $templates,
             )
         );
 
         $container->get(Migrator::class)->migrate();
+        $container->get(JobService::class)->reconcile();
 
         $app = AppFactory::createFromContainer($container);
         $app->addRoutingMiddleware();
@@ -214,7 +220,18 @@ final class App
             ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
-        $app->get('/api/v2/templates', fn ($request, $response) => $images->templates($request, $response))
+        $templates = $container->get(TemplateController::class);
+        $app->get('/api/v2/templates', fn ($request, $response) => $templates->index($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->show($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->put('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->save($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->delete('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->delete($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->put('/api/v2/images/{id}/template', fn ($request, $response, array $args) => $images->mapTemplate($request, $response, $args))
             ->add($editorRole())
@@ -225,6 +242,15 @@ final class App
         $app->get('/api/v2/engines', fn ($request, $response) => $engines->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/system/host', fn ($request, $response) => $container->get(HostController::class)->status($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $jobs = $container->get(JobController::class);
+        $app->get('/api/v2/jobs', fn ($request, $response) => $jobs->index($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/jobs/{id}', fn ($request, $response, array $args) => $jobs->show($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/jobs/{id}/cancel', fn ($request, $response, array $args) => $jobs->cancel($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/maintenance/reconcile', fn ($request, $response) => $engines->reconcile($request, $response))
             ->add($adminRole())

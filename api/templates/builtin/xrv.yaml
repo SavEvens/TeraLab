@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/xrv.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: xrv
+name: xrv
+kind: qemu
+license: BSD-3-Clause
+icon: XR.png
+defaults:
+  cpu: 1
+  ram: 3072
+  ethernet: 4
+  console: telnet
+options:
+  qemu_nic: virtio-net-pci
+  qemu_arch: x86_64
+  qemu_options: '-machine type=pc,accel=kvm,usb=off -serial mon:stdio -nographic -nodefconfig -nodefaults -rtc base=utc,driftfix=slew -global kvm-pit.lost_tick_policy=discard -no-hpet -realtime mlock=off -no-shutdown -boot order=c'

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/linux.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: linux
+name: linux
+kind: qemu
+license: BSD-3-Clause
+icon: ''
+defaults: {  }
+options:
+  qemu_arch: x86_64
+  qemu_nic: virtio-net-pci
+  qemu_options: '-machine type=pc,accel=kvm -vga std -usbdevice tablet -boot order=dc'
