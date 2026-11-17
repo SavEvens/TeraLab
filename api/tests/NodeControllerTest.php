@@ -149,6 +149,20 @@ final class NodeControllerTest extends TestCase
         self::assertSame('token1', $body['token']);
     }
 
+    public function testTcpConsoleUsesTcpProxyPath(): void
+    {
+        [$app, $cookie, $csrf] = $this->appWithSession(
+            static fn (): string => '{"ok":true,"result":{"kind":"telnet","token":"token1","expires_in":300,"port":39083}}'
+        );
+
+        $response = $this->request($app, 'POST', '/api/v2/nodes/console', ['node_id' => 'node1'], ['X-CSRF-Token' => $csrf], $cookie);
+
+        self::assertSame(200, $response->getStatusCode());
+        $body = $this->json($response)['data'];
+        self::assertSame('/ws/tcp?token=token1', $body['ws_path']);
+        self::assertSame(39083, $body['port']);
+    }
+
     public function testAgentErrorIsPassedThrough(): void
     {
         [$app, $cookie, $csrf] = $this->appWithSession();
