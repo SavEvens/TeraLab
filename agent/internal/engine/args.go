@@ -9,9 +9,21 @@ import (
 	"strconv"
 )
 
-func BuildQEMUArgs(spec Spec, taps []string, overlay string) ([]string, error) {
+// VNCConfig describes the loopback VNC endpoint for a node.
+type VNCConfig struct {
+	Display     int
+	MonitorPath string
+}
+
+func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig) ([]string, error) {
 	if len(taps) != spec.Ethernet {
 		return nil, errors.New("tap count does not match ethernet count")
+	}
+	if spec.Console == "vnc" && vnc == nil {
+		return nil, errors.New("vnc console requires a vnc configuration")
+	}
+	if spec.Console != "vnc" && vnc != nil {
+		return nil, errors.New("vnc configuration supplied for a non-vnc console")
 	}
 
 	args := []string{
@@ -24,9 +36,22 @@ func BuildQEMUArgs(spec Spec, taps []string, overlay string) ([]string, error) {
 		"-no-user-config",
 		"-rtc", "base=utc",
 		"-display", "none",
-		"-monitor", "none",
-		"-serial", "stdio",
 		"-no-reboot",
+	}
+
+	if vnc != nil {
+		args = append(
+			args,
+			"-monitor", "unix:"+vnc.MonitorPath+",server=on,wait=off",
+			"-serial", "none",
+			"-vnc", "127.0.0.1:"+strconv.Itoa(vnc.Display)+",password=on",
+		)
+	} else {
+		args = append(
+			args,
+			"-monitor", "none",
+			"-serial", "stdio",
+		)
 	}
 
 	if _, err := os.Stat("/dev/kvm"); err == nil {

@@ -122,6 +122,7 @@ final class NodeControllerTest extends TestCase
         $console = $this->request($app, 'POST', '/api/v2/nodes/console', ['node_id' => 'node1'], ['X-CSRF-Token' => $csrf], $cookie);
         self::assertSame(200, $console->getStatusCode());
         $consoleBody = $this->json($console)['data'];
+        self::assertSame('telnet', $consoleBody['kind']);
         self::assertSame('token1', $consoleBody['token']);
         self::assertStringStartsWith('/ws/console?token=', $consoleBody['ws_path']);
 
@@ -130,6 +131,22 @@ final class NodeControllerTest extends TestCase
             array_column($this->calls, 'path'),
         );
         self::assertSame(['node_id' => 'node1'], $this->calls[3]['payload']);
+    }
+
+    public function testVncConsoleUsesProxyPathAndPassword(): void
+    {
+        [$app, $cookie, $csrf] = $this->appWithSession(
+            static fn (): string => '{"ok":true,"result":{"kind":"vnc","token":"token1","expires_in":300,"port":5901,"password":"vncpass"}}'
+        );
+
+        $response = $this->request($app, 'POST', '/api/v2/nodes/console', ['node_id' => 'node1'], ['X-CSRF-Token' => $csrf], $cookie);
+
+        self::assertSame(200, $response->getStatusCode());
+        $body = $this->json($response)['data'];
+        self::assertSame('vnc', $body['kind']);
+        self::assertSame('/ws/vnc?token=token1', $body['ws_path']);
+        self::assertSame('vncpass', $body['password']);
+        self::assertSame('token1', $body['token']);
     }
 
     public function testAgentErrorIsPassedThrough(): void
@@ -225,10 +242,10 @@ PHP;
     /**
      * @return array{SlimApp<\DI\Container>, string, string}
      */
-    private function appWithSession(): array
+    private function appWithSession(?\Closure $consoleResponse = null): array
     {
         $config = Config::forTests($this->root, $this->root . '/data');
-        $client = new AgentClient($config, function (string $method, string $path, array $payload): array {
+        $client = new AgentClient($config, function (string $method, string $path, array $payload) use ($consoleResponse): array {
             $this->calls[] = ['method' => $method, 'path' => $path, 'payload' => $payload];
 
             if (($payload['id'] ?? '') === 'missing') {
@@ -254,7 +271,9 @@ PHP;
             return match ($path) {
                 '/v1/node.stop' => [200, '{"ok":true,"result":{"state":"stopped"}}'],
                 '/v1/node.wipe' => [200, '{"ok":true,"result":{"state":"wiped"}}'],
-                '/v1/console.open' => [200, '{"ok":true,"result":{"token":"token1","expires_in":300}}'],
+                '/v1/console.open' => [200, $consoleResponse !== null
+                    ? $consoleResponse()
+                    : '{"ok":true,"result":{"kind":"telnet","token":"token1","expires_in":300}}'],
                 default => [200, '{"ok":true,"result":{}}'],
             };
         });

@@ -39,7 +39,8 @@ the file:
 | `TERALAB_ENV` | `production` | Environment label |
 | `TERALAB_AGENT_SOCKET` | `/run/teralab/agent.sock` | Privileged agent socket |
 | `TERALAB_AGENT_SECRET_FILE` | `/etc/teralab/agent.secret` | Agent bearer secret |
-| `TERALAB_CONSOLE_PATH` | `/ws/console` | Same-origin console proxy path |
+| `TERALAB_CONSOLE_PATH` | `/ws/console` | Same-origin serial console path |
+| `TERALAB_CONSOLE_VNC_PATH` | `/ws/vnc` | Same-origin VNC console path |
 
 ## Development
 
@@ -74,10 +75,13 @@ privileged Go agent. The web tier never launches QEMU itself.
 `POST` requests require the session cookie and the `X-CSRF-Token` header.
 Console tokens are short-lived and bound to one node.
 
-Browsers cannot reach the agent's loopback WebSocket directly. Proxy
-`/ws/console` to the agent gateway with the Apache snippet in
-`etc/teralab-console.conf`, which maps it to
-`ws://127.0.0.1:8091/ws`.
+`nodes/console` returns `kind` (`telnet` or `vnc`) and `ws_path`. For VNC it
+also returns the generated VNC `password` for the browser client.
+
+Browsers cannot reach the agent's loopback WebSocket or VNC ports directly.
+Proxy both paths with the Apache snippet in `etc/teralab-console.conf`:
+`/ws/console` maps to `ws://127.0.0.1:8091/ws` and `/ws/vnc` maps to
+`ws://127.0.0.1:8091/vnc`.
 
 The legacy `html/api.php` entry point loads this application and serves both
 `/api/v2/*` and the v1 compatibility routes (`/api/auth`, `/api/status`,

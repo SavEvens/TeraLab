@@ -6,8 +6,10 @@ package console
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/engine"
@@ -55,7 +57,8 @@ func (g *Gateway) Start() error {
 	g.listener = listener
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", g.handleWebSocket)
+	mux.HandleFunc("/ws", g.handleSerial)
+	mux.HandleFunc("/vnc", g.handleVNC)
 	g.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -77,7 +80,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	return g.server.Shutdown(ctx)
 }
 
-func (g *Gateway) handleWebSocket(writer http.ResponseWriter, request *http.Request) {
+func (g *Gateway) handleSerial(writer http.ResponseWriter, request *http.Request) {
 	nodeID, ok := g.tokens.Resolve(request.URL.Query().Get("token"))
 	if !ok {
 		http.Error(writer, "invalid or expired console token", http.StatusUnauthorized)
@@ -88,6 +91,33 @@ func (g *Gateway) handleWebSocket(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, "node is not running", http.StatusNotFound)
 		return
 	}
+
+	g.bridge(writer, request, pty)
+}
+
+func (g *Gateway) handleVNC(writer http.ResponseWriter, request *http.Request) {
+	nodeID, ok := g.tokens.Resolve(request.URL.Query().Get("token"))
+	if !ok {
+		http.Error(writer, "invalid or expired console token", http.StatusUnauthorized)
+		return
+	}
+	port, _, ok := g.manager.VNC(nodeID)
+	if !ok {
+		http.Error(writer, "node has no vnc console", http.StatusNotFound)
+		return
+	}
+
+	stream, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), 5*time.Second)
+	if err != nil {
+		http.Error(writer, "cannot reach the vnc server", http.StatusBadGateway)
+		return
+	}
+
+	g.bridge(writer, request, stream)
+}
+
+func (g *Gateway) bridge(writer http.ResponseWriter, request *http.Request, stream io.ReadWriteCloser) {
+	defer stream.Close()
 
 	connection, err := g.upgrader.Upgrade(writer, request, nil)
 	if err != nil {
@@ -101,7 +131,7 @@ func (g *Gateway) handleWebSocket(writer http.ResponseWriter, request *http.Requ
 		defer func() { _ = connection.Close() }()
 		buffer := make([]byte, 8192)
 		for {
-			count, readErr := pty.Read(buffer)
+			count, readErr := stream.Read(buffer)
 			if readErr != nil {
 				return
 			}
@@ -116,7 +146,7 @@ func (g *Gateway) handleWebSocket(writer http.ResponseWriter, request *http.Requ
 		if readErr != nil {
 			return
 		}
-		if _, writeErr := pty.Write(data); writeErr != nil {
+		if _, writeErr := stream.Write(data); writeErr != nil {
 			return
 		}
 	}

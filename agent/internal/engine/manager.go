@@ -5,9 +5,12 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,19 +35,23 @@ type NodeInfo struct {
 	Taps    []string  `json:"taps,omitempty"`
 	Console string    `json:"console"`
 	Cgroup  string    `json:"cgroup,omitempty"`
+	VNCPort int       `json:"vnc_port,omitempty"`
 }
 
 type Node struct {
-	Spec       Spec
-	Cmd        *exec.Cmd
-	PTY        *os.File
-	RunDir     string
-	Overlay    string
-	Taps       []string
-	CgroupPath string
-	State      string
-	Started    time.Time
-	Done       chan struct{}
+	Spec        Spec
+	Cmd         *exec.Cmd
+	PTY         *os.File
+	RunDir      string
+	Overlay     string
+	Taps        []string
+	CgroupPath  string
+	VNCPort     int
+	VNCPassword string
+	MonitorPath string
+	State       string
+	Started     time.Time
+	Done        chan struct{}
 }
 
 type Manager struct {
@@ -85,6 +92,11 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	if err := os.MkdirAll(runDir, 0o750); err != nil {
 		return NodeInfo{}, fmt.Errorf("create run directory: %w", err)
 	}
+	// The per-lab directory must stay traversable for the unprivileged QEMU
+	// user, otherwise it cannot create the monitor socket or logs.
+	if labDir := filepath.Dir(runDir); labDir != m.cfg.RunDir {
+		m.chown(labDir)
+	}
 	m.chown(runDir)
 
 	overlay := ""
@@ -106,10 +118,34 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 		taps = append(taps, tap)
 	}
 
-	ptmx, tty, err := pty.Open()
-	if err != nil {
-		m.cleanupTaps(taps)
-		return NodeInfo{}, fmt.Errorf("open pty: %w", err)
+	var ptmx *os.File
+	var tty *os.File
+	var vnc *VNCConfig
+	vncPort := 0
+	vncPassword := ""
+	if spec.Console == "vnc" {
+		display, err := freeVNCDisplay()
+		if err != nil {
+			m.cleanupTaps(taps)
+			return NodeInfo{}, err
+		}
+		vncPassword = randomHex(8)
+		if vncPassword == "" {
+			m.cleanupTaps(taps)
+			return NodeInfo{}, errors.New("cannot generate a vnc password")
+		}
+		vncPort = 5900 + display
+		vnc = &VNCConfig{
+			Display:     display,
+			MonitorPath: filepath.Join(runDir, "monitor.sock"),
+		}
+	} else {
+		var err error
+		ptmx, tty, err = pty.Open()
+		if err != nil {
+			m.cleanupTaps(taps)
+			return NodeInfo{}, fmt.Errorf("open pty: %w", err)
+		}
 	}
 	logFile, err := os.OpenFile(filepath.Join(runDir, "qemu.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
@@ -119,7 +155,7 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 		return NodeInfo{}, fmt.Errorf("open qemu log: %w", err)
 	}
 
-	args, err := BuildQEMUArgs(spec, taps, overlay)
+	args, err := BuildQEMUArgs(spec, taps, overlay, vnc)
 	if err != nil {
 		_ = logFile.Close()
 		_ = ptmx.Close()
@@ -129,8 +165,12 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	}
 
 	command := exec.Command(m.cfg.QEMUBinary, args...)
-	command.Stdin = tty
-	command.Stdout = tty
+	if tty != nil {
+		command.Stdin = tty
+		command.Stdout = tty
+	} else {
+		command.Stdout = logFile
+	}
 	command.Stderr = logFile
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if m.cfg.VMUID > 0 {
@@ -151,6 +191,16 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	_ = tty.Close()
 	_ = logFile.Close()
 
+	if vnc != nil {
+		if err := m.setVNCPassword(vnc.MonitorPath, vncPassword); err != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			_ = ptmx.Close()
+			m.cleanupTaps(taps)
+			return NodeInfo{}, err
+		}
+	}
+
 	cgroupPath, err := m.applyCgroup(command.Process.Pid, spec)
 	if err != nil {
 		_ = command.Process.Kill()
@@ -161,16 +211,18 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	}
 
 	node := &Node{
-		Spec:       spec,
-		Cmd:        command,
-		PTY:        ptmx,
-		RunDir:     runDir,
-		Overlay:    overlay,
-		Taps:       taps,
-		CgroupPath: cgroupPath,
-		State:      "running",
-		Started:    time.Now(),
-		Done:       make(chan struct{}),
+		Spec:        spec,
+		Cmd:         command,
+		PTY:         ptmx,
+		RunDir:      runDir,
+		Overlay:     overlay,
+		Taps:        taps,
+		CgroupPath:  cgroupPath,
+		VNCPort:     vncPort,
+		VNCPassword: vncPassword,
+		State:       "running",
+		Started:     time.Now(),
+		Done:        make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -285,6 +337,18 @@ func (m *Manager) PTY(id string) (*os.File, bool) {
 	return node.PTY, true
 }
 
+// VNC returns the loopback VNC port and password for a running node.
+func (m *Manager) VNC(id string) (int, string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	node, ok := m.nodes[id]
+	if !ok || node.State != "running" || node.VNCPort == 0 || node.VNCPassword == "" {
+		return 0, "", false
+	}
+
+	return node.VNCPort, node.VNCPassword, true
+}
+
 func (m *Manager) Shutdown() {
 	for _, info := range m.List() {
 		if info.State == "running" {
@@ -337,6 +401,7 @@ func (m *Manager) info(node *Node) NodeInfo {
 		Console: node.Spec.Console,
 		Started: node.Started,
 		Cgroup:  node.CgroupPath,
+		VNCPort: node.VNCPort,
 	}
 	if node.Cmd != nil && node.Cmd.Process != nil {
 		info.PID = node.Cmd.Process.Pid
@@ -447,6 +512,57 @@ func (m *Manager) removeCgroup(path string) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// freeVNCDisplay reserves a loopback VNC display in the range QEMU supports.
+func freeVNCDisplay() (int, error) {
+	for display := 1; display <= 99; display++ {
+		listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(5900+display))
+		if err != nil {
+			continue
+		}
+		_ = listener.Close()
+		return display, nil
+	}
+
+	return 0, errors.New("no free VNC display is available")
+}
+
+func randomHex(bytes int) string {
+	raw := make([]byte, bytes)
+	if _, err := rand.Read(raw); err != nil {
+		return ""
+	}
+
+	return hex.EncodeToString(raw)
+}
+
+func (m *Manager) setVNCPassword(monitorPath, password string) error {
+	deadline := time.Now().Add(5 * time.Second)
+	var connection net.Conn
+	for {
+		var err error
+		connection, err = net.DialTimeout("unix", monitorPath, 200*time.Millisecond)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("connect to qemu monitor: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+
+	banner := make([]byte, 1024)
+	_, _ = connection.Read(banner)
+	if _, err := fmt.Fprintf(connection, "set_password vnc %s\n", password); err != nil {
+		return fmt.Errorf("set vnc password: %w", err)
+	}
+	response := make([]byte, 4096)
+	_, _ = connection.Read(response)
+
+	return nil
 }
 
 func (m *Manager) chown(path string) {
