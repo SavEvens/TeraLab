@@ -66,6 +66,24 @@ Apache modules `proxy`, `proxy_fcgi`, `rewrite`, `headers`, and `ssl` are
 enabled, and the `php8.4-fpm` configuration is enabled. The web vhost and the
 TeraLab application are configured in later milestones.
 
+## Build toolchains
+
+| Tool | Version | Location |
+|---|---|---|
+| Node.js | 24.22.3 LTS (Krypton) | `~/.local/node` |
+| npm | 11.19.1 | `~/.local/node/bin` |
+| Go | 1.27.4 | `~/.local/go` |
+
+Both were installed from official tarballs with SHA-256 verification. The
+`PATH` entry is in `~/.bashrc`:
+
+```sh
+export PATH="$HOME/.local/node/bin:$HOME/.local/go/bin:$PATH"
+```
+
+Node is build-time only; the runtime serves static assets. Go builds the
+agent as a single binary.
+
 ## Nested KVM check
 
 ```sh

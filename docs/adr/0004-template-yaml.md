@@ -10,9 +10,9 @@
 ## Context
 
 UNetLab node templates are PHP files that assign to a `$p` array. They are
-executed as code, five are syntactically broken in the baseline, and they are
-hard to validate or expose in a UI. The reference deployment shows a device
-catalogue with defaults and limits.
+executed as code, five were syntactically broken in the baseline (repaired in
+the Phase 0 follow-up), and they are hard to validate or expose in a UI. The
+reference deployment shows a device catalogue with defaults and limits.
 
 ## Decision
 

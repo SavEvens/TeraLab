@@ -15,7 +15,7 @@ itself as `9.0.0`; that number is not adopted by TeraLab.
 | Editor | Separate `/legacy/topology` canvas; node/interface labels; resource overlay; bottom toolbar; node selection mini-toolbar | jsPlumb canvas, 53 templates | v1.3: Vue Flow editor, palette, inspector, undo |
 | Running | Lab list with owner, node count/status, location (master), destroy all | Status page | v1.3: running inventory, bulk actions |
 | System | CPU/memory/swap/disk bars; running-node counts by engine; platform versions; KSM/UKSM/CPU limit; disk expand | Status endpoint only | v1.4: resources, versions, settings, logs |
-| Images | Installed image count; QEMU/IOL/Dynamips groups; file count and size; manage local images | Manual directories | v1.3: upload, checksum, list, mapping |
+| Images | Installed image count; QEMU/IOL/Dynamips groups; folder tree with file sizes; Local Image Manager modal with Manage/Upload tabs and per-file actions | Manual directories | v1.3: upload, checksum, list, mapping |
 | Docker Devices | Catalogue of ready-made Docker images with install buttons and console descriptions | Docker node support (TCP 4243) | v1.4 optional: secure image catalogue |
 | Import Data | Import images/labs from another server over SSH; export labs from Labs view | `.unl` import/export | v1.3: `.unl`; v1.4: optional server import with key auth |
 | Clusters | Master/satellite, pre-shared key, add satellite | None | Deferred (v2.0) |

@@ -28,6 +28,8 @@
 | VM web | `http://127.0.0.1:8080/` |
 | Guest PHP | 8.4.27; FPM active and Apache config enabled |
 | Guest QEMU | 10.0.13 |
+| Guest Node.js | 24.22.3 LTS in `~/.local/node`; npm 11.19.1 |
+| Guest Go | 1.27.4 in `~/.local/go` |
 | Guest KVM | `/dev/kvm` usable; `savanna` added to `kvm` group; nested KVM test passes |
 | Docker | 26.1.5 on host; `alpine:3.20` pulled and runs (`docker-ok`) |
 | Reference | Login verified; screenshots captured |
@@ -52,6 +54,7 @@
 | Feature matrix | `docs/REFERENCE-FEATURE-MATRIX.md` |
 | Observation log | `docs/REFERENCE-OBSERVATIONS.md` |
 | Test image inventory | `docs/TEST-IMAGES.md` |
+| IOL NETMAP smoke test | `tests/manual/iol-netmap-smoke.sh` |
 | ADRs | `docs/adr/0001`–`0005` |
 | Reference screenshots | `/home/savanna/ref-observations/screenshots/` (outside repo) |
 
@@ -73,35 +76,38 @@ reused.
 | Image | Result |
 |---|---|
 | Docker `alpine:3.20` | Pulled; `docker run --rm alpine:3.20 echo docker-ok` → `docker-ok` |
-| IOL x86-64 L3/L2 | Binary executes and prints IOL usage; an application ID starts it but it requires a NETMAP file. Full boot is deferred to the Phase 1 agent adapter, which will generate NETMAP and interfaces. |
+| IOL x86-64 L3/L2 | Binary executes and prints IOL usage. A generated NETMAP (`1:d 513:d` for 64 ports) is parsed and IOL reports the port mappings. `tests/manual/iol-netmap-smoke.sh` passes. Full console/interface wiring remains agent work. |
 | QEMU C8000v 17.16.01a | Image metadata verified: qcow2, 8 GiB virtual, ~2 GiB actual, no backing file. With `q35` + SeaBIOS + virtio-blk, QEMU 10 reaches GRUB and boots IOS-XE 17.16.01a from `packages.conf`. A 4 GiB guest stalls during package verification; an 8 GiB host-side run reaches IOS-XE AUTONOMOUS mode after ~300 s. Use 8 GiB as the baseline for further tests; the login prompt and OVMF/pc variants remain a follow-up. Evidence: `/home/savanna/vms/c8000v-test/serial.log` (outside the repository). |
 
 ## Guardrails verified
 
 ```sh
 ./scripts/check-licence-headers.sh   # OK
-./scripts/php-lint.sh                # OK, 95 files; 5 allowlisted baseline templates
+./scripts/php-lint.sh                # OK, 100 files; no allowlist entries
 ./scripts/check-secrets.sh           # OK
 shellcheck scripts/check-licence-headers.sh scripts/php-lint.sh \
-  scripts/check-secrets.sh scripts/dev-vm.sh   # OK
+  scripts/check-secrets.sh scripts/dev-vm.sh \
+  tests/manual/iol-netmap-smoke.sh             # OK
 ```
 
-The five baseline templates with unterminated comments are explicitly
-allowlisted and scheduled for repair in v1.2.0 Sprint 1. No new entries are
-permitted without a tracked reason.
+The five baseline templates with unterminated comments were repaired during
+the Phase 0 follow-up, including QEMU 10-compatible `pc` machine types for
+the affected templates. The PHP lint allowlist is now empty. No new entries
+are permitted without a tracked reason.
 
 ## Known issues and follow-ups
 
 1. **C8000v boot matrix** — 8 GiB is required (4 GiB stalls); `q35` +
    SeaBIOS reaches IOS-XE AUTONOMOUS mode. Still to confirm: the login prompt,
    OVMF, and `pc` machine variants before adding a built-in template.
-2. **IOL full boot** — the agent must generate the NETMAP and interface
-   plumbing; the binary and `iourc` are valid.
-3. **Deeper reference capture** — editor, consoles, image upload, lab
+2. **IOL interface wiring** — NETMAP generation and parsing are validated;
+   the agent must provide the wrapper/netio side and console plumbing.
+3. **Deeper reference capture** — node edit form, palette, consoles, lab
    creation/import, permissions, and click/time benchmarks.
-4. **Node 24 LTS and Go toolchain** are not yet installed in the VM; they are
-   needed at the start of v1.2/v1.3.
-5. The five broken baseline templates remain until v1.2 Sprint 1.
+4. **Node 24 LTS and Go toolchain** are installed in the VM (24.22.3 and
+   1.27.4).
+5. The PHP lint allowlist is empty; keep it that way unless a tracked
+   exception is unavoidable.
 
 ## Exit criteria
 
@@ -119,7 +125,7 @@ permitted without a tracked reason.
 v1.2.0 runtime foundation, Sprint 1:
 
 - path/config refactor and single version source;
-- fix the five broken templates;
+- convert the repaired PHP templates to YAML;
 - Slim 4 migration for auth/status/labs;
 - Argon2id, first-run admin, CSRF, rate limiting;
 - remove Analytics and default credentials;

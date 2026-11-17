@@ -55,6 +55,8 @@ lab editor view (`/legacy/topology`).
   export, power, node palette, theme, pan, and fullscreen controls.
 - Selecting a node highlights it and shows a small floating toolbar with
   start and edit actions. No side inspector was visible in this view.
+- Double-clicking a node selects it but did not open an edit form in this
+  pass; the edit form and device palette remain to be captured.
 - No lab content was modified; only a node was selected for observation.
 
 ### Running Labs
@@ -76,7 +78,10 @@ lab editor view (`/legacy/topology`).
 
 - Summary count and grouping by engine (QEMU, IOL, Dynamips).
 - Rows show engine badge, image name, file count, and size.
-- A “manage local images” action is present.
+- A “manage local images” action opens a modal with Manage/Upload tabs,
+  Refresh, and New QEMU Folder.
+- The Manage tab shows an expandable folder tree; each folder lists its files
+  with sizes and per-file download/edit/delete actions.
 - The reference lists many vendor images; TeraLab does not redistribute them.
 
 ### Docker Devices

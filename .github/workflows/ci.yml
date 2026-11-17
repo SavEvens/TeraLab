@@ -55,7 +55,8 @@ jobs:
             scripts/check-licence-headers.sh \
             scripts/php-lint.sh \
             scripts/check-secrets.sh \
-            scripts/dev-vm.sh
+            scripts/dev-vm.sh \
+            tests/manual/iol-netmap-smoke.sh
 
   python-syntax:
     name: Python syntax

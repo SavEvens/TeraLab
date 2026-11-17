@@ -57,9 +57,17 @@ Evidence: `/home/savanna/vms/c8000v-test/serial.log` (outside the repository).
 ## IOL boot note
 
 Running `x86_64_crb_linux-adventerprisek9-ms.bin` with an application ID
-starts the IOL process but reports `netio error: unable to open NETMAP`.
-The agent must generate a NETMAP and interface plumbing in Phase 1. The
-binary, `iourc`, and 64-bit dependency check are otherwise valid.
+starts the IOL process. A generated NETMAP of the form `1:<d> 513:<d>` for
+`d = 0..63` is parsed and IOL reports the port mappings. Validate it with:
+
+```sh
+tests/manual/iol-netmap-smoke.sh \
+  ~/test_images/iol/bin/x86_64_crb_linux-adventerprisek9-ms.bin
+```
+
+The wrapper/agent must provide the `513:<d>` netio end and the console
+plumbing; that remains Phase 1 work. The binary, `iourc`, and 64-bit
+dependency check are valid.
 
 ## IOL compatibility note
 

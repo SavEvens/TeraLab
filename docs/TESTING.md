@@ -87,7 +87,8 @@ vendor/bin/phpunit                # when configured
 
 # Shell / C
 shellcheck scripts/check-licence-headers.sh scripts/php-lint.sh \
-  scripts/check-secrets.sh scripts/dev-vm.sh
+  scripts/check-secrets.sh scripts/dev-vm.sh \
+  tests/manual/iol-netmap-smoke.sh
 clang -fsanitize=address,undefined ...
 
 # Frontend (Phase 1+)
@@ -99,6 +100,9 @@ gofmt -l . && go vet ./... && go test ./... && staticcheck ./...
 # Dev VM
 scripts/dev-vm.sh start
 scripts/dev-vm.sh ssh
+
+# Manual IOL NETMAP smoke test (local vendor binary, not CI)
+tests/manual/iol-netmap-smoke.sh ~/test_images/iol/bin/x86_64_crb_linux-adventerprisek9-ms.bin
 ```
 
 ## CI
@@ -106,16 +110,15 @@ scripts/dev-vm.sh ssh
 `.github/workflows/ci.yml` currently runs:
 
 - SPDX licence header checks;
-- PHP lint on all tracked PHP except the documented baseline allowlist
-  (`tests/ci/php-lint-allowlist.txt`);
+- PHP lint on all tracked PHP (the allowlist is currently empty);
 - shellcheck on TeraLab scripts;
 - Python syntax parsing without writing bytecode;
 - tracked-file secret scanning.
 
 Composer/PHPUnit/PHPStan, npm/Vitest, Go, and KVM integration jobs are added
-when `api/`, `ui/`, and `agent/` exist. The five allowlisted templates are
-scheduled for repair in v1.2.0 Sprint 1; remove each allowlist entry when it
-is fixed.
+when `api/`, `ui/`, and `agent/` exist. The five baseline templates were
+repaired in the Phase 0 follow-up, so `tests/ci/php-lint-allowlist.txt` is
+empty; keep it that way unless a tracked exception is unavoidable.
 
 Legacy UNetLab scripts are not yet ShellCheck-clean. CI currently checks the
 four new TeraLab scripts only; expanding coverage to the legacy tree is a

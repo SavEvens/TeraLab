@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 TeraLab contributors
 #
-# PHP files temporarily excluded from `php -l` because the UNetLab 1.0.2-2
-# baseline ships them with unterminated doc comments.
+# PHP files temporarily excluded from `php -l`.
 #
-# These are scheduled for repair in v1.2.0 Sprint 1. Remove each entry when
-# the file is fixed; do not add new entries without a tracked reason.
-html/templates/bigip.php
-html/templates/c7200.php
-html/templates/iol.php
-html/templates/linux.php
-html/templates/sonicwall.php
+# No files are currently allowlisted. Add an entry only with a tracked reason
+# and remove it as soon as the file is fixed.
