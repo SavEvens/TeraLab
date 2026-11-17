@@ -57,6 +57,16 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
+	if result, err := s.manager.Reconcile(); err != nil {
+		s.logger.Warn("startup reconciliation incomplete", "error", err)
+	} else if len(result.KilledProcesses) > 0 || len(result.RemovedLinks) > 0 || len(result.RemovedDirs) > 0 {
+		s.logger.Info("startup reconciliation complete",
+			"killed", len(result.KilledProcesses),
+			"links", len(result.RemovedLinks),
+			"dirs", len(result.RemovedDirs),
+		)
+	}
+
 	_ = os.Remove(s.cfg.SocketPath)
 	listener, err := net.Listen("unix", s.cfg.SocketPath)
 	if err != nil {
@@ -115,6 +125,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/node.wipe", s.requireAuth(s.handleNodeWipe))
 	mux.HandleFunc("GET /v1/node.status", s.requireAuth(s.handleNodeStatus))
 	mux.HandleFunc("POST /v1/console.open", s.requireAuth(s.handleConsoleOpen))
+	mux.HandleFunc("POST /v1/lab.ensure", s.requireAuth(s.handleLabEnsure))
+	mux.HandleFunc("POST /v1/lab.cleanup", s.requireAuth(s.handleLabCleanup))
+	mux.HandleFunc("POST /v1/cleanup.stale", s.requireAuth(s.handleCleanupStale))
+	mux.HandleFunc("GET /v1/engines", s.requireAuth(s.handleEngines))
+	mux.HandleFunc("POST /v1/image.inspect", s.requireAuth(s.handleImageInspect))
 
 	return mux
 }

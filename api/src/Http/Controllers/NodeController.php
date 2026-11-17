@@ -112,14 +112,14 @@ final class NodeController
             'name' => $this->string($data, 'name', required: true, maxLength: 128),
         ];
 
-        foreach (['lab_id', 'image', 'iso', 'kernel', 'initrd', 'append', 'nic', 'machine', 'console', 'uuid'] as $key) {
+        foreach (['engine', 'lab_id', 'image', 'iso', 'kernel', 'initrd', 'append', 'nic', 'machine', 'console', 'uuid', 'platform', 'iourc'] as $key) {
             $value = $this->string($data, $key);
             if ($value !== null) {
                 $spec[$key] = $value;
             }
         }
 
-        foreach (['cpu' => 64, 'ram' => 131072, 'ethernet' => 16] as $key => $maximum) {
+        foreach (['cpu' => 64, 'ram' => 131072, 'ethernet' => 16, 'nvram' => 4096] as $key => $maximum) {
             $value = $data[$key] ?? null;
             if ($value === null) {
                 continue;
@@ -128,6 +128,24 @@ final class NodeController
                 throw new HttpException(422, $key . ' is out of range.');
             }
             $spec[$key] = $value;
+        }
+
+        $engine = $spec['engine'] ?? 'qemu';
+        if (!in_array($engine, ['qemu', 'vpcs', 'dynamips', 'iol'], true)) {
+            throw new HttpException(422, 'Unsupported engine.');
+        }
+
+        $slots = $data['slots'] ?? null;
+        if ($slots !== null) {
+            if (!is_array($slots)) {
+                throw new HttpException(422, 'slots must be a list.');
+            }
+            foreach ($slots as $slot) {
+                if (!is_string($slot)) {
+                    throw new HttpException(422, 'slots must be a list of strings.');
+                }
+            }
+            $spec['slots'] = $slots;
         }
 
         $networks = $data['networks'] ?? null;

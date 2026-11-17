@@ -21,8 +21,11 @@ use TeraLab\Api\Auth\RateLimiter;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\Controllers\AuthController;
+use TeraLab\Api\Http\Controllers\EngineController;
+use TeraLab\Api\Http\Controllers\ImageController;
 use TeraLab\Api\Http\Controllers\HealthController;
 use TeraLab\Api\Http\Controllers\LabController;
+use TeraLab\Api\Http\Controllers\NetworkController;
 use TeraLab\Api\Http\Controllers\NodeController;
 use TeraLab\Api\Http\Controllers\SystemController;
 use TeraLab\Api\Http\Controllers\V1Controller;
@@ -33,6 +36,7 @@ use TeraLab\Api\Http\Middleware\JsonErrorMiddleware;
 use TeraLab\Api\Http\Middleware\RequestIdMiddleware;
 use TeraLab\Api\Http\Middleware\SecurityHeadersMiddleware;
 use TeraLab\Api\Http\Middleware\V1AuthMiddleware;
+use TeraLab\Api\Image\ImageStore;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\UnlParser;
 
@@ -85,6 +89,14 @@ final class App
             AgentClient::class,
             static fn (Config $config): AgentClient => $agent ?? new AgentClient($config)
         );
+        $container->set(
+            ImageStore::class,
+            static fn (Config $config, PDO $pdo): ImageStore => new ImageStore(
+                $config,
+                $pdo,
+                static fn (string $path): array => $container->get(AgentClient::class)->inspectImage($path),
+            )
+        );
 
         $container->get(Migrator::class)->migrate();
 
@@ -121,6 +133,33 @@ final class App
         $app->get('/api/v2/nodes/status', fn ($request, $response) => $nodes->status($request, $response))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/nodes/console', fn ($request, $response) => $nodes->console($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+
+        $networks = $container->get(NetworkController::class);
+        $app->post('/api/v2/labs/{id}/networks', fn ($request, $response, array $args) => $networks->ensure($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/networks/cleanup', fn ($request, $response, array $args) => $networks->cleanup($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+
+        $images = $container->get(ImageController::class);
+        $app->get('/api/v2/images', fn ($request, $response) => $images->index($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->show($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/images', fn ($request, $response) => $images->upload($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->delete('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->delete($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+
+        $engines = $container->get(EngineController::class);
+        $app->get('/api/v2/engines', fn ($request, $response) => $engines->index($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/maintenance/reconcile', fn ($request, $response) => $engines->reconcile($request, $response))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 

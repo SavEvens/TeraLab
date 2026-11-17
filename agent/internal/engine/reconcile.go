@@ -1,0 +1,197 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 TeraLab contributors
+
+package engine
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+type nodeState struct {
+	ID      string   `json:"id"`
+	LabID   string   `json:"lab_id,omitempty"`
+	Engine  string   `json:"engine"`
+	Exe     string   `json:"exe"`
+	PID     int      `json:"pid"`
+	Taps    []string `json:"taps,omitempty"`
+	Cgroup  string   `json:"cgroup,omitempty"`
+	Started string   `json:"started,omitempty"`
+}
+
+// ReconcileResult reports resources reclaimed after a crash or restart.
+type ReconcileResult struct {
+	KilledProcesses []int    `json:"killed_processes,omitempty"`
+	RemovedLinks    []string `json:"removed_links,omitempty"`
+	RemovedDirs     []string `json:"removed_dirs,omitempty"`
+	RemovedCgroups  []string `json:"removed_cgroups,omitempty"`
+}
+
+// Reconcile removes state left by a previous agent process: orphan engine
+// processes, stale taps and bridges, cgroups, and run directories.
+func (m *Manager) Reconcile() (ReconcileResult, error) {
+	result := ReconcileResult{}
+	var firstErr error
+	note := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	liveTaps := map[string]bool{}
+	liveNodes := map[string]bool{}
+	m.mu.Lock()
+	for _, node := range m.nodes {
+		liveNodes[node.Spec.ID] = true
+		for _, tap := range node.Taps {
+			liveTaps[tap] = true
+		}
+	}
+	m.mu.Unlock()
+
+	runRoot, err := filepath.Abs(m.cfg.RunDir)
+	if err != nil {
+		return result, err
+	}
+	stateFiles := []string{}
+	walkErr := filepath.WalkDir(runRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Name() == stateFileName {
+			stateFiles = append(stateFiles, path)
+		}
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, os.ErrNotExist) {
+		note(walkErr)
+	}
+
+	for _, statePath := range stateFiles {
+		state := nodeState{}
+		data, readErr := os.ReadFile(statePath)
+		if readErr != nil {
+			note(readErr)
+			continue
+		}
+		if err := json.Unmarshal(data, &state); err != nil {
+			note(err)
+			continue
+		}
+		if state.ID != "" && liveNodes[state.ID] {
+			continue
+		}
+
+		if state.PID > 0 && processMatches(state.PID, state.Exe) {
+			err := syscall.Kill(-state.PID, syscall.SIGKILL)
+			if err != nil {
+				// The orphan may not be a process-group leader; fall back to
+				// the process itself.
+				err = syscall.Kill(state.PID, syscall.SIGKILL)
+			}
+			if err != nil && !errors.Is(err, syscall.ESRCH) {
+				note(fmt.Errorf("kill orphan %d: %w", state.PID, err))
+			} else {
+				result.KilledProcesses = append(result.KilledProcesses, state.PID)
+			}
+			waitForExit(state.PID, 2*time.Second)
+		}
+
+		for _, tap := range state.Taps {
+			if err := m.net.DeleteLink(tap); err != nil {
+				note(err)
+			} else {
+				result.RemovedLinks = append(result.RemovedLinks, tap)
+			}
+		}
+		if state.Cgroup != "" {
+			m.removeCgroup(state.Cgroup)
+			result.RemovedCgroups = append(result.RemovedCgroups, state.Cgroup)
+		}
+
+		dir := filepath.Dir(statePath)
+		if err := os.RemoveAll(dir); err != nil {
+			note(err)
+		} else {
+			result.RemovedDirs = append(result.RemovedDirs, dir)
+			_ = os.Remove(filepath.Dir(dir))
+		}
+	}
+
+	stale, cleanupErr := m.net.CleanupStale(liveTaps)
+	if cleanupErr != nil {
+		note(cleanupErr)
+	}
+	result.RemovedLinks = append(result.RemovedLinks, stale...)
+
+	if !m.cfg.DisableCgroups {
+		if entries, err := os.ReadDir(m.cfg.CgroupRoot); err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "node-") {
+					continue
+				}
+				nodeID := strings.TrimPrefix(entry.Name(), "node-")
+				if liveNodes[nodeID] {
+					continue
+				}
+				path := filepath.Join(m.cfg.CgroupRoot, entry.Name())
+				m.removeCgroup(path)
+				result.RemovedCgroups = append(result.RemovedCgroups, path)
+			}
+		}
+	}
+
+	if len(result.KilledProcesses) > 0 || len(result.RemovedLinks) > 0 || len(result.RemovedDirs) > 0 {
+		m.logger.Warn("reconciled stale node resources",
+			"killed", result.KilledProcesses,
+			"links", result.RemovedLinks,
+			"dirs", len(result.RemovedDirs),
+		)
+	}
+
+	return result, firstErr
+}
+
+func processMatches(pid int, expectedExe string) bool {
+	actual, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+	if err != nil {
+		return false
+	}
+	actual = strings.TrimSuffix(actual, " (deleted)")
+	if expectedExe == "" {
+		return filepath.Base(actual) != ""
+	}
+	expected, err := filepath.EvalSymlinks(expectedExe)
+	if err != nil {
+		expected = expectedExe
+	}
+
+	return actual == expected
+}
+
+func waitForExit(pid int, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

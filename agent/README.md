@@ -31,6 +31,10 @@ go test ./...
 | `TERALAB_DISABLE_CGROUPS` | `0` | Disable cgroup limits (dev only) |
 | `TERALAB_QEMU` | `/usr/bin/qemu-system-x86_64` | QEMU binary |
 | `TERALAB_QEMU_IMG` | `/usr/bin/qemu-img` | qemu-img binary |
+| `TERALAB_VPCS` | `/usr/bin/vpcs` | VPCS binary |
+| `TERALAB_DYNAMIPS` | `/usr/bin/dynamips` | Dynamips binary (separate package) |
+| `TERALAB_DISABLE_KVM` | `0` | Force TCG (nested-VM debugging only) |
+| `TERALAB_IOL_IOURC` | `/etc/teralab/iourc` | Default IOL licence file |
 | `TERALAB_VM_USER` | `teralab-vm` | Unprivileged QEMU user |
 | `TERALAB_ALLOW_ROOT_VM` | `0` | Explicitly allow root QEMU (dev only) |
 
@@ -40,15 +44,47 @@ All endpoints require the bearer secret and an allowed peer UID.
 
 - `GET /v1/health`
 - `GET /v1/system/status`
+- `GET /v1/engines`
 - `POST /v1/node.start`
 - `POST /v1/node.stop`
 - `POST /v1/node.wipe`
 - `GET /v1/node.status?id=...`
 - `POST /v1/console.open` → WebSocket token/URL
+- `POST /v1/lab.ensure` → create lab bridges
+- `POST /v1/lab.cleanup` → remove lab bridges
+- `POST /v1/cleanup.stale` → reconcile orphaned processes, links, cgroups
+- `POST /v1/image.inspect` → checksum, format, virtual size, backing file
 
 The console gateway listens on loopback and bridges WebSocket binary frames to
-the QEMU serial pty (`/ws`) or to the loopback VNC server (`/vnc`). Tokens are
-short-lived and bound to a node.
+the QEMU serial pty (`/ws`), the loopback VNC server (`/vnc`), or an engine's
+loopback TCP console (`/tcp`). Tokens are short-lived and bound to a node.
+
+## Engines
+
+`node.start` takes `engine`: `qemu` (default), `vpcs`, `dynamips`, or `iol`.
+
+- **QEMU:** qcow2/ISO/kernel boot, VNC or serial console.
+- **VPCS:** one tap bridged to the lab network; the agent relays raw Ethernet
+  frames between the tap and VPCS's loopback UDP sockets, and exposes the VPCS
+  CLI on a pty. Works without `/dev/tapX` or root VPCS.
+- **Dynamips:** direct-mode argv with tap slots and a loopback TCP console.
+  Requires the separate `teralab-dynamips` package and a user-supplied IOS
+  image; TeraLab never bundles one.
+- **IOL:** user-supplied x86-64 `.bin` plus `iourc`, run as `teralab-vm` with
+  a deterministic application id, `LD_LIBRARY_PATH`, and per-node `iourc` /
+  `NETMAP` files in the run directory. Ethernet bridging for IOL is not
+  implemented; nodes must use `ethernet: 0` and the engine reports that
+  limitation.
+
+## Networking
+
+- Bridges are named `tl<labtag>b<net>` and taps `tl<labtag>t<nodetag><if>`,
+  deterministic and at most 15 characters.
+- Bridges set `group_fwd_mask=0xffff` and `multicast_snooping=0`, so LLDP/LACP
+  frames are forwarded.
+- `cleanup.stale` reconciles after a crash: it kills orphan engine processes
+  from run-directory state, removes their taps/bridges and cgroups, and deletes
+  stale `tl*` links. The agent runs the same reconciliation at startup.
 
 `node.start` accepts a qcow2 `image`, an `iso`, or direct kernel boot via
 `kernel` / `initrd` / `append`. `console` is `telnet` (default) or `vnc`.

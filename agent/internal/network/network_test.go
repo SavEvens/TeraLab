@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 TeraLab contributors
+
+package network
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+type recorded struct {
+	name string
+	args []string
+}
+
+func testManager(t *testing.T) (*Manager, *[]recorded) {
+	t.Helper()
+	sys := t.TempDir()
+	calls := []recorded{}
+	manager := New("teralab-vm")
+	manager.SysClassNet = sys
+	manager.Run = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, recorded{name: name, args: append([]string(nil), args...)})
+		return nil, nil
+	}
+
+	return manager, &calls
+}
+
+func TestNamesAreDeterministicAndBounded(t *testing.T) {
+	bridge := BridgeName("lab-1", "0")
+	if bridge != BridgeName("lab-1", "0") {
+		t.Fatal("bridge name must be deterministic")
+	}
+	if bridge == BridgeName("lab-2", "0") {
+		t.Fatal("different labs must not share a bridge name")
+	}
+	if len(bridge) > 15 {
+		t.Fatalf("bridge name too long: %s", bridge)
+	}
+
+	tap := TapName("lab-1", "node-1", 3)
+	if len(tap) > 15 {
+		t.Fatalf("tap name too long: %s", tap)
+	}
+	if tap == TapName("lab-1", "node-2", 3) {
+		t.Fatal("different nodes must not share a tap name")
+	}
+	if tap == TapName("lab-1", "node-1", 4) {
+		t.Fatal("different interfaces must not share a tap name")
+	}
+	if err := ValidateLinkName(tap); err != nil {
+		t.Fatalf("generated tap name is invalid: %v", err)
+	}
+}
+
+func TestValidateLinkName(t *testing.T) {
+	for _, name := range []string{"tlabcdb123456", "tlx", "eth0.100"} {
+		if err := ValidateLinkName(name); err != nil {
+			t.Fatalf("expected %q to be valid: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "tl/evil", "a-very-long-interface-name", "-leading"} {
+		if err := ValidateLinkName(name); err == nil {
+			t.Fatalf("expected %q to be rejected", name)
+		}
+	}
+}
+
+func TestEnsureBridgeEnablesLLDPForwarding(t *testing.T) {
+	manager, calls := testManager(t)
+	bridge := BridgeName("lab-1", "net-0")
+	if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge, "bridge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pretend the bridge already exists; only configuration is needed.
+	if err := manager.EnsureBridge(bridge); err != nil {
+		t.Fatalf("ensure bridge: %v", err)
+	}
+
+	mask, err := os.ReadFile(filepath.Join(manager.SysClassNet, bridge, "bridge", "group_fwd_mask"))
+	if err != nil || string(mask) != "65535" {
+		t.Fatalf("group_fwd_mask not set: %q %v", mask, err)
+	}
+	snooping, err := os.ReadFile(filepath.Join(manager.SysClassNet, bridge, "bridge", "multicast_snooping"))
+	if err != nil || string(snooping) != "0" {
+		t.Fatalf("multicast_snooping not set: %q %v", snooping, err)
+	}
+	if !hasCall(*calls, "ip", "link", "set", "dev", bridge, "up") {
+		t.Fatalf("bridge not brought up: %+v", *calls)
+	}
+}
+
+func TestCreateTapUsesVMUserAndBridge(t *testing.T) {
+	manager, calls := testManager(t)
+	tap := TapName("lab-1", "node-1", 0)
+	bridge := BridgeName("lab-1", "0")
+
+	if err := manager.CreateTap(tap, bridge); err != nil {
+		t.Fatalf("create tap: %v", err)
+	}
+	if !hasCall(*calls, "ip", "tuntap", "add", "dev", tap, "mode", "tap", "user", "teralab-vm") {
+		t.Fatalf("tap not created with vm user: %+v", *calls)
+	}
+	if !hasCall(*calls, "ip", "link", "set", "dev", tap, "master", bridge) {
+		t.Fatalf("tap not attached to bridge: %+v", *calls)
+	}
+}
+
+func TestCleanupStaleKeepsLiveLinks(t *testing.T) {
+	manager, calls := testManager(t)
+	for _, name := range []string{"tlkeep0000000", "tlstale000000", "eth0"} {
+		if err := os.MkdirAll(filepath.Join(manager.SysClassNet, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := manager.CleanupStale(map[string]bool{"tlkeep0000000": true})
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "tlstale000000" {
+		t.Fatalf("unexpected removed links: %v", removed)
+	}
+	if hasCall(*calls, "ip", "link", "delete", "tlkeep0000000") {
+		t.Fatal("live link must not be removed")
+	}
+	if hasCall(*calls, "ip", "link", "delete", "eth0") {
+		t.Fatal("non-TeraLab link must not be removed")
+	}
+}
+
+func TestCleanupLabOnlyTouchesThatLab(t *testing.T) {
+	manager, calls := testManager(t)
+	first := BridgeName("lab-1", "0")
+	second := BridgeName("lab-2", "0")
+	for _, name := range []string{first, second} {
+		if err := os.MkdirAll(filepath.Join(manager.SysClassNet, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := manager.CleanupLab("lab-1")
+	if err != nil {
+		t.Fatalf("cleanup lab: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != first {
+		t.Fatalf("unexpected removed links: %v", removed)
+	}
+	if hasCall(*calls, "ip", "link", "delete", second) {
+		t.Fatal("another lab's bridge must not be removed")
+	}
+}
+
+func TestEnsureLabCreatesBridges(t *testing.T) {
+	manager, _ := testManager(t)
+	for _, id := range []string{"0", "1"} {
+		name := BridgeName("lab-1", id)
+		if err := os.MkdirAll(filepath.Join(manager.SysClassNet, name, "bridge"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	bridges, err := manager.EnsureLab("lab-1", []string{"0", "1"})
+	if err != nil {
+		t.Fatalf("ensure lab: %v", err)
+	}
+	if bridges["0"] != BridgeName("lab-1", "0") || bridges["1"] != BridgeName("lab-1", "1") {
+		t.Fatalf("unexpected bridge map: %v", bridges)
+	}
+}
+
+func hasCall(calls []recorded, name string, args ...string) bool {
+	for _, call := range calls {
+		if call.name != name || len(call.args) != len(args) {
+			continue
+		}
+		match := true
+		for index := range args {
+			if call.args[index] != args[index] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+
+	return false
+}
+
+func TestDeleteLinkToleratesMissingDevice(t *testing.T) {
+	manager := New("")
+	manager.Run = func(name string, args ...string) ([]byte, error) {
+		return []byte("Cannot find device \"tlmissing\""), os.ErrNotExist
+	}
+	if err := manager.DeleteLink("tlmissing0000"); err != nil {
+		t.Fatalf("missing device must be tolerated: %v", err)
+	}
+}
+
+func TestBridgeNamesStayShort(t *testing.T) {
+	for index := 0; index < 100; index++ {
+		name := BridgeName("lab-"+strings.Repeat("x", index%20), string(rune('a'+index%26)))
+		if len(name) > 15 {
+			t.Fatalf("bridge name too long: %s", name)
+		}
+	}
+}

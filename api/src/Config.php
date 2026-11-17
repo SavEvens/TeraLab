@@ -22,6 +22,8 @@ final class Config
         public readonly string $agentSecretFile = '/etc/teralab/agent.secret',
         public readonly string $consolePath = '/ws/console',
         public readonly string $consoleVncPath = '/ws/vnc',
+        public readonly string $imagesDir = '/var/lib/teralab/images',
+        public readonly int $maxUploadBytes = 34359738368,
     ) {
     }
 
@@ -76,6 +78,14 @@ final class Config
                 'TERALAB_CONSOLE_VNC_PATH',
                 self::stringValue($values, 'console_vnc_path', '/ws/vnc'),
             ),
+            imagesDir: self::env(
+                'TERALAB_IMAGES_DIR',
+                self::stringValue($values, 'images_dir', $dataDir . '/images'),
+            ),
+            maxUploadBytes: self::intEnv(
+                'TERALAB_MAX_UPLOAD_BYTES',
+                self::intValue($values, 'max_upload_bytes', 34359738368),
+            ),
         );
     }
 
@@ -91,6 +101,8 @@ final class Config
             environment: 'test',
             agentSocket: $dataDir . '/agent.sock',
             agentSecretFile: $dataDir . '/agent.secret',
+            imagesDir: $dataDir . '/images',
+            maxUploadBytes: 33554432,
         );
     }
 
