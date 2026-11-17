@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/c1710.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: c1710
+name: '1710'
+kind: dynamips
+license: BSD-3-Clause
+icon: Router.png
+defaults:
+  ram: 96
+options:
+  idlepc: '0x80369ac4'
+  nvram: 128
+  dynamips_options: '-P 1700 -t 1710 -o 4 -c 0x2102 -X'

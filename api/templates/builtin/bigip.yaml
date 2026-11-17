@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/bigip.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: bigip
+name: bigip
+kind: qemu
+license: BSD-3-Clause
+icon: ''
+defaults: {  }
+options:
+  qemu_arch: x86_64
+  qemu_options: '-machine type=pc,accel=kvm -serial mon:stdio -nographic -no-user-config -nodefaults -display none -vga std -rtc base=utc '

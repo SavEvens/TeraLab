@@ -12,6 +12,7 @@ use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Jobs\JobService;
 use TeraLab\Api\Labs\LabLocks;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\LabService;
@@ -24,6 +25,7 @@ final class LabController
         private readonly AccessService $access,
         private readonly LabLocks $locks,
         private readonly AuditLogger $audit,
+        private readonly JobService $jobs,
     ) {
     }
 
@@ -131,10 +133,17 @@ final class LabController
         $user = $this->access->user($request);
         $this->access->requireRole($user, 'editor');
         $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
-        $data = $this->service->start((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
+        $jobID = $this->jobs->start('lab.start', (string) $user['id'], ['lab_id' => $lab['id']]);
+        try {
+            $data = $this->service->start((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
+            $this->jobs->succeed($jobID, $data);
+        } catch (\Throwable $exception) {
+            $this->jobs->fail($jobID, $exception->getMessage());
+            throw $exception;
+        }
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.start', (string) $lab['id'], 'success');
 
-        return Json::response($response, ['status' => 'success', 'data' => $data], 202);
+        return Json::response($response, ['status' => 'success', 'job_id' => $jobID, 'data' => $data], 202);
     }
 
     /**
@@ -145,10 +154,17 @@ final class LabController
         $user = $this->access->user($request);
         $this->access->requireRole($user, 'editor');
         $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
-        $data = $this->service->stop((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
+        $jobID = $this->jobs->start('lab.stop', (string) $user['id'], ['lab_id' => $lab['id']]);
+        try {
+            $data = $this->service->stop((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
+            $this->jobs->succeed($jobID, $data);
+        } catch (\Throwable $exception) {
+            $this->jobs->fail($jobID, $exception->getMessage());
+            throw $exception;
+        }
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.stop', (string) $lab['id'], 'success');
 
-        return Json::response($response, ['status' => 'success', 'data' => $data]);
+        return Json::response($response, ['status' => 'success', 'job_id' => $jobID, 'data' => $data]);
     }
 
     /**
@@ -159,10 +175,17 @@ final class LabController
         $user = $this->access->user($request);
         $this->access->requireRole($user, 'editor');
         $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
-        $data = $this->service->wipe((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
+        $jobID = $this->jobs->start('lab.wipe', (string) $user['id'], ['lab_id' => $lab['id']]);
+        try {
+            $data = $this->service->wipe((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
+            $this->jobs->succeed($jobID, $data);
+        } catch (\Throwable $exception) {
+            $this->jobs->fail($jobID, $exception->getMessage());
+            throw $exception;
+        }
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.wipe', (string) $lab['id'], 'success');
 
-        return Json::response($response, ['status' => 'success', 'data' => $data]);
+        return Json::response($response, ['status' => 'success', 'job_id' => $jobID, 'data' => $data]);
     }
 
     /**

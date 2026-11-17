@@ -14,6 +14,7 @@ use RecursiveIteratorIterator;
 use RuntimeException;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Templates\TemplateRepository;
 
 /**
  * Content-addressed image store.
@@ -42,6 +43,7 @@ final class ImageStore
         private readonly Config $config,
         private readonly PDO $pdo,
         ?Closure $inspector = null,
+        private readonly ?TemplateRepository $templates = null,
     ) {
         $this->inspector = $inspector ?? static fn (string $path): array => [];
     }
@@ -192,9 +194,15 @@ final class ImageStore
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $template) !== 1) {
             throw new HttpException(422, 'Invalid template id.');
         }
-        $file = $this->config->root . '/html/templates/' . $template . '.php';
-        if (!is_file($file)) {
-            throw new HttpException(404, 'Template not found.');
+        if ($this->templates !== null) {
+            if ($this->templates->find($template) === null) {
+                throw new HttpException(404, 'Template not found.');
+            }
+        } else {
+            $file = $this->config->root . '/html/templates/' . $template . '.php';
+            if (!is_file($file)) {
+                throw new HttpException(404, 'Template not found.');
+            }
         }
         $statement = $this->pdo->prepare('UPDATE images SET template = :template WHERE id = :id');
         $statement->execute([':template' => $template, ':id' => $id]);

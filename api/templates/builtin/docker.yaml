@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/docker.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: docker
+name: Docker
+kind: docker
+license: BSD-3-Clause
+icon: Server.png
+defaults:
+  ram: 256
+  ethernet: 1
+options: {  }

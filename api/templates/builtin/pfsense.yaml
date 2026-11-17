@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/pfsense.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: pfsense
+name: pfSense
+kind: qemu
+license: BSD-3-Clause
+icon: Firewall.png
+defaults:
+  cpu: 1
+  ram: 2048
+  ethernet: 2
+  console: telnet
+options:
+  qemu_arch: x86_64
+  qemu_nic: virtio-net-pci
+  qemu_options: '-machine type=pc-1.0,accel=kvm -nographic -usbdevice tablet -boot order=dc -serial mon:stdio'

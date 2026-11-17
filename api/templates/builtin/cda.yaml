@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/cda.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: cda
+name: cda
+kind: qemu
+license: BSD-3-Clause
+icon: Server.png
+defaults:
+  cpu: 2
+  ram: 2048
+  ethernet: 1
+  console: vnc
+options:
+  qemu_arch: x86_64
+  qemu_options: '-machine type=pc-1.0,accel=kvm -vga std -boot order=dc'

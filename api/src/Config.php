@@ -25,6 +25,7 @@ final class Config
         public readonly string $consoleTcpPath = '/ws/tcp',
         public readonly int $idleTtl = 3600,
         public readonly int $imageQuotaBytes = 0,
+        public readonly string $templatesDir = '/etc/teralab/templates',
         public readonly string $imagesDir = '/var/lib/teralab/images',
         public readonly int $maxUploadBytes = 34359738368,
     ) {
@@ -93,6 +94,10 @@ final class Config
                 'TERALAB_IMAGE_QUOTA_BYTES',
                 self::intValue($values, 'image_quota_bytes', 0),
             ),
+            templatesDir: self::env(
+                'TERALAB_TEMPLATES_DIR',
+                self::stringValue($values, 'templates_dir', '/etc/teralab/templates'),
+            ),
             imagesDir: self::env(
                 'TERALAB_IMAGES_DIR',
                 self::stringValue($values, 'images_dir', $dataDir . '/images'),
@@ -118,6 +123,7 @@ final class Config
             agentSecretFile: $dataDir . '/agent.secret',
             imagesDir: $dataDir . '/images',
             maxUploadBytes: 33554432,
+            templatesDir: $dataDir . '/templates',
         );
     }
 

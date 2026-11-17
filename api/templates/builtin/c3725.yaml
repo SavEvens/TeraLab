@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Derived from UNetLab template html/templates/c3725.php.
+# Converted to YAML by TeraLab contributors, 2026-11-17.
+schema: 1
+id: c3725
+name: '3725'
+kind: dynamips
+license: BSD-3-Clause
+icon: Router.png
+defaults:
+  ram: 256
+options:
+  idlepc: '0x60c08728'
+  nvram: 128
+  slot1: ''
+  slot2: ''
+  modules:
+    '': Empty
+    NM-1FE-TX: NM-1FE-TX
+    NM-16ESW: NM-16ESW
+  dynamips_options: '-P 3725 -o 4 -c 0x2102 -X --disk0 128 --disk1 128'
