@@ -82,6 +82,36 @@ final class AuthController
         return $this->clearSessionCookie(Json::response($response, ['status' => 'success']));
     }
 
+    public function changePassword(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $request->getAttribute('user');
+        $sessionId = $request->getAttribute('session_id');
+        if (!is_array($user) || !isset($user['id']) || !is_string($user['id']) || !is_string($sessionId)) {
+            throw new HttpException(401, 'Authentication required.');
+        }
+        $body = Json::body($request);
+        $current = $body['current_password'] ?? null;
+        $new = $body['new_password'] ?? null;
+        if (!is_string($current) || !is_string($new)) {
+            throw new HttpException(422, 'current_password and new_password are required.');
+        }
+        $this->auth->changePassword($user['id'], $sessionId, $current, $new, $this->ip($request));
+
+        return Json::response($response, ['status' => 'success']);
+    }
+
+    public function revokeSessions(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $request->getAttribute('user');
+        $sessionId = $request->getAttribute('session_id');
+        if (!is_array($user) || !isset($user['id']) || !is_string($user['id']) || !is_string($sessionId)) {
+            throw new HttpException(401, 'Authentication required.');
+        }
+        $revoked = $this->auth->revokeOtherSessions($user['id'], $sessionId, $this->ip($request));
+
+        return Json::response($response, ['status' => 'success', 'revoked' => $revoked]);
+    }
+
     public function me(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $sessionId = $request->getAttribute('session_id');

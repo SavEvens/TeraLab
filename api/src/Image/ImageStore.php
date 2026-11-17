@@ -52,7 +52,7 @@ final class ImageStore
     public function all(): array
     {
         $statement = $this->pdo->query(
-            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, created_at '
+            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
             . 'FROM images ORDER BY created_at DESC, name'
         );
         if ($statement === false) {
@@ -75,7 +75,7 @@ final class ImageStore
     public function find(string $id): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, created_at '
+            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
             . 'FROM images WHERE id = :id'
         );
         $statement->execute([':id' => $id]);
@@ -132,6 +132,12 @@ final class ImageStore
             }
 
             $sha256 = (string) hash_file('sha256', $temporary);
+            if ($this->config->imageQuotaBytes > 0) {
+                $used = (int) $this->pdo->query('SELECT COALESCE(SUM(size), 0) FROM images')->fetchColumn();
+                if ($used + (filesize($temporary) ?: 0) > $this->config->imageQuotaBytes) {
+                    throw new HttpException(507, 'The image store quota is exhausted.');
+                }
+            }
             $existing = $this->findByChecksum($sha256);
             if ($existing !== null) {
                 return $existing;
@@ -172,6 +178,59 @@ final class ImageStore
         }
 
         return $this->find($row['id']) ?? throw new RuntimeException('Image row was not stored.');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function mapTemplate(string $id, string $template): array
+    {
+        $image = $this->find($id);
+        if ($image === null) {
+            throw new HttpException(404, 'Image not found.');
+        }
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $template) !== 1) {
+            throw new HttpException(422, 'Invalid template id.');
+        }
+        $file = $this->config->root . '/html/templates/' . $template . '.php';
+        if (!is_file($file)) {
+            throw new HttpException(404, 'Template not found.');
+        }
+        $statement = $this->pdo->prepare('UPDATE images SET template = :template WHERE id = :id');
+        $statement->execute([':template' => $template, ':id' => $id]);
+
+        return $this->find($id) ?? throw new HttpException(404, 'Image not found.');
+    }
+
+    /**
+     * @return list<array{id: string, name: string}>
+     */
+    public function templates(): array
+    {
+        $directory = $this->config->root . '/html/templates';
+        $templates = [];
+        foreach (glob($directory . '/*.php') ?: [] as $file) {
+            $id = basename($file, '.php');
+            $templates[] = ['id' => $id, 'name' => $id];
+        }
+        usort($templates, static fn (array $a, array $b): int => strcmp($a['id'], $b['id']));
+
+        return $templates;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function rename(string $id, string $name): array
+    {
+        $name = trim($name);
+        if ($name === '' || strlen($name) > 128 || preg_match('/[\x00-\x1f]/', $name) === 1) {
+            throw new HttpException(422, 'Invalid image name.');
+        }
+        $statement = $this->pdo->prepare('UPDATE images SET name = :name WHERE id = :id');
+        $statement->execute([':name' => $name, ':id' => $id]);
+
+        return $this->find($id) ?? throw new HttpException(404, 'Image not found.');
     }
 
     /**
@@ -234,7 +293,7 @@ final class ImageStore
     private function findByChecksum(string $sha256): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, created_at '
+            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
             . 'FROM images WHERE sha256 = :sha256'
         );
         $statement->execute([':sha256' => $sha256]);

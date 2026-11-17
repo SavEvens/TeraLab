@@ -79,4 +79,32 @@ final class LegacyAuthTest extends TestCase
         $this->expectException(\TeraLab\Api\Http\HttpException::class);
         $auth->login('legacyadmin', 'wrong-password', '127.0.0.1', 'phpunit');
     }
+
+    public function testIdleSessionsAreRejected(): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO users (id, username, password_hash, role, expiration, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :role, -1, :now, :now)'
+        );
+        $statement->execute([
+            ':id' => bin2hex(random_bytes(16)),
+            ':username' => 'idleuser',
+            ':password_hash' => password_hash('Idle-Pass-2026!', PASSWORD_ARGON2ID),
+            ':role' => 'editor',
+            ':now' => time(),
+        ]);
+
+        $auth = new AuthService(
+            $this->pdo,
+            new PasswordPolicy(),
+            new RateLimiter($this->pdo),
+            new AuditLogger($this->pdo),
+            $this->config,
+        );
+        $session = $auth->login('idleuser', 'Idle-Pass-2026!', '127.0.0.1', 'phpunit');
+        $this->pdo->exec('UPDATE sessions SET last_seen_at = ' . (time() - 4000));
+
+        $this->expectException(\TeraLab\Api\Http\HttpException::class);
+        $auth->authenticate($session['session_id']);
+    }
 }

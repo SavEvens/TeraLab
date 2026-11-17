@@ -24,6 +24,7 @@ use TeraLab\Api\Http\Controllers\AuthController;
 use TeraLab\Api\Http\Controllers\EngineController;
 use TeraLab\Api\Http\Controllers\ImageController;
 use TeraLab\Api\Http\Controllers\HealthController;
+use TeraLab\Api\Http\Controllers\HostController;
 use TeraLab\Api\Http\Controllers\LabController;
 use TeraLab\Api\Http\Controllers\NetworkController;
 use TeraLab\Api\Http\Controllers\NodeController;
@@ -34,6 +35,7 @@ use TeraLab\Api\Http\Middleware\AuthMiddleware;
 use TeraLab\Api\Http\Middleware\CsrfMiddleware;
 use TeraLab\Api\Http\Middleware\JsonErrorMiddleware;
 use TeraLab\Api\Http\Middleware\RequestIdMiddleware;
+use TeraLab\Api\Http\Middleware\RoleMiddleware;
 use TeraLab\Api\Http\Middleware\SecurityHeadersMiddleware;
 use TeraLab\Api\Http\Middleware\V1AuthMiddleware;
 use TeraLab\Api\Image\ImageStore;
@@ -84,6 +86,8 @@ final class App
             Migrator::class,
             static fn (PDO $pdo, Config $config): Migrator => new Migrator($pdo, $config->migrationsDir())
         );
+        $editorRole = static fn (): RoleMiddleware => new RoleMiddleware($container->get(\TeraLab\Api\Auth\AccessService::class), 'editor');
+        $adminRole = static fn (): RoleMiddleware => new RoleMiddleware($container->get(\TeraLab\Api\Auth\AccessService::class), 'admin');
         $agent = $this->agent;
         $container->set(
             AgentClient::class,
@@ -108,6 +112,12 @@ final class App
         $app->post('/api/v2/setup', fn ($request, $response) => $container->get(AuthController::class)->setup($request, $response));
         $app->post('/api/v2/auth/login', fn ($request, $response) => $container->get(AuthController::class)->login($request, $response));
         $app->get('/api/v2/auth/me', fn ($request, $response) => $container->get(AuthController::class)->me($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/auth/password', fn ($request, $response) => $container->get(AuthController::class)->changePassword($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/auth/sessions/revoke', fn ($request, $response) => $container->get(AuthController::class)->revokeSessions($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/auth/logout', fn ($request, $response) => $container->get(AuthController::class)->logout($request, $response))
             ->add($container->get(CsrfMiddleware::class))
@@ -144,29 +154,46 @@ final class App
         $app->post('/api/v2/labs/{id}/wipe', fn ($request, $response, array $args) => $labs->wipe($request, $response, $args))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/duplicate', fn ($request, $response, array $args) => $labs->duplicate($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/labs/{id}/permissions', fn ($request, $response, array $args) => $labs->permissions($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/permissions', fn ($request, $response, array $args) => $labs->grant($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->delete('/api/v2/labs/{id}/permissions/{user}', fn ($request, $response, array $args) => $labs->revoke($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
 
         // Node lifecycle is delegated to the privileged Go agent.
         $nodes = $container->get(NodeController::class);
         $app->post('/api/v2/nodes/start', fn ($request, $response) => $nodes->start($request, $response))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/nodes/stop', fn ($request, $response) => $nodes->stop($request, $response))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/nodes/wipe', fn ($request, $response) => $nodes->wipe($request, $response))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/nodes/status', fn ($request, $response) => $nodes->status($request, $response))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/nodes/console', fn ($request, $response) => $nodes->console($request, $response))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
         $networks = $container->get(NetworkController::class);
         $app->post('/api/v2/labs/{id}/networks', fn ($request, $response, array $args) => $networks->ensure($request, $response, $args))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/labs/{id}/networks/cleanup', fn ($request, $response, array $args) => $networks->cleanup($request, $response, $args))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
@@ -176,16 +203,31 @@ final class App
         $app->get('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->show($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/images', fn ($request, $response) => $images->upload($request, $response))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->delete($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->patch('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->rename($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/templates', fn ($request, $response) => $images->templates($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->put('/api/v2/images/{id}/template', fn ($request, $response, array $args) => $images->mapTemplate($request, $response, $args))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
         $engines = $container->get(EngineController::class);
         $app->get('/api/v2/engines', fn ($request, $response) => $engines->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/system/host', fn ($request, $response) => $container->get(HostController::class)->status($request, $response))
+            ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/maintenance/reconcile', fn ($request, $response) => $engines->reconcile($request, $response))
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 

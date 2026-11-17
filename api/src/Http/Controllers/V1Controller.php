@@ -8,6 +8,8 @@ namespace TeraLab\Api\Http\Controllers;
 
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use TeraLab\Api\Auth\AccessService;
+use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Auth\AuthService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
@@ -24,6 +26,8 @@ final class V1Controller
         private readonly Config $config,
         private readonly LabRepository $labs,
         private readonly LabService $labService,
+        private readonly AccessService $access,
+        private readonly AuditLogger $audit,
     ) {
     }
 
@@ -177,7 +181,7 @@ final class V1Controller
      */
     public function nodeStart(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        return $this->nodeAction($response, $args, 'start');
+        return $this->nodeAction($request, $response, $args, 'start');
     }
 
     /**
@@ -185,7 +189,7 @@ final class V1Controller
      */
     public function nodeStop(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        return $this->nodeAction($response, $args, 'stop');
+        return $this->nodeAction($request, $response, $args, 'stop');
     }
 
     /**
@@ -193,13 +197,13 @@ final class V1Controller
      */
     public function nodeWipe(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        return $this->nodeAction($response, $args, 'wipe');
+        return $this->nodeAction($request, $response, $args, 'wipe');
     }
 
     /**
      * @param array<string, string> $args
      */
-    private function nodeAction(ResponseInterface $response, array $args, string $action): ResponseInterface
+    private function nodeAction(ServerRequestInterface $request, ResponseInterface $response, array $args, string $action): ResponseInterface
     {
         $lab = $this->labs->findByPath((string) ($args['path'] ?? ''));
         if ($lab === null) {
@@ -208,18 +212,27 @@ final class V1Controller
         if ($lab === null) {
             return LegacyJson::error($response, 404, 'fail', 'Lab not found.');
         }
+        try {
+            $user = $this->access->user($request);
+            $this->access->requireRole($user, 'editor');
+            $this->access->assertLabAccess($user, (string) $lab['id']);
+        } catch (HttpException $exception) {
+            return LegacyJson::error($response, $exception->status, 'fail', $exception->getMessage());
+        }
         $nodeID = (string) ($args['node'] ?? '');
+        $isAdmin = $this->access->isAdmin($user);
 
         try {
             $data = match ($action) {
-                'start' => $this->labService->startNode((string) $lab['id'], $nodeID),
-                'stop' => $this->labService->stopNode((string) $lab['id'], $nodeID),
-                'wipe' => $this->labService->wipeNode((string) $lab['id'], $nodeID),
+                'start' => $this->labService->startNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
+                'stop' => $this->labService->stopNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
+                'wipe' => $this->labService->wipeNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
                 default => [],
             };
         } catch (HttpException $exception) {
             return LegacyJson::error($response, $exception->status, 'fail', $exception->getMessage());
         }
+        $this->audit->log((string) $user['id'], $this->ip($request), 'v1.node.' . $action, (string) $lab['id'], 'success', ['node' => $nodeID]);
 
         return LegacyJson::success($response, $data, 'Node ' . $action . ' accepted.');
     }

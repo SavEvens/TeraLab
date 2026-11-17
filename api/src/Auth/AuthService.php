@@ -148,7 +148,7 @@ final class AuthService
     public function authenticate(string $sessionId): array
     {
         $statement = $this->pdo->prepare(
-            'SELECT s.id_hash, s.csrf_hash, s.expires_at, '
+            'SELECT s.id_hash, s.csrf_hash, s.expires_at, s.last_seen_at, '
             . 'u.id, u.username, u.email, u.name, u.role, u.expiration '
             . 'FROM sessions s JOIN users u ON u.id = s.user_id '
             . 'WHERE s.id_hash = :id_hash'
@@ -164,6 +164,11 @@ final class AuthService
             $delete = $this->pdo->prepare('DELETE FROM sessions WHERE id_hash = :id_hash');
             $delete->execute([':id_hash' => (string) $row['id_hash']]);
             throw new HttpException(401, 'Session expired.');
+        }
+        if ((int) $row['last_seen_at'] + $this->config->idleTtl < time()) {
+            $delete = $this->pdo->prepare('DELETE FROM sessions WHERE id_hash = :id_hash');
+            $delete->execute([':id_hash' => (string) $row['id_hash']]);
+            throw new HttpException(401, 'Session expired after inactivity.');
         }
 
         if ((int) $row['expiration'] >= 0 && (int) $row['expiration'] < time()) {
@@ -181,6 +186,45 @@ final class AuthService
                 'expires_at' => (int) $row['expires_at'],
             ],
         ];
+    }
+
+    public function changePassword(string $userId, string $sessionId, string $current, string $new, string $ip): void
+    {
+        $statement = $this->pdo->prepare('SELECT * FROM users WHERE id = :id');
+        $statement->execute([':id' => $userId]);
+        $user = $statement->fetch();
+        if (!is_array($user) || !password_verify($current, (string) $user['password_hash'])) {
+            $this->audit->log($userId, $ip, 'auth.password', null, 'failure', ['reason' => 'current_password']);
+            throw new HttpException(403, 'The current password is incorrect.');
+        }
+        $errors = $this->passwordPolicy->validate($new);
+        if ($errors !== []) {
+            throw new HttpException(422, 'Password does not meet the policy.', ['password' => $errors]);
+        }
+
+        $rehash = password_hash($new, PASSWORD_ARGON2ID, [
+            'memory_cost' => 65536,
+            'time_cost' => 3,
+            'threads' => 2,
+        ]);
+        $update = $this->pdo->prepare(
+            'UPDATE users SET password_hash = :password_hash, legacy_password_hash = NULL, updated_at = :updated_at WHERE id = :id'
+        );
+        $update->execute([':password_hash' => $rehash, ':updated_at' => time(), ':id' => $userId]);
+
+        $revoke = $this->pdo->prepare('DELETE FROM sessions WHERE user_id = :user_id AND id_hash != :current');
+        $revoke->execute([':user_id' => $userId, ':current' => hash('sha256', $sessionId)]);
+        $this->audit->log($userId, $ip, 'auth.password', null, 'success');
+    }
+
+    public function revokeOtherSessions(string $userId, string $sessionId, string $ip): int
+    {
+        $statement = $this->pdo->prepare('DELETE FROM sessions WHERE user_id = :user_id AND id_hash != :current');
+        $statement->execute([':user_id' => $userId, ':current' => hash('sha256', $sessionId)]);
+        $count = $statement->rowCount();
+        $this->audit->log($userId, $ip, 'auth.sessions.revoke', null, 'success', ['revoked' => $count]);
+
+        return $count;
     }
 
     public function logout(string $sessionId, ?string $userId, string $ip): void
