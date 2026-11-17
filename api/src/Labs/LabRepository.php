@@ -79,6 +79,21 @@ final class LabRepository
         return null;
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function findByPath(string $path): ?array
+    {
+        $normalized = '/' . ltrim($path, '/');
+        foreach ($this->all() as $lab) {
+            if ('/' . (string) $lab['path'] === $normalized) {
+                return $lab;
+            }
+        }
+
+        return null;
+    }
+
     public function count(): int
     {
         return count($this->all());

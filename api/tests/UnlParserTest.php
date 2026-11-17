@@ -19,6 +19,9 @@ final class UnlParserTest extends TestCase
         self::assertSame('sample-lab', $lab['id']);
         self::assertSame('Sample Lab', $lab['name']);
         self::assertSame('TeraLab', $lab['author']);
+        self::assertSame('1', $lab['version']);
+        self::assertSame('sample.unl', $lab['filename']);
+        self::assertSame('Sample fixture for API tests.', $lab['description']);
         self::assertSame(1, $lab['nodes']);
         self::assertSame(1, $lab['networks']);
     }

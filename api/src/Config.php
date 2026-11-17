@@ -26,11 +26,11 @@ final class Config
         $values = self::loadConfigFile();
         $root = self::env(
             'TERALAB_ROOT',
-            self::stringValue($values, 'root', dirname(__DIR__, 2)),
+            self::stringValue($values, 'root', self::defaultRoot()),
         );
         $dataDir = self::env(
             'TERALAB_DATA_DIR',
-            self::stringValue($values, 'data_dir', $root . '/var'),
+            self::stringValue($values, 'data_dir', '/var/lib/teralab'),
         );
 
         return new self(
@@ -42,7 +42,7 @@ final class Config
             ),
             labsDir: self::env(
                 'TERALAB_LABS',
-                self::stringValue($values, 'labs_dir', $root . '/labs'),
+                self::stringValue($values, 'labs_dir', $dataDir . '/labs'),
             ),
             cookieSecure: self::boolEnv(
                 'TERALAB_COOKIE_SECURE',
@@ -88,6 +88,11 @@ final class Config
     public function migrationsDir(): string
     {
         return dirname(__DIR__) . '/migrations';
+    }
+
+    private static function defaultRoot(): string
+    {
+        return is_dir('/opt/teralab') ? '/opt/teralab' : dirname(__DIR__, 2);
     }
 
     /**

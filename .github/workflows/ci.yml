@@ -91,7 +91,8 @@ jobs:
             scripts/check-artifact-policy.sh \
             scripts/php-lint.sh \
             scripts/check-secrets.sh \
-            scripts/dev-vm.sh
+            scripts/dev-vm.sh \
+            scripts/setup-runtime-paths.sh
 
   python-syntax:
     name: Python syntax

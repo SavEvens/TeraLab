@@ -15,7 +15,7 @@ final class UnlParser
     private const MAX_BYTES = 10485760;
 
     /**
-     * @return array{id: string, name: string, author: string, description: string, nodes: int, networks: int}
+     * @return array{id: string, name: string, author: string, description: string, body: string, version: string, filename: string, nodes: int, networks: int}
      */
     public function parse(string $path): array
     {
@@ -45,10 +45,13 @@ final class UnlParser
         }
 
         $description = '';
+        $body = '';
         foreach ($root->childNodes as $child) {
             if ($child instanceof DOMElement && $child->tagName === 'description') {
                 $description = trim($child->textContent);
-                break;
+            }
+            if ($child instanceof DOMElement && $child->tagName === 'body') {
+                $body = trim($child->textContent);
             }
         }
 
@@ -59,6 +62,9 @@ final class UnlParser
             'name' => $name,
             'author' => trim($root->getAttribute('author')),
             'description' => $description,
+            'body' => $body,
+            'version' => trim($root->getAttribute('version')),
+            'filename' => basename($path),
             'nodes' => $root->getElementsByTagName('node')->length,
             'networks' => $root->getElementsByTagName('network')->length,
         ];

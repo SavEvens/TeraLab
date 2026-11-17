@@ -30,10 +30,10 @@ the file:
 | Variable | Default | Purpose |
 |---|---|---|
 | `TERALAB_CONFIG` | `/etc/teralab/config.php` | Optional config file |
-| `TERALAB_ROOT` | repository root | Product root |
-| `TERALAB_DATA_DIR` | `$TERALAB_ROOT/var` | Runtime state directory |
+| `TERALAB_ROOT` | `/opt/teralab` if present, else repository root | Product root |
+| `TERALAB_DATA_DIR` | `/var/lib/teralab` | Runtime state directory |
 | `TERALAB_DB` | `$TERALAB_DATA_DIR/database.sdb` | SQLite database |
-| `TERALAB_LABS` | `$TERALAB_ROOT/labs` | Lab search root |
+| `TERALAB_LABS` | `$TERALAB_DATA_DIR/labs` | Lab search root |
 | `TERALAB_COOKIE_SECURE` | `1` | Secure session cookie |
 | `TERALAB_SESSION_TTL` | `3600` | Session lifetime in seconds |
 | `TERALAB_ENV` | `production` | Environment label |
@@ -54,6 +54,13 @@ php -S 127.0.0.1:8090 -t public public/index.php
 
 The first request path to use is `GET /api/v2/health`, then `POST /api/v2/setup`
 to create the administrator.
+
+The legacy `html/api.php` entry point loads this application and serves both
+`/api/v2/*` and the v1 compatibility routes (`/api/auth`, `/api/status`,
+`/api/folders`, `/api/labs`). The production layout expects `/opt/teralab`
+and a `/opt/unetlab` compatibility symlink; runtime state defaults to
+`/var/lib/teralab`. Create the layout as root with
+`scripts/setup-runtime-paths.sh --root /opt/teralab`.
 
 ## Boundaries
 

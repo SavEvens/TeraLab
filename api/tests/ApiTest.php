@@ -14,6 +14,7 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Psr7\Factory\StreamFactory;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
+use TeraLab\Api\Http\V1Session;
 
 final class ApiTest extends TestCase
 {
@@ -150,6 +151,65 @@ final class ApiTest extends TestCase
         self::assertSame('ok', $this->json($status)['status']);
     }
 
+    public function testV1AdapterAuthStatusFoldersAndLabs(): void
+    {
+        $this->createAdmin();
+
+        $login = $this->request('POST', '/api/auth/login', [
+            'username' => 'admin',
+            'password' => self::PASSWORD,
+        ]);
+        self::assertSame(200, $login->getStatusCode());
+        self::assertSame('success', $this->json($login)['status']);
+        $legacyCookie = $this->cookieNamed($login, V1Session::LEGACY_COOKIE);
+        self::assertNotSame('', $legacyCookie);
+        self::assertStringContainsString('Path=/api/', $login->getHeaderLine('Set-Cookie'));
+
+        $auth = $this->request('GET', '/api/auth', [], [], $legacyCookie);
+        self::assertSame(200, $auth->getStatusCode());
+        $authBody = $this->json($auth);
+        self::assertSame('admin', $authBody['data']['username']);
+        self::assertSame('/', $authBody['data']['folder']);
+        self::assertSame(0, $authBody['data']['tenant']);
+
+        $status = $this->request('GET', '/api/status', [], [], $legacyCookie);
+        self::assertSame(200, $status->getStatusCode());
+        self::assertSame('1.1.0', $this->json($status)['data']['version']);
+
+        $folders = $this->request('GET', '/api/folders', [], [], $legacyCookie);
+        self::assertSame(200, $folders->getStatusCode());
+        $foldersBody = $this->json($folders);
+        self::assertCount(1, $foldersBody['data']['labs']);
+        self::assertSame('sample.unl', $foldersBody['data']['labs'][0]['file']);
+
+        $labs = $this->request('GET', '/api/labs', [], [], $legacyCookie);
+        self::assertSame(200, $labs->getStatusCode());
+        self::assertSame('sample-lab', $this->json($labs)['data'][0]['id']);
+
+        $lab = $this->request('GET', '/api/labs/sample.unl', [], [], $legacyCookie);
+        self::assertSame(200, $lab->getStatusCode());
+        $labBody = $this->json($lab);
+        self::assertSame('Sample Lab', $labBody['data']['name']);
+        self::assertSame('sample.unl', $labBody['data']['filename']);
+
+        $unsupported = $this->request('POST', '/api/labs', [], [], $legacyCookie);
+        self::assertSame(501, $unsupported->getStatusCode());
+
+        $logout = $this->request('GET', '/api/auth/logout', [], [], $legacyCookie);
+        self::assertSame(200, $logout->getStatusCode());
+        self::assertStringContainsString('Max-Age=0', $logout->getHeaderLine('Set-Cookie'));
+
+        $after = $this->request('GET', '/api/auth', [], [], $legacyCookie);
+        self::assertSame(401, $after->getStatusCode());
+    }
+
+    public function testV1StatusUses412WhenUnauthenticated(): void
+    {
+        $response = $this->request('GET', '/api/status');
+        self::assertSame(412, $response->getStatusCode());
+        self::assertSame('unauthorized', $this->json($response)['status']);
+    }
+
     private function createAdmin(): ResponseInterface
     {
         return $this->request('POST', '/api/v2/setup', [
@@ -180,7 +240,10 @@ final class ApiTest extends TestCase
             $request = $request->withHeader($name, $value);
         }
         if ($cookie !== null && $cookie !== '') {
-            $request = $request->withCookieParams([Config::COOKIE_NAME => $cookie]);
+            $request = $request->withCookieParams([
+                Config::COOKIE_NAME => $cookie,
+                V1Session::LEGACY_COOKIE => $cookie,
+            ]);
         }
         if ($body !== []) {
             $stream = (new StreamFactory())->createStream(
@@ -208,8 +271,13 @@ final class ApiTest extends TestCase
 
     private function cookie(ResponseInterface $response): string
     {
+        return $this->cookieNamed($response, Config::COOKIE_NAME);
+    }
+
+    private function cookieNamed(ResponseInterface $response, string $name): string
+    {
         $header = $response->getHeaderLine('Set-Cookie');
-        if (preg_match('/' . preg_quote(Config::COOKIE_NAME, '/') . '=([^;]+)/', $header, $matches) !== 1) {
+        if (preg_match('/' . preg_quote($name, '/') . '=([^;]+)/', $header, $matches) !== 1) {
             return '';
         }
 
