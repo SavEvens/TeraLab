@@ -93,7 +93,7 @@ func TestBuildQEMUArgs(t *testing.T) {
 	spec, _ := testSpec(t)
 	taps := []string{spec.TapName(0)}
 
-	args, err := BuildQEMUArgs(spec, taps, "/tmp/overlay.qcow2", nil)
+	args, err := BuildQEMUArgs(spec, taps, "/tmp/overlay.qcow2", nil, false)
 	if err != nil {
 		t.Fatalf("build args failed: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestBuildQEMUArgsRejectsTapMismatch(t *testing.T) {
 	spec.Ethernet = 2
 	spec.Networks = []string{"br0", "br1"}
 
-	if _, err := BuildQEMUArgs(spec, []string{"tl1"}, "", nil); err == nil {
+	if _, err := BuildQEMUArgs(spec, []string{"tl1"}, "", nil, false); err == nil {
 		t.Fatal("expected tap mismatch to be rejected")
 	}
 }
@@ -138,7 +138,7 @@ func TestBuildQEMUArgsUsesISO(t *testing.T) {
 		t.Fatalf("validation failed: %v", err)
 	}
 
-	args, err := BuildQEMUArgs(spec, nil, "", nil)
+	args, err := BuildQEMUArgs(spec, nil, "", nil, false)
 	if err != nil {
 		t.Fatalf("build args failed: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestBuildQEMUArgsForVNC(t *testing.T) {
 	spec.Console = "vnc"
 	vnc := &VNCConfig{Display: 7, MonitorPath: "/tmp/monitor.sock"}
 
-	args, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "/tmp/overlay.qcow2", vnc)
+	args, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "/tmp/overlay.qcow2", vnc, false)
 	if err != nil {
 		t.Fatalf("build args failed: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestBuildQEMUArgsRequiresVNCConfigForVNC(t *testing.T) {
 	spec, _ := testSpec(t)
 	spec.Console = "vnc"
 
-	if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", nil); err == nil {
+	if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", nil, false); err == nil {
 		t.Fatal("expected missing vnc configuration to be rejected")
 	}
 }
@@ -187,7 +187,7 @@ func TestBuildQEMUArgsRequiresVNCConfigForVNC(t *testing.T) {
 func TestBuildQEMUArgsRejectsVNCConfigForSerial(t *testing.T) {
 	spec, _ := testSpec(t)
 
-	if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", &VNCConfig{Display: 1}); err == nil {
+	if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", &VNCConfig{Display: 1}, false); err == nil {
 		t.Fatal("expected vnc configuration on a serial node to be rejected")
 	}
 }
@@ -202,5 +202,103 @@ func TestFreeVNCDisplayIsUnique(t *testing.T) {
 	}
 	if len(randomHex(8)) != 16 {
 		t.Fatal("expected a 16-character vnc password")
+	}
+}
+
+func TestVPCSValidation(t *testing.T) {
+	spec := Spec{ID: "pc-1", Name: "PC1", Engine: "vpcs", Ethernet: 1, Networks: []string{"br0"}}
+	spec.Normalize()
+	if err := spec.Validate(t.TempDir()); err != nil {
+		t.Fatalf("expected vpcs spec to validate: %v", err)
+	}
+
+	spec.Console = "vnc"
+	if err := spec.Validate(t.TempDir()); err == nil {
+		t.Fatal("expected vpcs vnc console to be rejected")
+	}
+
+	spec.Console = "telnet"
+	spec.Ethernet = 2
+	spec.Networks = []string{"br0", "br1"}
+	if err := spec.Validate(t.TempDir()); err == nil {
+		t.Fatal("expected multi-nic vpcs to be rejected")
+	}
+}
+
+func TestDynamipsValidationAndArgs(t *testing.T) {
+	images := t.TempDir()
+	image := filepath.Join(images, "c7200.bin")
+	if err := os.WriteFile(image, []byte("ios"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := Spec{
+		ID:       "r1",
+		LabID:    "lab1",
+		Name:     "R1",
+		Engine:   "dynamips",
+		Image:    image,
+		Platform: "c7200",
+		Ethernet: 2,
+		Networks: []string{"br0", "br1"},
+	}
+	spec.Normalize()
+	if err := spec.Validate(images); err != nil {
+		t.Fatalf("expected dynamips spec to validate: %v", err)
+	}
+	if len(spec.Slots) != 2 {
+		t.Fatalf("expected default slots for each interface, got %v", spec.Slots)
+	}
+
+	args, err := BuildDynamipsArgs(spec, []string{"tl1", "tl2"}, 20000)
+	if err != nil {
+		t.Fatalf("build dynamips args: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, expected := range []string{
+		"-P c7200",
+		"-r 512",
+		"-n 512",
+		"-p 20000",
+		"-s 0:0:tap:tl1",
+		"-s 0:1:tap:tl2",
+		image,
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected %q in %s", expected, joined)
+		}
+	}
+
+	spec.Platform = "not-a-platform"
+	if err := spec.Validate(images); err == nil {
+		t.Fatal("expected invalid platform to be rejected")
+	}
+}
+
+func TestIOLValidationAndArgs(t *testing.T) {
+	images := t.TempDir()
+	image := filepath.Join(images, "iol.bin")
+	if err := os.WriteFile(image, []byte("iol"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := Spec{ID: "iol1", Name: "IOL1", Engine: "iol", Image: image}
+	spec.Normalize()
+	if err := spec.Validate(images); err != nil {
+		t.Fatalf("expected iol spec to validate: %v", err)
+	}
+	args, err := BuildIOLArgs(spec, 7)
+	if err != nil {
+		t.Fatalf("build iol args: %v", err)
+	}
+	if strings.Join(args, " ") != "-e 0 -s 0 -m 512 -n 512 7" {
+		t.Fatalf("unexpected iol args: %v", args)
+	}
+
+	spec.Ethernet = 1
+	spec.Networks = []string{"br0"}
+	spec.Normalize()
+	if _, err := BuildIOLArgs(spec, 7); err == nil {
+		t.Fatal("expected iol ethernet bridging to be rejected")
 	}
 }

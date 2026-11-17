@@ -27,11 +27,15 @@ type Config struct {
 	DisableCgroups bool
 	QEMUBinary     string
 	QEMUImg        string
+	VPCSBinary     string
+	DynamipsBinary string
+	IOLIourc       string
 	VMUser         string
 	VMUID          uint32
 	VMGID          uint32
 	VMGroups       []uint32
 	AllowRootVM    bool
+	DisableKVM     bool
 }
 
 func Load() (Config, error) {
@@ -45,8 +49,12 @@ func Load() (Config, error) {
 		DisableCgroups: envBool("TERALAB_DISABLE_CGROUPS", false),
 		QEMUBinary:     env("TERALAB_QEMU", "/usr/bin/qemu-system-x86_64"),
 		QEMUImg:        env("TERALAB_QEMU_IMG", "/usr/bin/qemu-img"),
+		VPCSBinary:     env("TERALAB_VPCS", "/usr/bin/vpcs"),
+		DynamipsBinary: env("TERALAB_DYNAMIPS", "/usr/bin/dynamips"),
+		IOLIourc:       env("TERALAB_IOL_IOURC", "/etc/teralab/iourc"),
 		VMUser:         env("TERALAB_VM_USER", "teralab-vm"),
 		AllowRootVM:    envBool("TERALAB_ALLOW_ROOT_VM", false),
+		DisableKVM:     envBool("TERALAB_DISABLE_KVM", false),
 	}
 
 	secret := os.Getenv("TERALAB_AGENT_SECRET")

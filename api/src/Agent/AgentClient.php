@@ -96,6 +96,53 @@ final class AgentClient
     }
 
     /**
+     * @param list<array{id: string, name?: string}> $networks
+     * @return array<string, mixed>
+     */
+    public function ensureLab(string $labID, array $networks): array
+    {
+        return $this->request('POST', '/v1/lab.ensure', [
+            'lab_id' => $labID,
+            'networks' => $networks,
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function cleanupLab(string $labID): array
+    {
+        return $this->request('POST', '/v1/lab.cleanup', ['lab_id' => $labID]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function reconcile(): array
+    {
+        return $this->request('POST', '/v1/cleanup.stale');
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function engines(): array
+    {
+        $result = $this->request('GET', '/v1/engines');
+
+        /** @var list<array<string, mixed>> $result */
+        return $result;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function inspectImage(string $path): array
+    {
+        return $this->request('POST', '/v1/image.inspect', ['path' => $path]);
+    }
+
+    /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */

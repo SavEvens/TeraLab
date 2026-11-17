@@ -59,6 +59,7 @@ func (g *Gateway) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", g.handleSerial)
 	mux.HandleFunc("/vnc", g.handleVNC)
+	mux.HandleFunc("/tcp", g.handleTCP)
 	g.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -86,13 +87,14 @@ func (g *Gateway) handleSerial(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, "invalid or expired console token", http.StatusUnauthorized)
 		return
 	}
-	pty, ok := g.manager.PTY(nodeID)
+	session, ok := g.manager.AttachPTY(nodeID)
 	if !ok {
 		http.Error(writer, "node is not running", http.StatusNotFound)
 		return
 	}
+	defer session.Close()
 
-	g.bridge(writer, request, pty)
+	g.bridge(writer, request, session)
 }
 
 func (g *Gateway) handleVNC(writer http.ResponseWriter, request *http.Request) {
@@ -112,13 +114,38 @@ func (g *Gateway) handleVNC(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "cannot reach the vnc server", http.StatusBadGateway)
 		return
 	}
+	defer stream.Close()
 
 	g.bridge(writer, request, stream)
 }
 
-func (g *Gateway) bridge(writer http.ResponseWriter, request *http.Request, stream io.ReadWriteCloser) {
+func (g *Gateway) handleTCP(writer http.ResponseWriter, request *http.Request) {
+	nodeID, ok := g.tokens.Resolve(request.URL.Query().Get("token"))
+	if !ok {
+		http.Error(writer, "invalid or expired console token", http.StatusUnauthorized)
+		return
+	}
+	port, ok := g.manager.TCPConsole(nodeID)
+	if !ok {
+		http.Error(writer, "node has no tcp console", http.StatusNotFound)
+		return
+	}
+
+	stream, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), 5*time.Second)
+	if err != nil {
+		http.Error(writer, "cannot reach the console server", http.StatusBadGateway)
+		return
+	}
 	defer stream.Close()
 
+	g.bridge(writer, request, stream)
+}
+
+// bridge copies frames between a WebSocket and an engine stream.
+//
+// The stream is owned by the caller: the pty is shared with the node and must
+// survive viewer disconnects, while TCP streams are closed by their handlers.
+func (g *Gateway) bridge(writer http.ResponseWriter, request *http.Request, stream io.ReadWriteCloser) {
 	connection, err := g.upgrader.Upgrade(writer, request, nil)
 	if err != nil {
 		return

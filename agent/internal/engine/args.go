@@ -5,7 +5,6 @@ package engine
 
 import (
 	"errors"
-	"os"
 	"strconv"
 )
 
@@ -15,7 +14,7 @@ type VNCConfig struct {
 	MonitorPath string
 }
 
-func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig) ([]string, error) {
+func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig, kvm bool) ([]string, error) {
 	if len(taps) != spec.Ethernet {
 		return nil, errors.New("tap count does not match ethernet count")
 	}
@@ -54,7 +53,7 @@ func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig) ([]
 		)
 	}
 
-	if _, err := os.Stat("/dev/kvm"); err == nil {
+	if kvm {
 		args = append(args, "-accel", "kvm", "-cpu", "host")
 	} else {
 		args = append(args, "-accel", "tcg", "-cpu", "max")

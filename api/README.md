@@ -71,9 +71,26 @@ privileged Go agent. The web tier never launches QEMU itself.
 | `POST` | `/api/v2/nodes/wipe` | Stop and delete node state |
 | `GET` | `/api/v2/nodes/status?id=...` | Read node state |
 | `POST` | `/api/v2/nodes/console` | Issue a console token and path |
+| `POST` | `/api/v2/labs/{id}/networks` | Create lab bridges |
+| `POST` | `/api/v2/labs/{id}/networks/cleanup` | Remove lab bridges |
+| `POST` | `/api/v2/maintenance/reconcile` | Reconcile orphaned resources |
+| `GET` | `/api/v2/engines` | Engine availability |
+| `GET` | `/api/v2/images` | List images |
+| `POST` | `/api/v2/images` | Upload an image (multipart `file`) |
+| `GET` | `/api/v2/images/{id}` | Image metadata |
+| `DELETE` | `/api/v2/images/{id}` | Delete an unused image |
 
-`POST` requests require the session cookie and the `X-CSRF-Token` header.
-Console tokens are short-lived and bound to one node.
+`POST`, `PUT`, and `DELETE` requests require the session cookie and the
+`X-CSRF-Token` header. Console tokens are short-lived and bound to one node.
+
+## Images
+
+Uploads are streamed to a temporary file, checked for size and magic
+(qcow2 `QFI\xfb`, ISO 9660 `CD001`, ELF for IOL/Dynamips), inspected by the
+agent's `qemu-img`, hashed with SHA-256, and moved into
+`/var/lib/teralab/images/<kind>/<id>/` with a `meta.json`. Identical content is
+idempotent. Invalid uploads never create a database row, and deleting an image
+that a running node uses is refused.
 
 `nodes/console` returns `kind` (`telnet` or `vnc`) and `ws_path`. For VNC it
 also returns the generated VNC `password` for the browser client.

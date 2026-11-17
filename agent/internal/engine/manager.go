@@ -7,8 +7,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -21,27 +23,38 @@ import (
 	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/config"
+	"github.com/SavEvens/TeraLab/agent/internal/network"
 	"github.com/creack/pty"
 )
 
+// ErrEngineUnavailable marks a start failure caused by a missing engine binary
+// or image rather than a bad request.
+var ErrEngineUnavailable = errors.New("engine unavailable")
+
+const stateFileName = "node.json"
+
 type NodeInfo struct {
-	ID      string    `json:"id"`
-	LabID   string    `json:"lab_id,omitempty"`
-	Name    string    `json:"name"`
-	State   string    `json:"state"`
-	PID     int       `json:"pid,omitempty"`
-	Started time.Time `json:"started,omitempty"`
-	RunDir  string    `json:"run_dir"`
-	Taps    []string  `json:"taps,omitempty"`
-	Console string    `json:"console"`
-	Cgroup  string    `json:"cgroup,omitempty"`
-	VNCPort int       `json:"vnc_port,omitempty"`
+	ID          string    `json:"id"`
+	LabID       string    `json:"lab_id,omitempty"`
+	Name        string    `json:"name"`
+	Engine      string    `json:"engine"`
+	Image       string    `json:"image,omitempty"`
+	State       string    `json:"state"`
+	PID         int       `json:"pid,omitempty"`
+	Started     time.Time `json:"started,omitempty"`
+	RunDir      string    `json:"run_dir"`
+	Taps        []string  `json:"taps,omitempty"`
+	Console     string    `json:"console"`
+	ConsolePort int       `json:"console_port,omitempty"`
+	Cgroup      string    `json:"cgroup,omitempty"`
+	VNCPort     int       `json:"vnc_port,omitempty"`
 }
 
 type Node struct {
 	Spec        Spec
 	Cmd         *exec.Cmd
 	PTY         *os.File
+	Relay       io.Closer
 	RunDir      string
 	Overlay     string
 	Taps        []string
@@ -49,13 +62,21 @@ type Node struct {
 	VNCPort     int
 	VNCPassword string
 	MonitorPath string
+	ConsolePort int
+	StatePath   string
 	State       string
 	Started     time.Time
 	Done        chan struct{}
+
+	historyMu   sync.Mutex
+	history     []byte
+	subscribers map[chan []byte]struct{}
+	consoleDone chan struct{}
 }
 
 type Manager struct {
 	cfg    config.Config
+	net    *network.Manager
 	logger *slog.Logger
 	mu     sync.Mutex
 	nodes  map[string]*Node
@@ -64,18 +85,20 @@ type Manager struct {
 func NewManager(cfg config.Config, logger *slog.Logger) *Manager {
 	return &Manager{
 		cfg:    cfg,
+		net:    network.New(cfg.VMUser),
 		logger: logger,
 		nodes:  map[string]*Node{},
 	}
 }
 
+// Start validates a node spec and launches the matching engine.
 func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	spec.Normalize()
 	if err := spec.Validate(m.cfg.ImagesDir); err != nil {
 		return NodeInfo{}, err
 	}
 	if m.cfg.VMUID == 0 && !m.cfg.AllowRootVM {
-		return NodeInfo{}, errors.New("teralab-vm user is missing; refusing to run QEMU as root")
+		return NodeInfo{}, errors.New("teralab-vm user is missing; refusing to run engines as root")
 	}
 
 	m.mu.Lock()
@@ -85,20 +108,49 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	}
 	m.mu.Unlock()
 
-	runDir, err := m.runDir(spec)
+	runDir, err := m.prepareRunDir(spec)
 	if err != nil {
 		return NodeInfo{}, err
 	}
-	if err := os.MkdirAll(runDir, 0o750); err != nil {
-		return NodeInfo{}, fmt.Errorf("create run directory: %w", err)
+
+	var info NodeInfo
+	switch spec.Engine {
+	case "qemu", "":
+		info, err = m.startQEMU(spec, runDir)
+	case "vpcs":
+		info, err = m.startVPCS(spec, runDir)
+	case "dynamips":
+		info, err = m.startDynamips(spec, runDir)
+	case "iol":
+		info, err = m.startIOL(spec, runDir)
+	default:
+		err = fmt.Errorf("unsupported engine %q", spec.Engine)
 	}
-	// The per-lab directory must stay traversable for the unprivileged QEMU
-	// user, otherwise it cannot create the monitor socket or logs.
+	if err != nil {
+		_ = os.RemoveAll(runDir)
+		return NodeInfo{}, err
+	}
+
+	return info, nil
+}
+
+func (m *Manager) prepareRunDir(spec Spec) (string, error) {
+	runDir, err := m.runDir(spec)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(runDir, 0o750); err != nil {
+		return "", fmt.Errorf("create run directory: %w", err)
+	}
 	if labDir := filepath.Dir(runDir); labDir != m.cfg.RunDir {
 		m.chown(labDir)
 	}
 	m.chown(runDir)
 
+	return runDir, nil
+}
+
+func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 	overlay := ""
 	if spec.Image != "" {
 		overlay = filepath.Join(runDir, "overlay.qcow2")
@@ -111,7 +163,7 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	for index := 0; index < spec.Ethernet; index++ {
 		tap := spec.TapName(index)
 		bridge := spec.Networks[index]
-		if err := m.createTap(tap, bridge); err != nil {
+		if err := m.net.CreateTap(tap, bridge); err != nil {
 			m.cleanupTaps(taps)
 			return NodeInfo{}, err
 		}
@@ -155,7 +207,7 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 		return NodeInfo{}, fmt.Errorf("open qemu log: %w", err)
 	}
 
-	args, err := BuildQEMUArgs(spec, taps, overlay, vnc)
+	args, err := BuildQEMUArgs(spec, taps, overlay, vnc, m.kvmAvailable())
 	if err != nil {
 		_ = logFile.Close()
 		_ = ptmx.Close()
@@ -172,14 +224,8 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 		command.Stdout = logFile
 	}
 	command.Stderr = logFile
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if m.cfg.VMUID > 0 {
-		command.SysProcAttr.Credential = &syscall.Credential{
-			Uid:    m.cfg.VMUID,
-			Gid:    m.cfg.VMGID,
-			Groups: m.cfg.VMGroups,
-		}
-	}
+	m.limitProcess(command)
+	m.chown(runDir)
 
 	if err := command.Start(); err != nil {
 		_ = logFile.Close()
@@ -223,16 +269,14 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 		State:       "running",
 		Started:     time.Now(),
 		Done:        make(chan struct{}),
+		consoleDone: make(chan struct{}),
+		subscribers: map[chan []byte]struct{}{},
+	}
+	if node.PTY != nil {
+		go m.pumpPTY(node)
 	}
 
-	m.mu.Lock()
-	m.nodes[spec.ID] = node
-	m.mu.Unlock()
-
-	go m.wait(node)
-	m.logger.Info("node started", "id", spec.ID, "pid", command.Process.Pid, "run_dir", runDir)
-
-	return m.info(node), nil
+	return m.register(node)
 }
 
 func (m *Manager) Stop(id string) error {
@@ -281,6 +325,9 @@ func (m *Manager) Wipe(id string) error {
 	delete(m.nodes, id)
 	m.mu.Unlock()
 
+	if node.StatePath != "" {
+		_ = os.Remove(node.StatePath)
+	}
 	if err := os.RemoveAll(node.RunDir); err != nil {
 		return fmt.Errorf("remove run directory: %w", err)
 	}
@@ -326,17 +373,6 @@ func (m *Manager) Count() int {
 	return count
 }
 
-func (m *Manager) PTY(id string) (*os.File, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	node, ok := m.nodes[id]
-	if !ok || node.State != "running" || node.PTY == nil {
-		return nil, false
-	}
-
-	return node.PTY, true
-}
-
 // VNC returns the loopback VNC port and password for a running node.
 func (m *Manager) VNC(id string) (int, string, bool) {
 	m.mu.Lock()
@@ -349,6 +385,29 @@ func (m *Manager) VNC(id string) (int, string, bool) {
 	return node.VNCPort, node.VNCPassword, true
 }
 
+// TCPConsole returns the loopback TCP console port for engines that do not
+// expose a pty (currently Dynamips).
+func (m *Manager) TCPConsole(id string) (int, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	node, ok := m.nodes[id]
+	if !ok || node.State != "running" || node.ConsolePort == 0 {
+		return 0, false
+	}
+
+	return node.ConsolePort, true
+}
+
+// EnsureLab creates the bridges for a lab's networks.
+func (m *Manager) EnsureLab(labID string, networkIDs []string) (map[string]string, error) {
+	return m.net.EnsureLab(labID, networkIDs)
+}
+
+// CleanupLab removes the bridges owned by one lab.
+func (m *Manager) CleanupLab(labID string) ([]string, error) {
+	return m.net.CleanupLab(labID)
+}
+
 func (m *Manager) Shutdown() {
 	for _, info := range m.List() {
 		if info.State == "running" {
@@ -358,10 +417,26 @@ func (m *Manager) Shutdown() {
 }
 
 func (m *Manager) QEMUVersion(ctx context.Context) string {
-	command := exec.CommandContext(ctx, m.cfg.QEMUBinary, "--version")
+	return binaryVersion(ctx, m.cfg.QEMUBinary)
+}
+
+func (m *Manager) VPCSVersion(ctx context.Context) string {
+	return binaryVersion(ctx, m.cfg.VPCSBinary)
+}
+
+func (m *Manager) DynamipsVersion(ctx context.Context) string {
+	return binaryVersion(ctx, m.cfg.DynamipsBinary)
+}
+
+func binaryVersion(ctx context.Context, binary string) string {
+	command := exec.CommandContext(ctx, binary, "--version")
 	output, err := command.Output()
 	if err != nil {
-		return ""
+		command = exec.CommandContext(ctx, binary, "-v")
+		output, err = command.CombinedOutput()
+		if err != nil {
+			return ""
+		}
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	if len(lines) == 0 {
@@ -381,10 +456,17 @@ func (m *Manager) wait(node *Node) {
 			_ = node.PTY.Close()
 			node.PTY = nil
 		}
+		if node.Relay != nil {
+			_ = node.Relay.Close()
+			node.Relay = nil
+		}
 		m.cleanupTaps(node.Taps)
 		node.Taps = nil
 		m.removeCgroup(node.CgroupPath)
 		node.CgroupPath = ""
+		if node.StatePath != "" {
+			_ = os.Remove(node.StatePath)
+		}
 		close(node.Done)
 	}
 	m.mu.Unlock()
@@ -392,22 +474,58 @@ func (m *Manager) wait(node *Node) {
 
 func (m *Manager) info(node *Node) NodeInfo {
 	info := NodeInfo{
-		ID:      node.Spec.ID,
-		LabID:   node.Spec.LabID,
-		Name:    node.Spec.Name,
-		State:   node.State,
-		RunDir:  node.RunDir,
-		Taps:    append([]string(nil), node.Taps...),
-		Console: node.Spec.Console,
-		Started: node.Started,
-		Cgroup:  node.CgroupPath,
-		VNCPort: node.VNCPort,
+		ID:          node.Spec.ID,
+		LabID:       node.Spec.LabID,
+		Name:        node.Spec.Name,
+		Engine:      node.Spec.Engine,
+		Image:       node.Spec.Image,
+		State:       node.State,
+		RunDir:      node.RunDir,
+		Taps:        append([]string(nil), node.Taps...),
+		Console:     node.Spec.Console,
+		ConsolePort: node.ConsolePort,
+		Started:     node.Started,
+		Cgroup:      node.CgroupPath,
+		VNCPort:     node.VNCPort,
 	}
 	if node.Cmd != nil && node.Cmd.Process != nil {
 		info.PID = node.Cmd.Process.Pid
 	}
 
 	return info
+}
+
+func (m *Manager) register(node *Node) (NodeInfo, error) {
+	state := nodeState{
+		ID:      node.Spec.ID,
+		LabID:   node.Spec.LabID,
+		Engine:  node.Spec.Engine,
+		Exe:     node.Cmd.Path,
+		PID:     node.Cmd.Process.Pid,
+		Taps:    append([]string(nil), node.Taps...),
+		Cgroup:  node.CgroupPath,
+		Started: node.Started.UTC().Format(time.RFC3339),
+	}
+	statePath := filepath.Join(node.RunDir, stateFileName)
+	if data, err := json.MarshalIndent(state, "", "  "); err == nil {
+		if err := os.WriteFile(statePath, data, 0o640); err == nil {
+			node.StatePath = statePath
+		}
+	}
+
+	m.mu.Lock()
+	m.nodes[node.Spec.ID] = node
+	m.mu.Unlock()
+
+	go m.wait(node)
+	m.logger.Info("node started",
+		"id", node.Spec.ID,
+		"engine", node.Spec.Engine,
+		"pid", node.Cmd.Process.Pid,
+		"run_dir", node.RunDir,
+	)
+
+	return m.info(node), nil
 }
 
 func (m *Manager) runDir(spec Spec) (string, error) {
@@ -439,32 +557,20 @@ func (m *Manager) createOverlay(image, overlay string) error {
 	return nil
 }
 
-func (m *Manager) createTap(tap, bridge string) error {
-	_ = exec.Command("ip", "link", "delete", tap).Run()
-	args := []string{"tuntap", "add", "dev", tap, "mode", "tap"}
-	if m.cfg.VMUID > 0 {
-		args = append(args, "user", m.cfg.VMUser)
-	}
-	if output, err := exec.Command("ip", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("create tap %s: %s: %w", tap, strings.TrimSpace(string(output)), err)
-	}
-	if bridge != "" {
-		if output, err := exec.Command("ip", "link", "set", "dev", tap, "master", bridge).CombinedOutput(); err != nil {
-			_ = exec.Command("ip", "link", "delete", tap).Run()
-			return fmt.Errorf("attach tap %s to %s: %s: %w", tap, bridge, strings.TrimSpace(string(output)), err)
-		}
-	}
-	if output, err := exec.Command("ip", "link", "set", "dev", tap, "up").CombinedOutput(); err != nil {
-		_ = exec.Command("ip", "link", "delete", tap).Run()
-		return fmt.Errorf("bring tap %s up: %s: %w", tap, strings.TrimSpace(string(output)), err)
-	}
-
-	return nil
-}
-
 func (m *Manager) cleanupTaps(taps []string) {
 	for _, tap := range taps {
-		_ = exec.Command("ip", "link", "delete", tap).Run()
+		_ = m.net.DeleteLink(tap)
+	}
+}
+
+func (m *Manager) limitProcess(command *exec.Cmd) {
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if m.cfg.VMUID > 0 {
+		command.SysProcAttr.Credential = &syscall.Credential{
+			Uid:    m.cfg.VMUID,
+			Gid:    m.cfg.VMGID,
+			Groups: m.cfg.VMGroups,
+		}
 	}
 }
 
@@ -496,7 +602,7 @@ func (m *Manager) applyCgroup(pid int, spec Spec) (string, error) {
 	}
 	if err := os.WriteFile(filepath.Join(child, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o644); err != nil {
 		_ = os.Remove(child)
-		return "", fmt.Errorf("move qemu into cgroup: %w", err)
+		return "", fmt.Errorf("move pid into cgroup: %w", err)
 	}
 
 	return child, nil
@@ -563,6 +669,15 @@ func (m *Manager) setVNCPassword(monitorPath, password string) error {
 	_, _ = connection.Read(response)
 
 	return nil
+}
+
+func (m *Manager) kvmAvailable() bool {
+	if m.cfg.DisableKVM {
+		return false
+	}
+	_, err := os.Stat("/dev/kvm")
+
+	return err == nil
 }
 
 func (m *Manager) chown(path string) {
