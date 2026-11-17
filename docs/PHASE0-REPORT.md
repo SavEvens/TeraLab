@@ -28,8 +28,8 @@
 | VM web | `http://127.0.0.1:8080/` |
 | Guest PHP | 8.4.27; FPM active and Apache config enabled |
 | Guest QEMU | 10.0.13 |
-| Guest Node.js | 24.22.3 LTS in `~/.local/node`; npm 11.19.1 |
-| Guest Go | 1.27.4 in `~/.local/go` |
+| Guest Node.js | 24.22.3 LTS in `~/.local/node`; npm 11.19.1; `/usr/local/bin` symlinks for non-interactive SSH |
+| Guest Go | 1.27.4 in `~/.local/go`; `/usr/local/bin` symlinks |
 | Guest KVM | `/dev/kvm` usable; `savanna` added to `kvm` group; nested KVM test passes |
 | Docker | 26.1.5 on host; `alpine:3.20` pulled and runs (`docker-ok`) |
 | Reference | Login verified; screenshots captured |

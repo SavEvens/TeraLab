@@ -75,14 +75,17 @@ TeraLab application are configured in later milestones.
 | Go | 1.27.4 | `~/.local/go` |
 
 Both were installed from official tarballs with SHA-256 verification. The
-`PATH` entry is in `~/.bashrc`:
+`PATH` entry is in `~/.bashrc`/`~/.profile`, and `/usr/local/bin` symlinks
+make `node`, `npm`, `npx`, `go`, and `gofmt` work in non-interactive SSH
+sessions:
 
 ```sh
 export PATH="$HOME/.local/node/bin:$HOME/.local/go/bin:$PATH"
 ```
 
 Node is build-time only; the runtime serves static assets. Go builds the
-agent as a single binary.
+agent as a single binary. Re-run `scripts/dev-vm.sh provision` after
+installing the toolchains to refresh the symlinks.
 
 ## Nested KVM check
 

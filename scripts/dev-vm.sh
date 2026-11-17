@@ -200,6 +200,9 @@ status_vm() {
 }
 
 provision_vm() {
+	# The remote script is intentionally single-quoted so $HOME/$b expand on
+	# the guest, not on the host.
+	# shellcheck disable=SC2016
 	ssh_cmd '
 		set -e
 		sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
@@ -215,6 +218,16 @@ provision_vm() {
 		sudo a2enmod proxy proxy_fcgi rewrite headers ssl >/dev/null
 		sudo a2enconf php8.4-fpm >/dev/null
 		sudo systemctl enable --now php8.4-fpm apache2 >/dev/null
+		if [ -x "$HOME/.local/node/bin/node" ]; then
+			for b in node npm npx; do
+				sudo ln -sfn "$HOME/.local/node/bin/$b" "/usr/local/bin/$b"
+			done
+		fi
+		if [ -x "$HOME/.local/go/bin/go" ]; then
+			for b in go gofmt; do
+				sudo ln -sfn "$HOME/.local/go/bin/$b" "/usr/local/bin/$b"
+			done
+		fi
 		printf "provisioned: "
 		php -v | head -1
 	'
