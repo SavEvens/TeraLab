@@ -21,5 +21,16 @@ Separate engine components (not vendored by this baseline):
 Third-party libraries:
   Their original licences apply; see the package manifests and source headers.
 
+Development and CI tooling (not distributed with TeraLab):
+  Go toolchain — BSD-3-Clause
+  Node.js (build only) — MIT and other licences
+  Playwright (reference observation, outside this repository) — Apache-2.0
+  Chromium (system package) — BSD-3-Clause and other licences
+  ShellCheck — GPL-3.0-or-later (invoked as a tool, not linked)
+  Bats — MIT
+  Composer — MIT
+  Debian cloud image and cloud-init (development VM only) — GPL-2.0-or-later
+  and Apache-2.0
+
 TeraLab is an independent UNetLab-derived fork. It is not endorsed by UNetLab
 or its contributors.

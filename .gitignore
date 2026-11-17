@@ -60,3 +60,23 @@ crashlytics-build.properties
 
 # Local agent instructions (not part of the release)
 /AGENTS.md
+
+# TeraLab development/build artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+/dist/
+/build/
+/coverage/
+*.log
+.vscode/
+.idea/
+
+# Local test images and vendor artifacts (never commit or redistribute)
+*.qcow2
+*.qcow2.part
+*.iso
+*.img
+*.bin
+/test_images/

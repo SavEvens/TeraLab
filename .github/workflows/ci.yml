@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  licence:
+    name: Licence headers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check SPDX headers
+        run: ./scripts/check-licence-headers.sh
+
+  php-lint:
+    name: PHP lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+      - name: Lint tracked PHP
+        run: ./scripts/php-lint.sh
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: ShellCheck TeraLab scripts
+        run: |
+          shellcheck \
+            scripts/check-licence-headers.sh \
+            scripts/php-lint.sh \
+            scripts/check-secrets.sh \
+            scripts/dev-vm.sh
+
+  python-syntax:
+    name: Python syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse tracked Python
+        run: |
+          python3 - <<'PY'
+          import ast
+          import glob
+          for path in sorted(glob.glob("scripts/*.py")):
+              with open(path, encoding="utf-8") as handle:
+                  ast.parse(handle.read(), filename=path)
+              print("ok", path)
+          PY
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan tracked files
+        run: ./scripts/check-secrets.sh
+
+  # Phase 1 jobs (Composer/PHPUnit/PHPStan, npm/Vitest, Go, integration)
+  # are added once api/, ui/, and agent/ exist.
