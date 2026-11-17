@@ -122,6 +122,18 @@ are permitted without a tracked reason.
 | ADRs approved | Met |
 | Local images inventoried; smoke results recorded | Met for Docker/IOL; C8000v boot matrix pending |
 
+## Follow-up closeout
+
+- The five broken PHP templates are repaired, QEMU 10-compatible machine
+  flags are applied where needed, and the PHP lint allowlist is empty.
+- Node.js 24.22.3 LTS and Go 1.27.4 are installed in the VM with verified
+  official tarballs.
+- IOL NETMAP generation is validated and reproducible with
+  `tests/manual/iol-netmap-smoke.sh`.
+- The reference Local Image Manager modal was captured and documented.
+- C8000v: 8 GiB is the working baseline on `q35` + SeaBIOS; the remaining
+  login-prompt/OVMF/pc matrix is recorded as a v1.2 compatibility task.
+
 ## Next milestone
 
 v1.2.0 runtime foundation, Sprint 1:
