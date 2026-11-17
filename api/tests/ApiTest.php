@@ -54,6 +54,10 @@ final class ApiTest extends TestCase
         $first = $this->createAdmin();
         self::assertSame(201, $first->getStatusCode());
         self::assertNotSame('', $this->cookie($first));
+        $setCookie = $first->getHeaderLine('Set-Cookie');
+        self::assertStringContainsString('HttpOnly', $setCookie);
+        self::assertStringContainsString('SameSite=Lax', $setCookie);
+        self::assertStringContainsString('Path=/', $setCookie);
 
         $second = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin2',
