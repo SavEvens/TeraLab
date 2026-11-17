@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# PHP files temporarily excluded from `php -l`.
+#
+# No files are currently allowlisted. Add an entry only with a tracked reason
+# and remove it as soon as the file is fixed.

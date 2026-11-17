@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lab name="Sample Lab" id="sample-lab" version="1" author="TeraLab">
+  <description>Sample fixture for API tests.</description>
+  <topology>
+    <nodes>
+      <node id="1" name="R1" type="qemu" template="linux" image="alpine" />
+    </nodes>
+    <networks>
+      <network id="0" type="bridge" name="Net-1" />
+    </networks>
+  </topology>
+</lab>

@@ -22,20 +22,31 @@
  * @license https://opensource.org/licenses/BSD-3-Clause
  * @link http://www.unetlab.com/
  * @version 20160706
+ *
+ * Modified by TeraLab contributors, 2026-11-17.
+ * The modifications are licensed under AGPL-3.0-or-later.
  */
 
+// TeraLab root and configuration
+$teralabRoot = getenv('TERALAB_ROOT');
+if ($teralabRoot === false || $teralabRoot === '') {
+	$teralabRoot = '/opt/unetlab';
+}
+$teralabRoot = rtrim($teralabRoot, '/');
+if (!defined('BASE_DIR')) define('BASE_DIR', $teralabRoot);
+
 // Include custom configuration
-if (file_exists('includes/config.php')) {
-	require_once('includes/config.php');
+if (file_exists(__DIR__.'/config.php')) {
+	require_once(__DIR__.'/config.php');
 }
 
-if (!defined('DATABASE')) define('DATABASE', '/opt/unetlab/data/database.sdb');
+if (!defined('DATABASE')) define('DATABASE', getenv('TERALAB_DB') ?: BASE_DIR.'/data/database.sdb');
 if (!defined('FORCE_VM')) define('FORCE_VM', 'auto');
 if (!defined('MODE')) define('MODE', 'multi-user');
 if (!defined('SESSION')) define('SESSION', '3600');
 if (!defined('THEME')) define('THEME', 'default');
 if (!defined('TIMEOUT')) define('TIMEOUT', 25);
-if (!defined('TIMEZONE')) define('TIMEZONE', 'Europe/Rome');
+if (!defined('TIMEZONE')) define('TIMEZONE', getenv('TERALAB_TIMEZONE') ?: 'Europe/Rome');
 
 if (!isset($node_config)) {
 	$node_config = Array(
@@ -120,10 +131,14 @@ if (!isset($node_templates)) {
 }
 
 // Define parameters
-define('VERSION', '1.0.0-11-git');
-define('BASE_DIR', '/opt/unetlab');
-define('BASE_LAB', BASE_DIR.'/labs');
-define('BASE_TMP', BASE_DIR.'/tmp');
+$teralabVersionFile = BASE_DIR.'/TERALAB_VERSION';
+$teralabVersion = is_file($teralabVersionFile) ? trim((string) file_get_contents($teralabVersionFile)) : '';
+if ($teralabVersion === '') {
+	$teralabVersion = '1.1.0';
+}
+if (!defined('VERSION')) define('VERSION', $teralabVersion);
+if (!defined('BASE_LAB')) define('BASE_LAB', getenv('TERALAB_LABS') ?: BASE_DIR.'/labs');
+if (!defined('BASE_TMP')) define('BASE_TMP', getenv('TERALAB_TMP') ?: BASE_DIR.'/tmp');
 define('BASE_THEME', '/themes/'.THEME);
 
 // Setting timezone

@@ -12,9 +12,12 @@
  * @license https://opensource.org/licenses/BSD-3-Clause
  * @link http://www.unetlab.com/
  * @version 20160506
+ *
+ * Modified by TeraLab contributors, 2026-11-17.
+ * The modifications are licensed under AGPL-3.0-or-later.
  */
 
-require_once('/opt/unetlab/html/includes/init.php');
+require_once(dirname(__DIR__).'/html/includes/init.php');
 
 // Checking if called from CLI or Web
 if (php_sapi_name() != 'cli') {
