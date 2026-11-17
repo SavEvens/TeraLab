@@ -18,6 +18,9 @@ final class Config
         public readonly bool $cookieSecure,
         public readonly int $sessionTtl,
         public readonly string $environment,
+        public readonly string $agentSocket = '/run/teralab/agent.sock',
+        public readonly string $agentSecretFile = '/etc/teralab/agent.secret',
+        public readonly string $consolePath = '/ws/console',
     ) {
     }
 
@@ -56,6 +59,18 @@ final class Config
                 'TERALAB_ENV',
                 self::stringValue($values, 'environment', 'production'),
             ),
+            agentSocket: self::env(
+                'TERALAB_AGENT_SOCKET',
+                self::stringValue($values, 'agent_socket', '/run/teralab/agent.sock'),
+            ),
+            agentSecretFile: self::env(
+                'TERALAB_AGENT_SECRET_FILE',
+                self::stringValue($values, 'agent_secret_file', '/etc/teralab/agent.secret'),
+            ),
+            consolePath: self::env(
+                'TERALAB_CONSOLE_PATH',
+                self::stringValue($values, 'console_path', '/ws/console'),
+            ),
         );
     }
 
@@ -69,6 +84,8 @@ final class Config
             cookieSecure: false,
             sessionTtl: 3600,
             environment: 'test',
+            agentSocket: $dataDir . '/agent.sock',
+            agentSecretFile: $dataDir . '/agent.secret',
         );
     }
 

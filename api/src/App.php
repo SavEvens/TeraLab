@@ -13,6 +13,7 @@ use PDO;
 use Psr\Log\LoggerInterface;
 use Slim\App as SlimApp;
 use Slim\Factory\AppFactory;
+use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Auth\AuthService;
 use TeraLab\Api\Auth\PasswordPolicy;
@@ -22,6 +23,7 @@ use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\Controllers\AuthController;
 use TeraLab\Api\Http\Controllers\HealthController;
 use TeraLab\Api\Http\Controllers\LabController;
+use TeraLab\Api\Http\Controllers\NodeController;
 use TeraLab\Api\Http\Controllers\SystemController;
 use TeraLab\Api\Http\Controllers\V1Controller;
 use TeraLab\Api\Http\Controllers\VersionController;
@@ -36,8 +38,10 @@ use TeraLab\Api\Labs\UnlParser;
 
 final class App
 {
-    public function __construct(private readonly ?Config $config = null)
-    {
+    public function __construct(
+        private readonly ?Config $config = null,
+        private readonly ?AgentClient $agent = null,
+    ) {
     }
 
     /** @return SlimApp<Container> */
@@ -76,6 +80,11 @@ final class App
             Migrator::class,
             static fn (PDO $pdo, Config $config): Migrator => new Migrator($pdo, $config->migrationsDir())
         );
+        $agent = $this->agent;
+        $container->set(
+            AgentClient::class,
+            static fn (Config $config): AgentClient => $agent ?? new AgentClient($config)
+        );
 
         $container->get(Migrator::class)->migrate();
 
@@ -96,6 +105,23 @@ final class App
         $app->get('/api/v2/labs', fn ($request, $response) => $container->get(LabController::class)->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/labs/{id}', fn ($request, $response, array $args) => $container->get(LabController::class)->show($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+
+        // Node lifecycle is delegated to the privileged Go agent.
+        $nodes = $container->get(NodeController::class);
+        $app->post('/api/v2/nodes/start', fn ($request, $response) => $nodes->start($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/nodes/stop', fn ($request, $response) => $nodes->stop($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/nodes/wipe', fn ($request, $response) => $nodes->wipe($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/nodes/status', fn ($request, $response) => $nodes->status($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/nodes/console', fn ($request, $response) => $nodes->console($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
         // Legacy v1 compatibility adapter. These routes keep the old UI and
