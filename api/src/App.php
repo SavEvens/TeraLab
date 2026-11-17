@@ -116,7 +116,33 @@ final class App
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/labs', fn ($request, $response) => $container->get(LabController::class)->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
-        $app->get('/api/v2/labs/{id}', fn ($request, $response, array $args) => $container->get(LabController::class)->show($request, $response, $args))
+        $labs = $container->get(LabController::class);
+        $app->post('/api/v2/labs', fn ($request, $response) => $labs->create($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/import', fn ($request, $response) => $labs->import($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/labs/{id}', fn ($request, $response, array $args) => $labs->show($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->put('/api/v2/labs/{id}', fn ($request, $response, array $args) => $labs->save($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->delete('/api/v2/labs/{id}', fn ($request, $response, array $args) => $labs->delete($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/labs/{id}/export', fn ($request, $response, array $args) => $labs->export($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/labs/{id}/nodes', fn ($request, $response, array $args) => $labs->nodes($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/start', fn ($request, $response, array $args) => $labs->start($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/stop', fn ($request, $response, array $args) => $labs->stop($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/wipe', fn ($request, $response, array $args) => $labs->wipe($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
         // Node lifecycle is delegated to the privileged Go agent.
@@ -179,6 +205,12 @@ final class App
         $app->get('/api/folders/{path:.*}', fn ($request, $response, array $args) => $v1->folders($request, $response, $args))
             ->add($v1Auth);
         $app->get('/api/labs', fn ($request, $response) => $v1->labsIndex($request, $response))
+            ->add($v1Auth);
+        $app->get('/api/labs/{path:.*}/nodes/{node}/start', fn ($request, $response, array $args) => $v1->nodeStart($request, $response, $args))
+            ->add($v1Auth);
+        $app->get('/api/labs/{path:.*}/nodes/{node}/stop', fn ($request, $response, array $args) => $v1->nodeStop($request, $response, $args))
+            ->add($v1Auth);
+        $app->get('/api/labs/{path:.*}/nodes/{node}/wipe', fn ($request, $response, array $args) => $v1->nodeWipe($request, $response, $args))
             ->add($v1Auth);
         $app->get('/api/labs/{path:.*}', fn ($request, $response, array $args) => $v1->labShow($request, $response, $args))
             ->add($v1Auth);

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Modified by TeraLab contributors, 2026-11-17.
+# Modifications are licensed AGPL-3.0-or-later; legacy setcap calls removed
+# because the TeraLab agent holds its capabilities via systemd.
 CONTROL="/usr/src/unetlab/debian/unetlab_control.template"
 SRC_DIR="/usr/src/unetlab"
 ARCH=$(cat ${CONTROL} | grep Architecture | cut -d: -f2 | sed 's/ //')
@@ -100,10 +103,6 @@ update-initramfs -u > /dev/null 2>&1
 update-grub2 > /dev/null 2>&1
 fgrep "xml.cisco.com" /etc/hosts > /dev/null || echo 127.0.0.127 xml.cisco.com >> /etc/hosts
 # Fix tunctl
-setcap cap_net_admin+ep /usr/sbin/tunctl > /dev/null 2>&1
-setcap cap_net_admin+ep /bin/ip > /dev/null 2>&1
-setcap cap_net_admin+ep /sbin/brctl > /dev/null 2>&1
-setcap cap_net_admin+ep /usr/bin/ovs-vsctl > /dev/null 2>&1
 # Check for Intel VT-x/AMD-V
 fgrep -e vmx -e svm /proc/cpuinfo > /dev/null || echo "*** WARNING: neither Intel VT-x or AMD-V found"
 # Cleaning logs

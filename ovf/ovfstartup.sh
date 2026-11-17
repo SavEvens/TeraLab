@@ -1,10 +1,9 @@
 #!/bin/bash
+# Modified by TeraLab contributors, 2026-11-17.
+# Modifications are licensed AGPL-3.0-or-later; legacy setcap calls removed
+# because the TeraLab agent holds its capabilities via systemd.
 
-# Fixing setcap
-setcap cap_net_admin+ep /usr/sbin/tunctl
-setcap cap_net_admin+ep /bin/ip
-setcap cap_net_admin+ep /sbin/brctl
-setcap cap_net_admin+ep /usr/bin/ovs-vsctl
+# Legacy setcap setup removed; capabilities live on the agent unit.
 
 # Deleting logs
 rm -f /opt/unetlab/data/Logs/* /opt/unetlab/data/Exports/*

@@ -15,6 +15,7 @@ use TeraLab\Api\Http\Json;
 use TeraLab\Api\Http\LegacyJson;
 use TeraLab\Api\Http\V1Session;
 use TeraLab\Api\Labs\LabRepository;
+use TeraLab\Api\Labs\LabService;
 
 final class V1Controller
 {
@@ -22,6 +23,7 @@ final class V1Controller
         private readonly AuthService $auth,
         private readonly Config $config,
         private readonly LabRepository $labs,
+        private readonly LabService $labService,
     ) {
     }
 
@@ -168,6 +170,58 @@ final class V1Controller
             'version' => (string) ($lab['version'] ?? ''),
             'scripttimeout' => 0,
         ], 'Lab.');
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function nodeStart(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        return $this->nodeAction($response, $args, 'start');
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function nodeStop(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        return $this->nodeAction($response, $args, 'stop');
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function nodeWipe(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        return $this->nodeAction($response, $args, 'wipe');
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    private function nodeAction(ResponseInterface $response, array $args, string $action): ResponseInterface
+    {
+        $lab = $this->labs->findByPath((string) ($args['path'] ?? ''));
+        if ($lab === null) {
+            $lab = $this->labs->find((string) ($args['path'] ?? ''));
+        }
+        if ($lab === null) {
+            return LegacyJson::error($response, 404, 'fail', 'Lab not found.');
+        }
+        $nodeID = (string) ($args['node'] ?? '');
+
+        try {
+            $data = match ($action) {
+                'start' => $this->labService->startNode((string) $lab['id'], $nodeID),
+                'stop' => $this->labService->stopNode((string) $lab['id'], $nodeID),
+                'wipe' => $this->labService->wipeNode((string) $lab['id'], $nodeID),
+                default => [],
+            };
+        } catch (HttpException $exception) {
+            return LegacyJson::error($response, $exception->status, 'fail', $exception->getMessage());
+        }
+
+        return LegacyJson::success($response, $data, 'Node ' . $action . ' accepted.');
     }
 
     public function unsupported(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
