@@ -16,21 +16,39 @@ import (
 	"strings"
 )
 
+// Backends supported for lab networks.
+const (
+	BackendLinux = "linux"
+	BackendOVS   = "ovs"
+	BackendAuto  = "auto"
+)
+
 // CommandRunner executes an external command and returns combined output.
 type CommandRunner func(name string, args ...string) ([]byte, error)
 
 type Manager struct {
 	VMUser      string
 	SysClassNet string
+	Backend     string
 	Run         CommandRunner
 }
 
-func New(vmUser string) *Manager {
-	return &Manager{
+func New(vmUser, backend string) *Manager {
+	manager := &Manager{
 		VMUser:      vmUser,
 		SysClassNet: "/sys/class/net",
+		Backend:     backend,
 		Run:         defaultRunner,
 	}
+	if manager.Backend == "" || manager.Backend == BackendAuto {
+		if _, err := exec.LookPath("ovs-vsctl"); err == nil {
+			manager.Backend = BackendOVS
+		} else {
+			manager.Backend = BackendLinux
+		}
+	}
+
+	return manager
 }
 
 func defaultRunner(name string, args ...string) ([]byte, error) {
@@ -58,12 +76,15 @@ func TapName(labID, nodeID string, index int) string {
 	return "tl" + LabTag(labID) + "t" + hex.EncodeToString(sum[:3]) + fmt.Sprintf("%02x", index)
 }
 
-// EnsureBridge creates or refreshes a lab bridge and enables LLDP/LACP
-// forwarding plus multicast flooding.
+// EnsureBridge creates or refreshes a lab bridge using the configured backend.
 func (m *Manager) EnsureBridge(name string) error {
 	if err := ValidateLinkName(name); err != nil {
 		return err
 	}
+	if m.Backend == BackendOVS {
+		return m.ensureOVSBridge(name)
+	}
+
 	if !m.linkExists(name) {
 		if output, err := m.Run("ip", "link", "add", "name", name, "type", "bridge"); err != nil {
 			return fmt.Errorf("create bridge %s: %s: %w", name, strings.TrimSpace(string(output)), err)
@@ -82,10 +103,25 @@ func (m *Manager) EnsureBridge(name string) error {
 	return nil
 }
 
+func (m *Manager) ensureOVSBridge(name string) error {
+	if output, err := m.Run("ovs-vsctl", "--may-exist", "add-br", name); err != nil {
+		return fmt.Errorf("create ovs bridge %s: %s: %w", name, strings.TrimSpace(string(output)), err)
+	}
+	// Forward reserved control frames (LLDP and LACP) instead of dropping them.
+	if output, err := m.Run("ovs-vsctl", "set", "bridge", name, "other_config:forward-bpdu=true"); err != nil {
+		return fmt.Errorf("enable ovs frame forwarding on %s: %s: %w", name, strings.TrimSpace(string(output)), err)
+	}
+	if output, err := m.Run("ip", "link", "set", "dev", name, "up"); err != nil {
+		return fmt.Errorf("bring ovs bridge %s up: %s: %w", name, strings.TrimSpace(string(output)), err)
+	}
+
+	return nil
+}
+
 // enableGroupForwarding enables LLDP and other reserved multicast groups.
 //
 // Newer kernels reject bits 0-2 (STP, 802.3x, LACP); the highest accepted mask
-// keeps LLDP and every other group working.
+// keeps LLDP and every other group working. LACP needs the OVS backend.
 func (m *Manager) enableGroupForwarding(name string) error {
 	var lastErr error
 	for _, value := range []string{"65535", "65528", "16384"} {
@@ -136,7 +172,12 @@ func (m *Manager) CreateTap(tap, bridge string) error {
 		return fmt.Errorf("create tap %s: %s: %w", tap, strings.TrimSpace(string(output)), err)
 	}
 	if bridge != "" {
-		if output, err := m.Run("ip", "link", "set", "dev", tap, "master", bridge); err != nil {
+		if m.Backend == BackendOVS {
+			if output, err := m.Run("ovs-vsctl", "--may-exist", "add-port", bridge, tap); err != nil {
+				m.DeleteLink(tap)
+				return fmt.Errorf("attach tap %s to %s: %s: %w", tap, bridge, strings.TrimSpace(string(output)), err)
+			}
+		} else if output, err := m.Run("ip", "link", "set", "dev", tap, "master", bridge); err != nil {
 			m.DeleteLink(tap)
 			return fmt.Errorf("attach tap %s to %s: %s: %w", tap, bridge, strings.TrimSpace(string(output)), err)
 		}
@@ -153,6 +194,11 @@ func (m *Manager) CreateTap(tap, bridge string) error {
 func (m *Manager) DeleteLink(name string) error {
 	if err := ValidateLinkName(name); err != nil {
 		return err
+	}
+	if m.Backend == BackendOVS {
+		// Deleting a nonexistent bridge or port is a no-op with --if-exists.
+		_, _ = m.Run("ovs-vsctl", "--if-exists", "del-br", name)
+		_, _ = m.Run("ovs-vsctl", "--if-exists", "del-port", name)
 	}
 	output, err := m.Run("ip", "link", "delete", name)
 	if err != nil && !strings.Contains(strings.ToLower(string(output)), "cannot find device") {

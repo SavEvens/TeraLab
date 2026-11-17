@@ -34,6 +34,7 @@ go test ./...
 | `TERALAB_VPCS` | `/usr/bin/vpcs` | VPCS binary |
 | `TERALAB_DYNAMIPS` | `/usr/bin/dynamips` | Dynamips binary (separate package) |
 | `TERALAB_DISABLE_KVM` | `0` | Force TCG (nested-VM debugging only) |
+| `TERALAB_NETWORK_BACKEND` | `auto` | `linux`, `ovs`, or `auto` |
 | `TERALAB_IOL_IOURC` | `/etc/teralab/iourc` | Default IOL licence file |
 | `TERALAB_VM_USER` | `teralab-vm` | Unprivileged QEMU user |
 | `TERALAB_ALLOW_ROOT_VM` | `0` | Explicitly allow root QEMU (dev only) |
@@ -72,16 +73,22 @@ loopback TCP console (`/tcp`). Tokens are short-lived and bound to a node.
   image; TeraLab never bundles one.
 - **IOL:** user-supplied x86-64 `.bin` plus `iourc`, run as `teralab-vm` with
   a deterministic application id, `LD_LIBRARY_PATH`, and per-node `iourc` /
-  `NETMAP` files in the run directory. Ethernet bridging for IOL is not
-  implemented; nodes must use `ethernet: 0` and the engine reports that
-  limitation.
+  `NETMAP` files. Every IOL Ethernet interface gets a tap on the lab bridge and a
+  Unix-datagram netio relay; `NETMAP` pairs each IOL port with the relay, and
+  frames are translated between the 8-byte IOU header and the tap.
 
 ## Networking
 
 - Bridges are named `tl<labtag>b<net>` and taps `tl<labtag>t<nodetag><if>`,
   deterministic and at most 15 characters.
-- Bridges set `group_fwd_mask=0xffff` and `multicast_snooping=0`, so LLDP/LACP
-  frames are forwarded.
+- Backend `auto` prefers OVS when `ovs-vsctl` is installed, otherwise the
+  Linux bridge.
+- The Linux bridge sets the highest accepted `group_fwd_mask` (LLDP and most
+  groups) and disables multicast snooping. Kernels reject LACP's reserved
+  group, so use the OVS backend for LACP; OVS is configured with
+  `other_config:forward-bpdu=true` and forwards LLDP/LACP.
+- OVS taps are attached with `ovs-vsctl add-port`; the Linux backend uses the
+  bridge master.
 - `cleanup.stale` reconciles after a crash: it kills orphan engine processes
   from run-directory state, removes their taps/bridges and cgroups, and deletes
   stale `tl*` links. The agent runs the same reconciliation at startup.

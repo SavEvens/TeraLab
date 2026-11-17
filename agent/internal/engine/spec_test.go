@@ -295,10 +295,19 @@ func TestIOLValidationAndArgs(t *testing.T) {
 		t.Fatalf("unexpected iol args: %v", args)
 	}
 
-	spec.Ethernet = 1
-	spec.Networks = []string{"br0"}
+	spec.Ethernet = 2
+	spec.Networks = []string{"br0", "br1"}
 	spec.Normalize()
-	if _, err := BuildIOLArgs(spec, 7); err == nil {
-		t.Fatal("expected iol ethernet bridging to be rejected")
+	args, err = BuildIOLArgs(spec, 7)
+	if err != nil {
+		t.Fatalf("build multi-interface iol args: %v", err)
+	}
+	if args[0] != "-e" || args[1] != "2" {
+		t.Fatalf("expected two iol ethernet interfaces: %v", args)
+	}
+
+	netmap := buildNETMAP([][2]int{{10001, 20001}, {10002, 20002}})
+	if netmap != "10001:127.0.0.1:20001\n10002:127.0.0.1:20002\n" {
+		t.Fatalf("unexpected netmap: %q", netmap)
 	}
 }

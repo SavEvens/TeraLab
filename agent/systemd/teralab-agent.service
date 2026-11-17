@@ -22,6 +22,7 @@ Environment=TERALAB_IMAGES_DIR=/var/lib/teralab/images
 Environment=TERALAB_QEMU=/usr/bin/qemu-system-x86_64
 Environment=TERALAB_QEMU_IMG=/usr/bin/qemu-img
 Environment=TERALAB_VM_USER=teralab-vm
+Environment=TERALAB_NETWORK_BACKEND=auto
 RuntimeDirectory=teralab
 RuntimeDirectoryMode=0750
 Restart=on-failure

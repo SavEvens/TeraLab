@@ -228,9 +228,6 @@ func (s Spec) validateIOL(imagesDir string) error {
 	if err := validateImagePath(s.Image, imagesDir, ".bin"); err != nil {
 		return err
 	}
-	if s.Ethernet != 0 {
-		return errors.New("iol ethernet bridging is not implemented; set ethernet to 0")
-	}
 	if s.Iourc != "" {
 		if err := validateFilePath(s.Iourc, imagesDir); err != nil {
 			return err

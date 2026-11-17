@@ -98,6 +98,21 @@ jobs:
       - name: Build
         run: go build ./...
 
+  dynamips-package:
+    name: Dynamips package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake libelf-dev libpcap-dev
+      - name: Build package
+        run: ./packaging/dynamips/build.sh --work /tmp/dynamips-build --out /tmp/dynamips-dist
+      - name: Verify package
+        run: |
+          dpkg-deb -c /tmp/dynamips-dist/teralab-dynamips_*.deb | grep /usr/bin/dynamips
+          dpkg-deb -f /tmp/dynamips-dist/teralab-dynamips_*.deb Package Version Depends
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-24.04
@@ -114,7 +129,8 @@ jobs:
             scripts/php-lint.sh \
             scripts/check-secrets.sh \
             scripts/dev-vm.sh \
-            scripts/setup-runtime-paths.sh
+            scripts/setup-runtime-paths.sh \
+            packaging/dynamips/build.sh
 
   python-syntax:
     name: Python syntax

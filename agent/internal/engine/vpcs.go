@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -17,17 +18,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// vpcsRelay bridges a VPCS UDP socket pair to an Ethernet tap.
+// udpTapRelay bridges an engine UDP socket pair to an Ethernet tap.
 //
 // VPCS exchanges raw Ethernet frames over UDP in its default mode; the relay
 // gives it a real lab-bridge interface while keeping all traffic on loopback.
-type vpcsRelay struct {
+type udpTapRelay struct {
 	udp    *net.UDPConn
 	tap    *os.File
 	target *net.UDPAddr
 }
 
-func (r *vpcsRelay) Close() error {
+func (r *udpTapRelay) Close() error {
 	_ = r.udp.Close()
 	if r.tap != nil {
 		return r.tap.Close()
@@ -36,7 +37,7 @@ func (r *vpcsRelay) Close() error {
 	return nil
 }
 
-func startVPCSRelay(tap string, listenPort, targetPort int) (*vpcsRelay, error) {
+func startUDPTapRelay(tap string, listenPort, targetPort int) (*udpTapRelay, error) {
 	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: listenPort})
 	if err != nil {
 		return nil, fmt.Errorf("bind vpcs relay: %w", err)
@@ -47,7 +48,7 @@ func startVPCSRelay(tap string, listenPort, targetPort int) (*vpcsRelay, error) 
 		return nil, err
 	}
 
-	relay := &vpcsRelay{
+	relay := &udpTapRelay{
 		udp:    udp,
 		tap:    tapFile,
 		target: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: targetPort},
@@ -152,7 +153,7 @@ func (m *Manager) startVPCS(spec Spec, runDir string) (NodeInfo, error) {
 		m.cleanupTaps([]string{tap})
 		return NodeInfo{}, err
 	}
-	relay, err := startVPCSRelay(tap, sendPort, listenPort)
+	relay, err := startUDPTapRelay(tap, sendPort, listenPort)
 	if err != nil {
 		m.cleanupTaps([]string{tap})
 		return NodeInfo{}, err
@@ -217,7 +218,7 @@ func (m *Manager) startVPCS(spec Spec, runDir string) (NodeInfo, error) {
 		Spec:        spec,
 		Cmd:         command,
 		PTY:         ptmx,
-		Relay:       relay,
+		Relays:      []io.Closer{relay},
 		RunDir:      runDir,
 		Taps:        []string{tap},
 		CgroupPath:  cgroupPath,

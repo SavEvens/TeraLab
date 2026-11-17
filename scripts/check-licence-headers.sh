@@ -23,6 +23,10 @@ check_file() {
 		*.json|*.lock|*.sum|*.xml|*.neon|*.dist|*.ini|*.unl|*.exe|*.bin|*.qcow2|*.iso|*.img|*.phar)
 			return 0
 			;;
+		packaging/dynamips/copyright)
+			# GPLv2 notice for the separate Dynamips package.
+			return 0
+			;;
 	esac
 	checked=$((checked + 1))
 	if ! head -n 8 "$file" | grep -q 'SPDX-License-Identifier: AGPL-3.0-or-later'; then

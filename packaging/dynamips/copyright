@@ -1,0 +1,27 @@
+Dynamips for TeraLab
+====================
+
+This package contains the Dynamips Cisco router emulator built from upstream
+source. Dynamips is licensed under the GNU General Public License version 2.
+
+Upstream project: https://github.com/GNS3/dynamips
+Source used:      https://github.com/GNS3/dynamips/archive/refs/tags/v0.2.23.tar.gz
+Source checksum:  503bbb52c03f91900ea8dbe8bd0b804b76e2e28d0b7242624e0d3c52dda441a1
+
+The complete corresponding source is the unmodified upstream tarball above.
+TeraLab's build script is installed separately in the TeraLab source tree under
+packaging/dynamips/build.sh.
+
+Dynamips is a separate program. It is not linked into TeraLab, which is
+licensed under AGPL-3.0-or-later, and it is not a combined work with TeraLab.
+
+This package does not contain any Cisco IOS images. Users must supply their own
+licensed IOS images.
+
+On Debian GNU/Linux, the full GPLv2 text is also available at
+/usr/share/common-licenses/GPL-2 and in this directory as GPL-2.0.txt.
+
+NO WARRANTY. Dynamips is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+details.
