@@ -130,7 +130,8 @@ jobs:
             scripts/check-secrets.sh \
             scripts/dev-vm.sh \
             scripts/setup-runtime-paths.sh \
-            packaging/dynamips/build.sh
+            packaging/dynamips/build.sh \
+            packaging/teralab/install.sh
 
   python-syntax:
     name: Python syntax
