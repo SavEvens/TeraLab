@@ -7,10 +7,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/creack/pty"
@@ -20,20 +22,28 @@ import (
 //
 // IOL is a user-supplied binary; TeraLab never redistributes it.
 func BuildIOLArgs(spec Spec, appID int) ([]string, error) {
-	if spec.Ethernet != 0 {
-		return nil, errors.New("iol ethernet bridging is not implemented; set ethernet to 0")
-	}
 	if appID < 1 || appID > 1023 {
 		return nil, errors.New("iol application id must be between 1 and 1023")
 	}
 
 	return []string{
-		"-e", "0",
+		"-e", strconv.Itoa(spec.Ethernet),
 		"-s", "0",
 		"-m", strconv.Itoa(spec.RAM),
 		"-n", strconv.Itoa(spec.NVRAM),
 		strconv.Itoa(appID),
 	}, nil
+}
+
+// buildNETMAP renders IOL interface netmap lines: local UDP port, peer host,
+// peer UDP port. IOL listens on the local port and sends to the peer.
+func buildNETMAP(pairs [][2]int) string {
+	var builder strings.Builder
+	for _, pair := range pairs {
+		fmt.Fprintf(&builder, "%d:127.0.0.1:%d\n", pair[0], pair[1])
+	}
+
+	return builder.String()
 }
 
 // iolAppID derives a stable instance identifier for a node.
@@ -64,25 +74,49 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 	}
 
 	appID := iolAppID(spec)
-	if appID < 1 {
-		appID = 1
-	}
+	peerID := iolPeerID(appID)
 	args, err := BuildIOLArgs(spec, appID)
 	if err != nil {
 		return NodeInfo{}, err
 	}
-	if err := m.prepareIOLFiles(runDir, iourc); err != nil {
+
+	taps := make([]string, 0, spec.Ethernet)
+	netmapLines := make([]string, 0, spec.Ethernet)
+	for index := 0; index < spec.Ethernet; index++ {
+		tap := spec.TapName(index)
+		if err := m.net.CreateTap(tap, spec.Networks[index]); err != nil {
+			m.cleanupTaps(taps)
+			return NodeInfo{}, err
+		}
+		taps = append(taps, tap)
+		netmapLines = append(netmapLines, iolNetmapLine(appID, peerID, index))
+	}
+
+	relay, err := startIOLNetio(appID, peerID, int(m.cfg.VMUID), taps)
+	if err != nil {
+		m.cleanupTaps(taps)
+		return NodeInfo{}, err
+	}
+	cleanup := func() {
+		_ = relay.Close()
+		m.cleanupTaps(taps)
+	}
+
+	if err := m.prepareIOLFiles(runDir, iourc, strings.Join(netmapLines, "\n")+"\n"); err != nil {
+		cleanup()
 		return NodeInfo{}, err
 	}
 
 	ptmx, tty, err := pty.Open()
 	if err != nil {
+		cleanup()
 		return NodeInfo{}, fmt.Errorf("open iol pty: %w", err)
 	}
 	logFile, err := os.OpenFile(filepath.Join(runDir, "engine.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
 		_ = ptmx.Close()
 		_ = tty.Close()
+		cleanup()
 		return NodeInfo{}, fmt.Errorf("open iol log: %w", err)
 	}
 
@@ -104,6 +138,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		_ = logFile.Close()
 		_ = ptmx.Close()
 		_ = tty.Close()
+		cleanup()
 		return NodeInfo{}, fmt.Errorf("start iol: %w", err)
 	}
 	_ = tty.Close()
@@ -114,6 +149,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		_ = command.Process.Kill()
 		_ = command.Wait()
 		_ = ptmx.Close()
+		cleanup()
 		return NodeInfo{}, err
 	}
 
@@ -121,7 +157,9 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		Spec:        spec,
 		Cmd:         command,
 		PTY:         ptmx,
+		Relays:      []io.Closer{relay},
 		RunDir:      runDir,
+		Taps:        taps,
 		CgroupPath:  cgroupPath,
 		State:       "running",
 		Started:     time.Now(),
@@ -135,7 +173,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 }
 
 // prepareIOLFiles places the licence and interface map where IOL expects them.
-func (m *Manager) prepareIOLFiles(runDir, iourc string) error {
+func (m *Manager) prepareIOLFiles(runDir, iourc, netmap string) error {
 	licence, err := os.ReadFile(iourc)
 	if err != nil {
 		return fmt.Errorf("%w: cannot read iourc: %v", ErrEngineUnavailable, err)
@@ -146,11 +184,11 @@ func (m *Manager) prepareIOLFiles(runDir, iourc string) error {
 	}
 	m.chown(licencePath)
 
-	netmap := filepath.Join(runDir, "NETMAP")
-	if err := os.WriteFile(netmap, []byte{}, 0o640); err != nil {
+	netmapPath := filepath.Join(runDir, "NETMAP")
+	if err := os.WriteFile(netmapPath, []byte(netmap), 0o640); err != nil {
 		return fmt.Errorf("write iol netmap: %w", err)
 	}
-	m.chown(netmap)
+	m.chown(netmapPath)
 
 	return nil
 }

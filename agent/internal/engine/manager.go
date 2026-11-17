@@ -54,7 +54,7 @@ type Node struct {
 	Spec        Spec
 	Cmd         *exec.Cmd
 	PTY         *os.File
-	Relay       io.Closer
+	Relays      []io.Closer
 	RunDir      string
 	Overlay     string
 	Taps        []string
@@ -85,7 +85,7 @@ type Manager struct {
 func NewManager(cfg config.Config, logger *slog.Logger) *Manager {
 	return &Manager{
 		cfg:    cfg,
-		net:    network.New(cfg.VMUser),
+		net:    network.New(cfg.VMUser, cfg.NetworkBackend),
 		logger: logger,
 		nodes:  map[string]*Node{},
 	}
@@ -456,10 +456,10 @@ func (m *Manager) wait(node *Node) {
 			_ = node.PTY.Close()
 			node.PTY = nil
 		}
-		if node.Relay != nil {
-			_ = node.Relay.Close()
-			node.Relay = nil
+		for _, relay := range node.Relays {
+			_ = relay.Close()
 		}
+		node.Relays = nil
 		m.cleanupTaps(node.Taps)
 		node.Taps = nil
 		m.removeCgroup(node.CgroupPath)

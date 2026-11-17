@@ -30,6 +30,7 @@ type Config struct {
 	VPCSBinary     string
 	DynamipsBinary string
 	IOLIourc       string
+	NetworkBackend string
 	VMUser         string
 	VMUID          uint32
 	VMGID          uint32
@@ -52,6 +53,7 @@ func Load() (Config, error) {
 		VPCSBinary:     env("TERALAB_VPCS", "/usr/bin/vpcs"),
 		DynamipsBinary: env("TERALAB_DYNAMIPS", "/usr/bin/dynamips"),
 		IOLIourc:       env("TERALAB_IOL_IOURC", "/etc/teralab/iourc"),
+		NetworkBackend: env("TERALAB_NETWORK_BACKEND", "auto"),
 		VMUser:         env("TERALAB_VM_USER", "teralab-vm"),
 		AllowRootVM:    envBool("TERALAB_ALLOW_ROOT_VM", false),
 		DisableKVM:     envBool("TERALAB_DISABLE_KVM", false),

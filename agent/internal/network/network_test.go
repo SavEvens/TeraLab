@@ -19,7 +19,7 @@ func testManager(t *testing.T) (*Manager, *[]recorded) {
 	t.Helper()
 	sys := t.TempDir()
 	calls := []recorded{}
-	manager := New("teralab-vm")
+	manager := New("teralab-vm", BackendLinux)
 	manager.SysClassNet = sys
 	manager.Run = func(name string, args ...string) ([]byte, error) {
 		calls = append(calls, recorded{name: name, args: append([]string(nil), args...)})
@@ -193,12 +193,42 @@ func hasCall(calls []recorded, name string, args ...string) bool {
 }
 
 func TestDeleteLinkToleratesMissingDevice(t *testing.T) {
-	manager := New("")
+	manager := New("", BackendLinux)
 	manager.Run = func(name string, args ...string) ([]byte, error) {
 		return []byte("Cannot find device \"tlmissing\""), os.ErrNotExist
 	}
 	if err := manager.DeleteLink("tlmissing0000"); err != nil {
 		t.Fatalf("missing device must be tolerated: %v", err)
+	}
+}
+
+func TestOVSBackend(t *testing.T) {
+	manager, calls := testManager(t)
+	manager.Backend = BackendOVS
+	bridge := BridgeName("lab-1", "0")
+	if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.EnsureBridge(bridge); err != nil {
+		t.Fatalf("ensure ovs bridge: %v", err)
+	}
+	if !hasCall(*calls, "ovs-vsctl", "--may-exist", "add-br", bridge) {
+		t.Fatalf("ovs bridge not created: %+v", *calls)
+	}
+	if !hasCall(*calls, "ovs-vsctl", "set", "bridge", bridge, "other_config:forward-bpdu=true") {
+		t.Fatalf("ovs forwarding not enabled: %+v", *calls)
+	}
+
+	tap := TapName("lab-1", "node-1", 0)
+	if err := manager.CreateTap(tap, bridge); err != nil {
+		t.Fatalf("create ovs tap: %v", err)
+	}
+	if !hasCall(*calls, "ovs-vsctl", "--may-exist", "add-port", bridge, tap) {
+		t.Fatalf("tap not added as ovs port: %+v", *calls)
+	}
+	if hasCall(*calls, "ip", "link", "set", "dev", tap, "master", bridge) {
+		t.Fatal("ovs taps must not use the linux bridge master")
 	}
 }
 
