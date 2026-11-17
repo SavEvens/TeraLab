@@ -57,3 +57,6 @@ crashlytics-build.properties
 /data/
 /logs/
 *.unl
+
+# Local agent instructions (not part of the release)
+/AGENTS.md
