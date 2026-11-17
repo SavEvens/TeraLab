@@ -1,0 +1,9 @@
+generated: 2026-11-17T12:58:45Z
+os: Debian GNU/Linux 13 (trixie)
+repo: /home/savanna/unetlab
+git: git version 2.47.3
+php: PHP 8.4.27 (cli) (built: Oct 21 2026 07:53:46) (NTS)
+apache: Server version: Apache/2.4.71 (Debian)
+mariadb: mariadb from 11.8.6-MariaDB, client 15.2 for debian-linux-gnu (x86_64) using  EditLine wrapper
+qemu: QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)
+kvm: present

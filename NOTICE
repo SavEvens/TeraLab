@@ -1,0 +1,25 @@
+TeraLab v1.1.0 — component notices
+
+TeraLab original code:
+  Licence: AGPL-3.0-or-later
+  See: LICENSE
+
+UNetLab-derived code:
+  Upstream: https://github.com/dainok/unetlab
+  Version: 1.0.2-2
+  Commit: 8ef51974b448318697e5dd18a4e10496f2f56b39
+  Licence: BSD-3-Clause (see LICENSES/BSD-3-Clause.txt)
+  The BSD-3 copyright, conditions and disclaimer are retained.
+
+Separate engine components (not vendored by this baseline):
+  QEMU — GPLv2
+  Dynamips — GPLv2
+  IOUtools — GPLv2
+  Linux kernel — GPLv2
+  These are separate programs/packages and remain under their own licences.
+
+Third-party libraries:
+  Their original licences apply; see the package manifests and source headers.
+
+TeraLab is an independent UNetLab-derived fork. It is not endorsed by UNetLab
+or its contributors.

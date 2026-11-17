@@ -1,0 +1,16 @@
+{
+  "product": "TeraLab",
+  "line": "official-unetlab",
+  "version": "1.1.0",
+  "upstream": "UNetLab",
+  "upstream_version": "1.0.2-2",
+  "upstream_commit": "8ef51974b448318697e5dd18a4e10496f2f56b39",
+  "repo": "/home/savanna/unetlab",
+  "host_os": "Debian GNU/Linux 13 (trixie)",
+  "generated_at": "2026-11-17T12:58:46Z",
+  "licenses": {
+    "project": "AGPL-3.0-or-later",
+    "upstream": "BSD-3-Clause",
+    "engine_components": "GPL-2.0"
+  }
+}
