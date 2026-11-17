@@ -47,19 +47,21 @@ The C8000v image must be tested with both SeaBIOS and OVMF and with the
 devices before adding a built-in template. Do not assume a QEMU 2.x machine
 type will exist in QEMU 10.
 
-Result (2026-11-17, QEMU 10.0.13): `-machine q35 -cpu host -smp 4` with
-`virtio-blk` and SeaBIOS reaches the GRUB menu, boots IOS-XE 17.16.01a from
-`packages.conf`, enters AUTONOMOUS mode, and reaches the `Press RETURN to get
-started!` prompt in under four minutes with 8 GiB. A 4 GiB guest stalls during
-package verification; use 8 GiB as the baseline.
+Compatibility matrix (2026-11-17, QEMU 10.0.13, KVM):
 
-The guest attempts Cisco PnP discovery against `devicehelper.cisco.com:443`.
-That is guest behaviour, not TeraLab telemetry. For lab use, block egress or
-disable PnP on the image; do not rely on the vendor cloud.
+| Machine | Firmware | RAM | Result |
+|---|---|---|---|
+| `q35` | SeaBIOS | 4 GiB | Stalls during package verification |
+| `q35` | SeaBIOS | 8 GiB | **PASS** — boots IOS-XE 17.16.01a, enters AUTONOMOUS mode, reaches `Press RETURN to get started!` in under four minutes |
+| `pc` | SeaBIOS | 8 GiB | **PASS** — boots to AUTONOMOUS mode; autoinstall/PnP waits for console input |
+| `q35` | OVMF 2025.02 | 8 GiB | **FAIL** — no UEFI boot entry; drops to the EFI shell. SeaBIOS is required |
 
-The `pc` machine variant is being tested; OVMF is not required for the working
-`q35` + SeaBIOS configuration. Evidence:
-`/home/savanna/vms/c8000v-test/serial-login.log` (outside the repository).
+Use `q35` + SeaBIOS + 8 GiB as the baseline. The guest attempts Cisco PnP
+discovery against `devicehelper.cisco.com:443`; that is guest behaviour, not
+TeraLab telemetry. For lab use, block egress or disable PnP on the image.
+
+Evidence: `/home/savanna/vms/c8000v-test/serial-login.log` and
+`serial-pc2.log` (outside the repository).
 
 Reproduce with:
 
