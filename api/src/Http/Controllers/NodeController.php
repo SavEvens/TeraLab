@@ -9,6 +9,7 @@ namespace TeraLab\Api\Http\Controllers;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Agent\AgentClient;
+use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
@@ -18,11 +19,13 @@ final class NodeController
     public function __construct(
         private readonly AgentClient $agent,
         private readonly Config $config,
+        private readonly AccessService $access,
     ) {
     }
 
     public function start(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        $this->requireEditor($request);
         $data = Json::body($request);
         $spec = $this->spec($data);
 
@@ -34,6 +37,7 @@ final class NodeController
 
     public function stop(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        $this->requireEditor($request);
         $id = $this->id(Json::body($request));
 
         return Json::response($response, [
@@ -44,6 +48,7 @@ final class NodeController
 
     public function wipe(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        $this->requireEditor($request);
         $id = $this->id(Json::body($request));
 
         return Json::response($response, [
@@ -64,6 +69,7 @@ final class NodeController
 
     public function console(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        $this->requireEditor($request);
         $id = $this->id(Json::body($request), 'node_id');
         $session = $this->agent->openConsole($id);
         $token = $session['token'] ?? null;
@@ -95,6 +101,11 @@ final class NodeController
         }
 
         return Json::response($response, ['data' => $data]);
+    }
+
+    private function requireEditor(ServerRequestInterface $request): void
+    {
+        $this->access->requireRole($this->access->user($request), 'editor');
     }
 
     /**

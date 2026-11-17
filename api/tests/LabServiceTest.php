@@ -12,6 +12,7 @@ use Slim\Psr7\UploadedFile;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Labs\LabLocks;
 use TeraLab\Api\Labs\LabService;
 use TeraLab\Api\Labs\UnlParser;
 use TeraLab\Api\Labs\UnlWriter;
@@ -22,6 +23,7 @@ final class LabServiceTest extends TestCase
     private Config $config;
     private UnlParser $parser;
     private UnlWriter $writer;
+    private \PDO $pdo;
 
     /** @var list<array{method: string, path: string, payload: array<string, mixed>}> */
     private array $calls = [];
@@ -34,6 +36,8 @@ final class LabServiceTest extends TestCase
         $this->config = Config::forTests($this->root, $this->root . '/data');
         $this->parser = new UnlParser();
         $this->writer = new UnlWriter();
+        $this->pdo = (new \TeraLab\Api\Database\Database($this->config))->pdo();
+        (new \TeraLab\Api\Database\Migrator($this->pdo, $this->config->migrationsDir()))->migrate();
     }
 
     protected function tearDown(): void
@@ -226,7 +230,7 @@ final class LabServiceTest extends TestCase
             return [200, '{"ok":true,"result":{}}'];
         });
 
-        return new LabService($this->config, $this->parser, $this->writer, $agent);
+        return new LabService($this->config, $this->parser, $this->writer, $agent, new LabLocks($this->pdo));
     }
 
     private function upload(string $content, string $name): UploadedFile

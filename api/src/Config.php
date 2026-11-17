@@ -23,6 +23,8 @@ final class Config
         public readonly string $consolePath = '/ws/console',
         public readonly string $consoleVncPath = '/ws/vnc',
         public readonly string $consoleTcpPath = '/ws/tcp',
+        public readonly int $idleTtl = 3600,
+        public readonly int $imageQuotaBytes = 0,
         public readonly string $imagesDir = '/var/lib/teralab/images',
         public readonly int $maxUploadBytes = 34359738368,
     ) {
@@ -82,6 +84,14 @@ final class Config
             consoleTcpPath: self::env(
                 'TERALAB_CONSOLE_TCP_PATH',
                 self::stringValue($values, 'console_tcp_path', '/ws/tcp'),
+            ),
+            idleTtl: self::intEnv(
+                'TERALAB_IDLE_TTL',
+                self::intValue($values, 'idle_ttl', 3600),
+            ),
+            imageQuotaBytes: self::intEnv(
+                'TERALAB_IMAGE_QUOTA_BYTES',
+                self::intValue($values, 'image_quota_bytes', 0),
             ),
             imagesDir: self::env(
                 'TERALAB_IMAGES_DIR',

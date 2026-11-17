@@ -15,6 +15,13 @@ curl -c jar -X POST -H 'Content-Type: application/json' \
 CSRF=$(curl -b jar $B/api/v2/auth/me | jq -r .csrf_token)
 ```
 
+## Account
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v2/auth/password` | Change password; revokes other sessions |
+| POST | `/api/v2/auth/sessions/revoke` | Revoke all other sessions |
+
 ## Labs
 
 | Method | Path | Purpose |
@@ -26,10 +33,17 @@ CSRF=$(curl -b jar $B/api/v2/auth/me | jq -r .csrf_token)
 | DELETE | `/api/v2/labs/{id}` | Delete a stopped lab |
 | POST | `/api/v2/labs/import` | Import a `.unl` (multipart `file`) |
 | GET | `/api/v2/labs/{id}/export` | Export a `.unl` |
+| POST | `/api/v2/labs/{id}/duplicate` | Copy topology into a new lab |
 | POST | `/api/v2/labs/{id}/start` | Create networks and start all nodes |
 | POST | `/api/v2/labs/{id}/stop` | Stop all nodes and remove lab bridges |
 | POST | `/api/v2/labs/{id}/wipe` | Stop, wipe node state, and remove bridges |
 | GET | `/api/v2/labs/{id}/nodes` | Per-node agent state |
+| GET | `/api/v2/labs/{id}/permissions` | Admin: list per-lab permissions |
+| POST | `/api/v2/labs/{id}/permissions` | Admin: grant `{username, role}` |
+| DELETE | `/api/v2/labs/{id}/permissions/{user}` | Admin: revoke |
+
+`GET /api/v2/labs/{id}` includes `lock` when the lab is running. While a lab is
+locked, saves from another user return 409 with the owner and expiry.
 
 Create example:
 
@@ -65,7 +79,10 @@ for VNC the generated password.
 - `POST /api/v2/labs/{id}/networks` with `{"networks":[{"id":"0"}]}`.
 - `POST /api/v2/labs/{id}/networks/cleanup`.
 - `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol availability.
+- `GET /api/v2/system/host` reports agent load, disk, nodes, and engines.
 - `GET|POST /api/v2/images`, `GET|DELETE /api/v2/images/{id}`.
+- `GET /api/v2/templates` lists built-in template ids.
+- `PUT /api/v2/images/{id}/template` maps an image to a template.
 - `POST /api/v2/maintenance/reconcile` reclaims orphaned resources.
 
 ## v1 compatibility

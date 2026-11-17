@@ -9,12 +9,15 @@ namespace TeraLab\Api\Http\Controllers;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Agent\AgentClient;
+use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Http\Json;
 
 final class EngineController
 {
-    public function __construct(private readonly AgentClient $agent)
-    {
+    public function __construct(
+        private readonly AgentClient $agent,
+        private readonly AccessService $access,
+    ) {
     }
 
     public function index(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
@@ -24,6 +27,8 @@ final class EngineController
 
     public function reconcile(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        $this->access->requireRole($this->access->user($request), 'admin');
+
         return Json::response($response, [
             'status' => 'success',
             'data' => $this->agent->reconcile(),

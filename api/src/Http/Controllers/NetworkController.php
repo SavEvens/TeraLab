@@ -9,13 +9,16 @@ namespace TeraLab\Api\Http\Controllers;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Agent\AgentClient;
+use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
 
 final class NetworkController
 {
-    public function __construct(private readonly AgentClient $agent)
-    {
+    public function __construct(
+        private readonly AgentClient $agent,
+        private readonly AccessService $access,
+    ) {
     }
 
     /**
@@ -23,6 +26,7 @@ final class NetworkController
      */
     public function ensure(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
+        $this->access->requireRole($this->access->user($request), 'editor');
         $labID = $this->labID($args);
         $body = Json::body($request);
         $networks = $body['networks'] ?? null;
@@ -64,6 +68,7 @@ final class NetworkController
      */
     public function cleanup(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
+        $this->access->requireRole($this->access->user($request), 'editor');
         $labID = $this->labID($args);
 
         return Json::response($response, [

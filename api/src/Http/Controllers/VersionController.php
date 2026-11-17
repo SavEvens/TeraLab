@@ -24,6 +24,15 @@ final class VersionController
             'version' => $this->config->version(),
             'license' => 'AGPL-3.0-or-later',
             'source' => 'https://github.com/SavEvens/TeraLab',
+            'warranty' => 'NO WARRANTY',
+            'components' => [
+                ['name' => 'TeraLab', 'license' => 'AGPL-3.0-or-later', 'separate' => false],
+                ['name' => 'UNetLab-derived files', 'license' => 'BSD-3-Clause', 'separate' => false],
+                ['name' => 'QEMU', 'license' => 'GPL-2.0', 'separate' => true],
+                ['name' => 'Dynamips', 'license' => 'GPL-2.0', 'separate' => true],
+                ['name' => 'VPCS', 'license' => 'BSD-3-Clause', 'separate' => true],
+                ['name' => 'Open vSwitch (optional)', 'license' => 'Apache-2.0', 'separate' => true],
+            ],
             'upstream' => [
                 'name' => 'UNetLab',
                 'version' => '1.0.2-2',

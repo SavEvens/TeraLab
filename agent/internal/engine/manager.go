@@ -34,20 +34,23 @@ var ErrEngineUnavailable = errors.New("engine unavailable")
 const stateFileName = "node.json"
 
 type NodeInfo struct {
-	ID          string    `json:"id"`
-	LabID       string    `json:"lab_id,omitempty"`
-	Name        string    `json:"name"`
-	Engine      string    `json:"engine"`
-	Image       string    `json:"image,omitempty"`
-	State       string    `json:"state"`
-	PID         int       `json:"pid,omitempty"`
-	Started     time.Time `json:"started,omitempty"`
-	RunDir      string    `json:"run_dir"`
-	Taps        []string  `json:"taps,omitempty"`
-	Console     string    `json:"console"`
-	ConsolePort int       `json:"console_port,omitempty"`
-	Cgroup      string    `json:"cgroup,omitempty"`
-	VNCPort     int       `json:"vnc_port,omitempty"`
+	ID            string    `json:"id"`
+	LabID         string    `json:"lab_id,omitempty"`
+	Name          string    `json:"name"`
+	Engine        string    `json:"engine"`
+	Image         string    `json:"image,omitempty"`
+	State         string    `json:"state"`
+	PID           int       `json:"pid,omitempty"`
+	Started       time.Time `json:"started,omitempty"`
+	RunDir        string    `json:"run_dir"`
+	Taps          []string  `json:"taps,omitempty"`
+	Console       string    `json:"console"`
+	ConsolePort   int       `json:"console_port,omitempty"`
+	Cgroup        string    `json:"cgroup,omitempty"`
+	VNCPort       int       `json:"vnc_port,omitempty"`
+	MemoryBytes   int64     `json:"memory_bytes,omitempty"`
+	CPUUsageUsec  int64     `json:"cpu_usage_usec,omitempty"`
+	UptimeSeconds int64     `json:"uptime_seconds,omitempty"`
 }
 
 type Node struct {
@@ -491,8 +494,37 @@ func (m *Manager) info(node *Node) NodeInfo {
 	if node.Cmd != nil && node.Cmd.Process != nil {
 		info.PID = node.Cmd.Process.Pid
 	}
+	if node.State == "running" {
+		info.UptimeSeconds = int64(time.Since(node.Started).Seconds())
+		memory, cpu := readCgroupUsage(node.CgroupPath)
+		info.MemoryBytes = memory
+		info.CPUUsageUsec = cpu
+	}
 
 	return info
+}
+
+// readCgroupUsage reads best-effort memory and CPU counters for a node.
+func readCgroupUsage(path string) (int64, int64) {
+	if path == "" {
+		return 0, 0
+	}
+	var memory int64
+	if data, err := os.ReadFile(filepath.Join(path, "memory.current")); err == nil {
+		memory, _ = strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	}
+	var cpu int64
+	if data, err := os.ReadFile(filepath.Join(path, "cpu.stat")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == "usage_usec" {
+				cpu, _ = strconv.ParseInt(fields[1], 10, 64)
+				break
+			}
+		}
+	}
+
+	return memory, cpu
 }
 
 func (m *Manager) register(node *Node) (NodeInfo, error) {

@@ -19,6 +19,7 @@ final class LabService
         private readonly UnlParser $parser,
         private readonly UnlWriter $writer,
         private readonly AgentClient $agent,
+        private readonly LabLocks $locks,
     ) {
     }
 
@@ -26,7 +27,7 @@ final class LabService
      * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
-    public function create(array $input, ?string $author = null): array
+    public function create(array $input, ?string $author = null, ?string $ownerId = null): array
     {
         $name = $this->labName($input['name'] ?? null);
         $lab = [
@@ -39,7 +40,12 @@ final class LabService
             'revision' => 1,
             'node_list' => $this->normalizeNodes($input['nodes'] ?? []),
             'network_list' => $this->normalizeNetworks($input['networks'] ?? []),
-            'attributes' => [],
+            'attributes' => array_filter([
+                'owner' => $ownerId,
+                'created_at' => gmdate('c'),
+                'updated_at' => gmdate('c'),
+                'tags' => $this->tags($input['tags'] ?? []),
+            ], static fn (mixed $value): bool => is_string($value) && $value !== ''),
             'extra_xml' => [],
         ];
 
@@ -53,9 +59,12 @@ final class LabService
      * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
-    public function save(string $id, array $input, ?int $expectedRevision): array
+    public function save(string $id, array $input, ?int $expectedRevision, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab, $path] = $this->load($id);
+        if ($userId !== null) {
+            $this->locks->assertEditable((string) $lab['id'], $userId, $isAdmin);
+        }
         $revision = (int) $lab['revision'];
         if ($expectedRevision !== null && $expectedRevision !== $revision) {
             throw new HttpException(409, 'The lab was modified by another session.', [
@@ -73,6 +82,15 @@ final class LabService
             $lab['network_list'] = $this->normalizeNetworks($input['networks']);
         }
         $lab['revision'] = $revision + 1;
+        $lab['attributes']['updated_at'] = gmdate('c');
+        if (array_key_exists('tags', $input)) {
+            $tags = $this->tags($input['tags']);
+            if ($tags === '') {
+                unset($lab['attributes']['tags']);
+            } else {
+                $lab['attributes']['tags'] = $tags;
+            }
+        }
         $this->write($path, $lab);
 
         return $this->metadata($lab, $path);
@@ -81,7 +99,7 @@ final class LabService
     /**
      * @return array<string, mixed>
      */
-    public function import(UploadedFileInterface $file, ?string $author): array
+    public function import(UploadedFileInterface $file, ?string $author, ?string $ownerId = null): array
     {
         if ($file->getError() !== UPLOAD_ERR_OK) {
             throw new HttpException(400, 'The lab upload did not complete.');
@@ -97,6 +115,11 @@ final class LabService
         $lab['id'] = $this->uuid();
         $lab['author'] = $lab['author'] !== '' ? $lab['author'] : ($author ?? '');
         $lab['revision'] = 1;
+        if ($ownerId !== null) {
+            $lab['attributes']['owner'] = $ownerId;
+        }
+        $lab['attributes']['created_at'] = gmdate('c');
+        $lab['attributes']['updated_at'] = gmdate('c');
 
         $path = $this->targetPath($this->labName($lab['name']), null);
         $this->write($path, $lab);
@@ -117,6 +140,25 @@ final class LabService
         ];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function duplicate(string $id, ?string $ownerId = null): array
+    {
+        [$lab] = $this->load($id);
+        $lab['id'] = $this->uuid();
+        $lab['name'] = $this->labName($lab['name'] . ' copy');
+        $lab['revision'] = 1;
+        $lab['attributes']['owner'] = $ownerId;
+        $lab['attributes']['created_at'] = gmdate('c');
+        $lab['attributes']['updated_at'] = gmdate('c');
+
+        $path = $this->targetPath($this->slug((string) $lab['name']), null);
+        $this->write($path, $lab);
+
+        return $this->metadata($lab, $path);
+    }
+
     public function delete(string $id): void
     {
         [$lab, $path] = $this->load($id);
@@ -130,7 +172,7 @@ final class LabService
     /**
      * @return array<string, mixed>
      */
-    public function start(string $id): array
+    public function start(string $id, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
         $nodes = $this->labNodes($lab);
@@ -138,6 +180,9 @@ final class LabService
             throw new HttpException(422, 'The lab has no nodes.');
         }
 
+        if ($userId !== null) {
+            $this->locks->acquire((string) $lab['id'], $userId, $isAdmin);
+        }
         $bridges = $this->ensureNetworks($lab);
         $started = [];
         foreach ($nodes as $node) {
@@ -148,6 +193,9 @@ final class LabService
                     $this->safeStop($this->stringValue($info, 'id'));
                 }
                 $this->safeCleanupLab((string) $lab['id']);
+                if ($userId !== null) {
+                    $this->locks->release((string) $lab['id'], $userId, $isAdmin);
+                }
                 throw new HttpException(
                     $exception->status,
                     'Node ' . ($node['name'] !== '' ? $node['name'] : $node['id']) . ': ' . $exception->getMessage(),
@@ -161,7 +209,7 @@ final class LabService
     /**
      * @return array<string, mixed>
      */
-    public function stop(string $id): array
+    public function stop(string $id, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
         $stopped = [];
@@ -177,6 +225,9 @@ final class LabService
             }
         }
         $this->safeCleanupLab((string) $lab['id']);
+        if ($userId !== null) {
+            $this->locks->release((string) $lab['id'], $userId, $isAdmin);
+        }
 
         return ['lab_id' => $lab['id'], 'stopped' => $stopped];
     }
@@ -184,7 +235,7 @@ final class LabService
     /**
      * @return array<string, mixed>
      */
-    public function wipe(string $id): array
+    public function wipe(string $id, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
         $wiped = [];
@@ -207,6 +258,9 @@ final class LabService
             }
         }
         $this->safeCleanupLab((string) $lab['id']);
+        if ($userId !== null) {
+            $this->locks->release((string) $lab['id'], $userId, $isAdmin);
+        }
 
         return ['lab_id' => $lab['id'], 'wiped' => $wiped];
     }
@@ -214,15 +268,21 @@ final class LabService
     /**
      * @return array<string, mixed>
      */
-    public function startNode(string $id, string $nodeID): array
+    public function startNode(string $id, string $nodeID, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
         $node = $this->findNode($lab, $nodeID);
+        if ($userId !== null) {
+            $this->locks->acquire((string) $lab['id'], $userId, $isAdmin);
+        }
         $bridges = $this->ensureNetworks($lab);
         try {
             return $this->agent->start($this->spec($lab, $node, $bridges));
         } catch (HttpException $exception) {
             $this->safeCleanupLab((string) $lab['id']);
+            if ($userId !== null) {
+                $this->locks->release((string) $lab['id'], $userId, $isAdmin);
+            }
             throw $exception;
         }
     }
@@ -230,18 +290,22 @@ final class LabService
     /**
      * @return array<string, mixed>
      */
-    public function stopNode(string $id, string $nodeID): array
+    public function stopNode(string $id, string $nodeID, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
         $this->findNode($lab, $nodeID);
+        $result = $this->agent->stop($this->agentNodeID((string) $lab['id'], $nodeID));
+        if ($userId !== null) {
+            $this->locks->release((string) $lab['id'], $userId, $isAdmin);
+        }
 
-        return $this->agent->stop($this->agentNodeID((string) $lab['id'], $nodeID));
+        return $result;
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function wipeNode(string $id, string $nodeID): array
+    public function wipeNode(string $id, string $nodeID, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
         $this->findNode($lab, $nodeID);
@@ -254,7 +318,12 @@ final class LabService
             }
         }
 
-        return $this->agent->wipe($agentID);
+        $result = $this->agent->wipe($agentID);
+        if ($userId !== null) {
+            $this->locks->release((string) $lab['id'], $userId, $isAdmin);
+        }
+
+        return $result;
     }
 
     /**
@@ -512,6 +581,11 @@ final class LabService
         $lab['modified'] = filemtime($path) ?: time();
         $lab['nodes'] = is_array($lab['node_list'] ?? null) ? count($lab['node_list']) : 0;
         $lab['networks'] = is_array($lab['network_list'] ?? null) ? count($lab['network_list']) : 0;
+        $lab['owner'] = $lab['attributes']['owner'] ?? null;
+        $tags = $lab['attributes']['tags'] ?? '';
+        $lab['tags'] = is_string($tags) && $tags !== '' ? array_values(array_filter(explode(',', $tags))) : [];
+        $lab['created_at'] = $lab['attributes']['created_at'] ?? null;
+        $lab['updated_at'] = $lab['attributes']['updated_at'] ?? null;
         unset($lab['attributes'], $lab['extra_xml']);
 
         return $lab;
@@ -575,6 +649,21 @@ final class LabService
         $slug = trim($slug, '.-');
 
         return $slug !== '' ? substr($slug, 0, 64) : 'lab';
+    }
+
+    private function tags(mixed $value): string
+    {
+        if (!is_array($value)) {
+            return '';
+        }
+        $tags = [];
+        foreach ($value as $tag) {
+            if (is_string($tag) && trim($tag) !== '') {
+                $tags[] = substr(trim($tag), 0, 32);
+            }
+        }
+
+        return implode(',', array_slice($tags, 0, 20));
     }
 
     private function text(mixed $value): string

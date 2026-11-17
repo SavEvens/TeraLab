@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -134,4 +135,22 @@ func readAll(session *PTYSession, expected int) ([]byte, error) {
 	}
 
 	return result, nil
+}
+
+func TestReadCgroupUsage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "memory.current"), []byte("123456789\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cpu.stat"), []byte("usage_usec 987654\nuser_usec 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	memory, cpu := readCgroupUsage(dir)
+	if memory != 123456789 || cpu != 987654 {
+		t.Fatalf("unexpected usage: %d %d", memory, cpu)
+	}
+	if memory, cpu := readCgroupUsage(""); memory != 0 || cpu != 0 {
+		t.Fatal("empty cgroup path must return zero usage")
+	}
 }

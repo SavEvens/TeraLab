@@ -113,6 +113,37 @@ final class ImageStoreTest extends TestCase
         }
     }
 
+    public function testRejectsWhenStoreQuotaIsExhausted(): void
+    {
+        $config = new Config(
+            root: $this->root,
+            dataDir: $this->root . '/data',
+            dbPath: $this->root . '/data/database.sdb',
+            labsDir: $this->root . '/labs',
+            cookieSecure: false,
+            sessionTtl: 3600,
+            environment: 'test',
+            agentSocket: $this->root . '/data/agent.sock',
+            agentSecretFile: $this->root . '/data/agent.secret',
+            imagesDir: $this->root . '/data/images',
+            maxUploadBytes: 1048576,
+            imageQuotaBytes: 10,
+        );
+        $store = new ImageStore($config, $this->pdo, static fn (string $path): array => [
+            'format' => 'qcow2',
+            'virtual_size' => 1024,
+            'backing_file' => '',
+        ]);
+
+        $this->expectException(HttpException::class);
+        try {
+            $store->store($this->upload("QFI\xfb" . str_repeat("q", 64), 'quota.qcow2'), 'qemu', null, null);
+        } catch (HttpException $exception) {
+            self::assertSame(507, $exception->status);
+            throw $exception;
+        }
+    }
+
     public function testAcceptsISO9660(): void
     {
         $content = str_repeat("\0", 0x9000);

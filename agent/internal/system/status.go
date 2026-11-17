@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/config"
@@ -26,11 +28,19 @@ type Status struct {
 	Running     int               `json:"running"`
 	Nodes       []engine.NodeInfo `json:"nodes"`
 	Engines     []EngineStatus    `json:"engines"`
+	Load1       float64           `json:"load1"`
+	Load5       float64           `json:"load5"`
+	Load15      float64           `json:"load15"`
+	DiskFree    uint64            `json:"disk_free_bytes"`
+	DiskTotal   uint64            `json:"disk_total_bytes"`
 	Time        time.Time         `json:"time"`
 }
 
 func Collect(ctx context.Context, cfg config.Config, manager *engine.Manager) Status {
 	hostname, _ := os.Hostname()
+
+	load1, load5, load15 := loadAverage()
+	free, total := diskUsage(cfg.ImagesDir)
 
 	return Status{
 		Version:     config.Version,
@@ -42,6 +52,11 @@ func Collect(ctx context.Context, cfg config.Config, manager *engine.Manager) St
 		Running:     manager.Count(),
 		Nodes:       manager.List(),
 		Engines:     Engines(ctx, cfg, manager),
+		Load1:       load1,
+		Load5:       load5,
+		Load15:      load15,
+		DiskFree:    free,
+		DiskTotal:   total,
 		Time:        time.Now().UTC(),
 	}
 }
@@ -107,4 +122,30 @@ func hasExecutableImage(root string) bool {
 	})
 
 	return found
+}
+
+func loadAverage() (float64, float64, float64) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, 0, 0
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 3 {
+		return 0, 0, 0
+	}
+	first, _ := strconv.ParseFloat(fields[0], 64)
+	second, _ := strconv.ParseFloat(fields[1], 64)
+	third, _ := strconv.ParseFloat(fields[2], 64)
+
+	return first, second, third
+}
+
+func diskUsage(path string) (uint64, uint64) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, 0
+	}
+	blockSize := uint64(stat.Bsize)
+
+	return stat.Bavail * blockSize, stat.Blocks * blockSize
 }
