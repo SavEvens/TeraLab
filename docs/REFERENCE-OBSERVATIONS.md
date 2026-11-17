@@ -20,7 +20,8 @@
 ## Captured routes
 
 `#/labs`, `#/running`, `#/system`, `#/images`, `#/devices`, `#/data`,
-`#/clusters`, `#/network`, `#/users`, `#/version`, and the login page.
+`#/clusters`, `#/network`, `#/users`, `#/version`, the login page, and one
+lab editor view (`/legacy/topology`).
 
 ## Observed behaviours
 
@@ -39,6 +40,22 @@
 - Actions: new folder, new lab, import, export, refresh, list/grid toggle.
 - Folders and labs share the list; rows show a lab icon.
 - No editor was opened in this pass.
+
+### Lab editor
+
+- Opening a lab navigates from the SPA shell to `/legacy/topology`, a
+  separate full-window editor view.
+- The canvas uses a dark grid background with node icons, node names, and
+  interface labels (for example `Gi4`, `eth0`, `ge0/0`). Links are drawn as
+  straight/curved lines with interface labels near the endpoints.
+- Clouds and network objects are represented as distinct node shapes.
+- A small resource overlay in the top-right shows CPU, RAM, and disk
+  percentages.
+- A bottom toolbar provides start, stop/wipe, console/terminal, download/
+  export, power, node palette, theme, pan, and fullscreen controls.
+- Selecting a node highlights it and shows a small floating toolbar with
+  start and edit actions. No side inspector was visible in this view.
+- No lab content was modified; only a node was selected for observation.
 
 ### Running Labs
 
@@ -111,7 +128,8 @@ option, not a dependency.
 
 ## Gaps and next pass
 
-- Editor: palette, node forms, link creation, validation, undo/redo, autosave.
+- Editor: node edit form, palette behaviour, link creation, validation,
+  undo/redo, autosave, multi-select, and keyboard shortcuts.
 - Consoles: telnet/VNC tabs, reconnect, copy/paste, persistence.
 - Image upload and template mapping.
 - Lab creation/import/export and error handling.

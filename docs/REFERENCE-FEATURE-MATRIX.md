@@ -12,7 +12,7 @@ itself as `9.0.0`; that number is not adopted by TeraLab.
 |---|---|---|---|
 | Login | Version banner, username/password, default-console selector, login button, theme | Basic login, default `admin/unl` | v1.2: first-run admin, Argon2id, CSRF, theme |
 | Labs | Folder navigation; list with name/modified; create folder/lab; import/export; refresh; list/grid | Labs/folders, import/export, jQuery UI | v1.3: SPA list, folders, import/export, metadata |
-| Editor | (Not captured in this pass) | jsPlumb canvas, 53 templates | v1.3: Vue Flow editor, palette, inspector, undo |
+| Editor | Separate `/legacy/topology` canvas; node/interface labels; resource overlay; bottom toolbar; node selection mini-toolbar | jsPlumb canvas, 53 templates | v1.3: Vue Flow editor, palette, inspector, undo |
 | Running | Lab list with owner, node count/status, location (master), destroy all | Status page | v1.3: running inventory, bulk actions |
 | System | CPU/memory/swap/disk bars; running-node counts by engine; platform versions; KSM/UKSM/CPU limit; disk expand | Status endpoint only | v1.4: resources, versions, settings, logs |
 | Images | Installed image count; QEMU/IOL/Dynamips groups; file count and size; manage local images | Manual directories | v1.3: upload, checksum, list, mapping |

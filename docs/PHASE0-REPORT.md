@@ -5,6 +5,7 @@
 
 - Date: 2026-11-17
 - Branch: `feat/phase-0-foundation`
+- Commits: `d1a3eb4` (foundation), `f358eaa` (CI pinning)
 - Status: **Complete**, with the C8000v boot-matrix follow-up noted below.
 
 ## Objectives
@@ -30,6 +31,7 @@
 | Guest KVM | `/dev/kvm` usable; `savanna` added to `kvm` group; nested KVM test passes |
 | Docker | 26.1.5 on host; `alpine:3.20` pulled and runs (`docker-ok`) |
 | Reference | Login verified; screenshots captured |
+| CI | GitHub Actions run `44110024902`: all jobs green (licence, PHP lint, ShellCheck, Python syntax, secret scan) |
 
 ## Deliverables
 
@@ -72,7 +74,7 @@ reused.
 |---|---|
 | Docker `alpine:3.20` | Pulled; `docker run --rm alpine:3.20 echo docker-ok` → `docker-ok` |
 | IOL x86-64 L3/L2 | Binary executes and prints IOL usage; an application ID starts it but it requires a NETMAP file. Full boot is deferred to the Phase 1 agent adapter, which will generate NETMAP and interfaces. |
-| QEMU C8000v 17.16.01a | Image metadata verified: qcow2, 8 GiB virtual, ~2 GiB actual, no backing file. With `q35` + SeaBIOS + virtio-blk, QEMU 10 reaches GRUB and begins booting IOS-XE 17.16.01a from `packages.conf`. A longer run to the login prompt is in progress; OVMF/pc variants remain a follow-up. |
+| QEMU C8000v 17.16.01a | Image metadata verified: qcow2, 8 GiB virtual, ~2 GiB actual, no backing file. With `q35` + SeaBIOS + virtio-blk, QEMU 10 reaches GRUB and begins booting IOS-XE 17.16.01a from `packages.conf`. A 4 GiB guest stalls during package verification; an 8 GiB host-side run is used to determine whether more RAM is required. OVMF/pc variants remain a follow-up. |
 
 ## Guardrails verified
 

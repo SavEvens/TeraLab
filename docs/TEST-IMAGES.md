@@ -49,9 +49,17 @@ type will exist in QEMU 10.
 
 First result (2026-11-17, QEMU 10.0.13, nested KVM): `-machine q35 -cpu host
 -smp 4 -m 4096` with `virtio-blk` and SeaBIOS reaches the GRUB menu and boots
-IOS-XE 17.16.01a from `packages.conf`. The serial console is required; a
-longer run is used to confirm the login prompt. OVMF and `pc` variants remain
-to be tested.
+IOS-XE 17.16.01a from `packages.conf`. The serial console is required. A
+4 GiB guest stalls during package verification; the image is being retested
+on the host with 8 GiB to determine the minimum memory. OVMF and `pc`
+variants remain to be tested.
+
+## IOL boot note
+
+Running `x86_64_crb_linux-adventerprisek9-ms.bin` with an application ID
+starts the IOL process but reports `netio error: unable to open NETMAP`.
+The agent must generate a NETMAP and interface plumbing in Phase 1. The
+binary, `iourc`, and 64-bit dependency check are otherwise valid.
 
 ## IOL compatibility note
 
