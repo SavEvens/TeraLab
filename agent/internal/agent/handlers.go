@@ -138,14 +138,25 @@ func (s *Server) handleConsoleOpen(writer http.ResponseWriter, request *http.Req
 		return
 	}
 
-	writeJSON(writer, http.StatusOK, apiResponse{
-		OK: true,
-		Result: map[string]any{
-			"token":      token,
-			"ws_url":     "ws://" + s.cfg.ConsoleAddr + "/ws?token=" + token,
-			"expires_in": int(expiry.Seconds()),
-		},
-	})
+	result := map[string]any{
+		"kind":       info.Console,
+		"token":      token,
+		"expires_in": int(expiry.Seconds()),
+	}
+	if info.Console == "vnc" {
+		port, password, ok := s.manager.VNC(payload.NodeID)
+		if !ok {
+			writeError(writer, http.StatusConflict, "not_running", "node has no vnc console")
+			return
+		}
+		result["port"] = port
+		result["password"] = password
+		result["ws_url"] = "ws://" + s.cfg.ConsoleAddr + "/vnc?token=" + token
+	} else {
+		result["ws_url"] = "ws://" + s.cfg.ConsoleAddr + "/ws?token=" + token
+	}
+
+	writeJSON(writer, http.StatusOK, apiResponse{OK: true, Result: result})
 }
 
 func readJSON(request *http.Request, destination any) error {

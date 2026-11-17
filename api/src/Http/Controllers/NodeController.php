@@ -71,13 +71,21 @@ final class NodeController
             throw new HttpException(502, 'The agent did not return a console token.');
         }
 
-        return Json::response($response, [
-            'data' => [
-                'token' => $token,
-                'expires_in' => $session['expires_in'] ?? 0,
-                'ws_path' => $this->config->consolePath . '?token=' . rawurlencode($token),
-            ],
-        ]);
+        $kind = $session['kind'] ?? 'telnet';
+        $kind = is_string($kind) ? $kind : 'telnet';
+        $path = $kind === 'vnc' ? $this->config->consoleVncPath : $this->config->consolePath;
+
+        $data = [
+            'kind' => $kind,
+            'token' => $token,
+            'expires_in' => $session['expires_in'] ?? 0,
+            'ws_path' => $path . '?token=' . rawurlencode($token),
+        ];
+        if ($kind === 'vnc') {
+            $data['password'] = $session['password'] ?? '';
+        }
+
+        return Json::response($response, ['data' => $data]);
     }
 
     /**

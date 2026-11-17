@@ -100,8 +100,8 @@ func (s Spec) Validate(imagesDir string) error {
 	if !machinePattern.MatchString(s.Machine) {
 		return errors.New("invalid machine type")
 	}
-	if s.Console != "telnet" {
-		return errors.New("only telnet serial consoles are supported by this agent")
+	if s.Console != "telnet" && s.Console != "vnc" {
+		return errors.New("console must be either telnet or vnc")
 	}
 	if !uuidPattern.MatchString(s.UUID) {
 		return errors.New("invalid uuid")

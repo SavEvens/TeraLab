@@ -21,6 +21,7 @@ final class Config
         public readonly string $agentSocket = '/run/teralab/agent.sock',
         public readonly string $agentSecretFile = '/etc/teralab/agent.secret',
         public readonly string $consolePath = '/ws/console',
+        public readonly string $consoleVncPath = '/ws/vnc',
     ) {
     }
 
@@ -70,6 +71,10 @@ final class Config
             consolePath: self::env(
                 'TERALAB_CONSOLE_PATH',
                 self::stringValue($values, 'console_path', '/ws/console'),
+            ),
+            consoleVncPath: self::env(
+                'TERALAB_CONSOLE_VNC_PATH',
+                self::stringValue($values, 'console_vnc_path', '/ws/vnc'),
             ),
         );
     }

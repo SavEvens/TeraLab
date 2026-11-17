@@ -47,11 +47,25 @@ All endpoints require the bearer secret and an allowed peer UID.
 - `POST /v1/console.open` → WebSocket token/URL
 
 The console gateway listens on loopback and bridges WebSocket binary frames to
-the QEMU serial pty. Tokens are short-lived and bound to a node.
+the QEMU serial pty (`/ws`) or to the loopback VNC server (`/vnc`). Tokens are
+short-lived and bound to a node.
 
 `node.start` accepts a qcow2 `image`, an `iso`, or direct kernel boot via
-`kernel` / `initrd` / `append`. Host memory and CPU are enforced through a
-per-node cgroup under `TERALAB_CGROUP_ROOT`.
+`kernel` / `initrd` / `append`. `console` is `telnet` (default) or `vnc`.
+Host memory and CPU are enforced through a per-node cgroup under
+`TERALAB_CGROUP_ROOT`.
+
+For VNC nodes the agent:
+
+- reserves a free display in the QEMU range and binds only to
+  `127.0.0.1:5900+display`;
+- enables the QEMU VNC password and sets a random per-node password through
+  the private monitor socket;
+- returns the port and password only from the authenticated, token-gated
+  `console.open` call.
+
+VNC access is therefore loopback-only and gated behind the agent token; the
+web tier exposes `/ws/vnc` as a same-origin WebSocket proxy.
 
 ## Safety
 
