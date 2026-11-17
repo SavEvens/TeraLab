@@ -55,6 +55,7 @@
 | Observation log | `docs/REFERENCE-OBSERVATIONS.md` |
 | Test image inventory | `docs/TEST-IMAGES.md` |
 | IOL NETMAP smoke test | `tests/manual/iol-netmap-smoke.sh` |
+| C8000v QEMU smoke test | `tests/manual/qemu-c8000v-smoke.sh` |
 | ADRs | `docs/adr/0001`–`0005` |
 | Reference screenshots | `/home/savanna/ref-observations/screenshots/` (outside repo) |
 
@@ -87,7 +88,8 @@ reused.
 ./scripts/check-secrets.sh           # OK
 shellcheck scripts/check-licence-headers.sh scripts/php-lint.sh \
   scripts/check-secrets.sh scripts/dev-vm.sh \
-  tests/manual/iol-netmap-smoke.sh             # OK
+  tests/manual/iol-netmap-smoke.sh \
+  tests/manual/qemu-c8000v-smoke.sh            # OK
 ```
 
 The five baseline templates with unterminated comments were repaired during

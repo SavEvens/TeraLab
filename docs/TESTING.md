@@ -88,7 +88,7 @@ vendor/bin/phpunit                # when configured
 # Shell / C
 shellcheck scripts/check-licence-headers.sh scripts/php-lint.sh \
   scripts/check-secrets.sh scripts/dev-vm.sh \
-  tests/manual/iol-netmap-smoke.sh
+  tests/manual/iol-netmap-smoke.sh tests/manual/qemu-c8000v-smoke.sh
 clang -fsanitize=address,undefined ...
 
 # Frontend (Phase 1+)
@@ -103,6 +103,10 @@ scripts/dev-vm.sh ssh
 
 # Manual IOL NETMAP smoke test (local vendor binary, not CI)
 tests/manual/iol-netmap-smoke.sh ~/test_images/iol/bin/x86_64_crb_linux-adventerprisek9-ms.bin
+
+# Manual C8000v compatibility test (local vendor image, KVM, not CI)
+tests/manual/qemu-c8000v-smoke.sh \
+  ~/test_images/qemu/c8000v-17.16.01a/virtioa.qcow2 600
 ```
 
 ## CI

@@ -54,6 +54,16 @@ from `packages.conf`. A 4 GiB guest stalls during package verification; an
 the baseline. The login prompt, OVMF, and `pc` variants remain to be tested.
 Evidence: `/home/savanna/vms/c8000v-test/serial.log` (outside the repository).
 
+Reproduce with:
+
+```sh
+tests/manual/qemu-c8000v-smoke.sh \
+  ~/test_images/qemu/c8000v-17.16.01a/virtioa.qcow2 600
+```
+
+The script creates a temporary overlay, never modifies the base image, and
+uses user-mode networking (no host bridge/firewall changes).
+
 ## IOL boot note
 
 Running `x86_64_crb_linux-adventerprisek9-ms.bin` with an application ID
