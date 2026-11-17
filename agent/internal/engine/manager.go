@@ -232,6 +232,8 @@ func (m *Manager) Wipe(id string) error {
 	if err := os.RemoveAll(node.RunDir); err != nil {
 		return fmt.Errorf("remove run directory: %w", err)
 	}
+	// Remove an empty per-lab directory without touching unrelated nodes.
+	_ = os.Remove(filepath.Dir(node.RunDir))
 	m.logger.Info("node wiped", "id", id)
 
 	return nil

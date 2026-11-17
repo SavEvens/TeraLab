@@ -37,6 +37,9 @@ the file:
 | `TERALAB_COOKIE_SECURE` | `1` | Secure session cookie |
 | `TERALAB_SESSION_TTL` | `3600` | Session lifetime in seconds |
 | `TERALAB_ENV` | `production` | Environment label |
+| `TERALAB_AGENT_SOCKET` | `/run/teralab/agent.sock` | Privileged agent socket |
+| `TERALAB_AGENT_SECRET_FILE` | `/etc/teralab/agent.secret` | Agent bearer secret |
+| `TERALAB_CONSOLE_PATH` | `/ws/console` | Same-origin console proxy path |
 
 ## Development
 
@@ -54,6 +57,27 @@ php -S 127.0.0.1:8090 -t public public/index.php
 
 The first request path to use is `GET /api/v2/health`, then `POST /api/v2/setup`
 to create the administrator.
+
+## Node lifecycle
+
+Node start, stop, wipe, status, and console access are delegated to the
+privileged Go agent. The web tier never launches QEMU itself.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/v2/nodes/start` | Start a node from a spec |
+| `POST` | `/api/v2/nodes/stop` | Stop a node |
+| `POST` | `/api/v2/nodes/wipe` | Stop and delete node state |
+| `GET` | `/api/v2/nodes/status?id=...` | Read node state |
+| `POST` | `/api/v2/nodes/console` | Issue a console token and path |
+
+`POST` requests require the session cookie and the `X-CSRF-Token` header.
+Console tokens are short-lived and bound to one node.
+
+Browsers cannot reach the agent's loopback WebSocket directly. Proxy
+`/ws/console` to the agent gateway with the Apache snippet in
+`etc/teralab-console.conf`, which maps it to
+`ws://127.0.0.1:8091/ws`.
 
 The legacy `html/api.php` entry point loads this application and serves both
 `/api/v2/*` and the v1 compatibility routes (`/api/auth`, `/api/status`,
