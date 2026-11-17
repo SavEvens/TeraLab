@@ -78,7 +78,7 @@ reused.
 |---|---|
 | Docker `alpine:3.20` | Pulled; `docker run --rm alpine:3.20 echo docker-ok` → `docker-ok` |
 | IOL x86-64 L3/L2 | Binary executes and prints IOL usage. A generated NETMAP (`1:d 513:d` for 64 ports) is parsed and IOL reports the port mappings. `tests/manual/iol-netmap-smoke.sh` passes. Full console/interface wiring remains agent work. |
-| QEMU C8000v 17.16.01a | Image metadata verified: qcow2, 8 GiB virtual, ~2 GiB actual, no backing file. With `q35` + SeaBIOS + virtio-blk, QEMU 10 reaches GRUB and boots IOS-XE 17.16.01a from `packages.conf`. A 4 GiB guest stalls during package verification; an 8 GiB host-side run reaches IOS-XE AUTONOMOUS mode after ~300 s. Use 8 GiB as the baseline for further tests; the login prompt and OVMF/pc variants remain a follow-up. Evidence: `/home/savanna/vms/c8000v-test/serial.log` (outside the repository). |
+| QEMU C8000v 17.16.01a | Image metadata verified: qcow2, 8 GiB virtual, ~2 GiB actual, no backing file. With `q35` + SeaBIOS + virtio-blk, QEMU 10 boots IOS-XE 17.16.01a from `packages.conf`, enters AUTONOMOUS mode, and reaches `Press RETURN to get started!` in under four minutes with 8 GiB. A 4 GiB guest stalls during package verification; use 8 GiB as the baseline. The `pc` variant is being tested; OVMF is not required for the working configuration. The guest attempts Cisco PnP to `devicehelper.cisco.com:443`; block egress or disable PnP for lab use. Evidence: `/home/savanna/vms/c8000v-test/serial-login.log` (outside the repository). |
 
 ## Guardrails verified
 
@@ -100,8 +100,9 @@ are permitted without a tracked reason.
 ## Known issues and follow-ups
 
 1. **C8000v boot matrix** — 8 GiB is required (4 GiB stalls); `q35` +
-   SeaBIOS reaches IOS-XE AUTONOMOUS mode. Still to confirm: the login prompt,
-   OVMF, and `pc` machine variants before adding a built-in template.
+   SeaBIOS reaches the `Press RETURN` prompt in under four minutes. The `pc`
+   variant is being tested; OVMF is not required for the working
+   configuration. Block the guest PnP egress for lab use.
 2. **IOL interface wiring** — NETMAP generation and parsing are validated;
    the agent must provide the wrapper/netio side and console plumbing.
 3. **Deeper reference capture** — node edit form, palette, consoles, lab
@@ -131,8 +132,9 @@ are permitted without a tracked reason.
 - IOL NETMAP generation is validated and reproducible with
   `tests/manual/iol-netmap-smoke.sh`.
 - The reference Local Image Manager modal was captured and documented.
-- C8000v: 8 GiB is the working baseline on `q35` + SeaBIOS; the remaining
-  login-prompt/OVMF/pc matrix is recorded as a v1.2 compatibility task.
+- C8000v: 8 GiB on `q35` + SeaBIOS reaches the `Press RETURN` prompt in
+  under four minutes; the `pc` variant is being tested. Vendor PnP egress
+  should be blocked for lab use.
 
 ## Next milestone
 

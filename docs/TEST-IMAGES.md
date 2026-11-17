@@ -48,11 +48,18 @@ devices before adding a built-in template. Do not assume a QEMU 2.x machine
 type will exist in QEMU 10.
 
 Result (2026-11-17, QEMU 10.0.13): `-machine q35 -cpu host -smp 4` with
-`virtio-blk` and SeaBIOS reaches the GRUB menu and boots IOS-XE 17.16.01a
-from `packages.conf`. A 4 GiB guest stalls during package verification; an
-8 GiB host-side run reaches IOS-XE AUTONOMOUS mode at ~300 s. Use 8 GiB as
-the baseline. The login prompt, OVMF, and `pc` variants remain to be tested.
-Evidence: `/home/savanna/vms/c8000v-test/serial.log` (outside the repository).
+`virtio-blk` and SeaBIOS reaches the GRUB menu, boots IOS-XE 17.16.01a from
+`packages.conf`, enters AUTONOMOUS mode, and reaches the `Press RETURN to get
+started!` prompt in under four minutes with 8 GiB. A 4 GiB guest stalls during
+package verification; use 8 GiB as the baseline.
+
+The guest attempts Cisco PnP discovery against `devicehelper.cisco.com:443`.
+That is guest behaviour, not TeraLab telemetry. For lab use, block egress or
+disable PnP on the image; do not rely on the vendor cloud.
+
+The `pc` machine variant is being tested; OVMF is not required for the working
+`q35` + SeaBIOS configuration. Evidence:
+`/home/savanna/vms/c8000v-test/serial-login.log` (outside the repository).
 
 Reproduce with:
 
