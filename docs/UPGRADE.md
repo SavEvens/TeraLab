@@ -34,6 +34,23 @@ What is preserved:
 Database migrations are forward-only and run at API startup. The images table
 is added by migration `002_images.sql`; existing tables are untouched.
 
+## Importing a v1.1 database and labs
+
+v1.1 stored users in `/opt/unetlab/data/database.sdb` with unsalted SHA-256
+passwords. Import them once:
+
+```sh
+php /opt/teralab/packaging/teralab/import-legacy.php \
+    --legacy-db /opt/unetlab/data/database.sdb \
+    --legacy-labs /opt/unetlab/labs \
+    --data-dir /var/lib/teralab --root /opt/teralab
+```
+
+Every imported user keeps a one-time legacy hash. On the first successful
+login the password is rehashed with Argon2id and the legacy hash is cleared.
+Existing users are skipped, and lab files are copied without overwriting
+newer labs.
+
 ## Verify
 
 ```sh

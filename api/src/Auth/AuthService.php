@@ -79,7 +79,28 @@ final class AuthService
         $this->rateLimiter->assertAllowed($username, $ip);
 
         $user = $this->findUserByUsername($username);
-        if ($user === null || !password_verify($password, (string) $user['password_hash'])) {
+        $verified = $user !== null && password_verify($password, (string) $user['password_hash']);
+        $legacy = $user['legacy_password_hash'] ?? null;
+        if (!$verified && $user !== null && is_string($legacy) && $legacy !== ''
+            && hash_equals($legacy, hash('sha256', $password))) {
+            $verified = true;
+            $rehash = password_hash($password, PASSWORD_ARGON2ID, [
+                'memory_cost' => 65536,
+                'time_cost' => 3,
+                'threads' => 2,
+            ]);
+            $statement = $this->pdo->prepare(
+                'UPDATE users SET password_hash = :password_hash, legacy_password_hash = NULL, updated_at = :updated_at WHERE id = :id'
+            );
+            $statement->execute([
+                ':password_hash' => $rehash,
+                ':updated_at' => time(),
+                ':id' => (string) $user['id'],
+            ]);
+            $user['password_hash'] = $rehash;
+            $user['legacy_password_hash'] = null;
+        }
+        if ($user === null || !$verified) {
             $this->rateLimiter->record($username, $ip, false);
             $this->audit->log(null, $ip, 'auth.login', null, 'failure', ['username' => $username]);
             throw new HttpException(401, 'Invalid username or password.');
