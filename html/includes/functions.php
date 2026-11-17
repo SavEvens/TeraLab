@@ -11,6 +11,9 @@
  * @license https://opensource.org/licenses/BSD-3-Clause
  * @link http://www.unetlab.com/
  * @version 20160415
+ *
+ * Modified by TeraLab contributors, 2026-11-17.
+ * The modifications are licensed under AGPL-3.0-or-later.
  */
 
 /**
@@ -802,11 +805,6 @@ function updateDatabase($db) {
 			$query = 'CREATE TABLE users (username TEXT PRIMARY KEY, cookie TEXT, email TEXT, expiration INTEGER DEFAULT -1, name TEXT, password TEXT, session INT);';
 			$statement = $db -> prepare($query);
 			$statement -> execute();
-
-			// Adding admin user
-			$query = "INSERT INTO users (email, name, username, password) VALUES('root@localhost', 'UNetLab Administrator', 'admin', '".hash('sha256', 'unl')."');";
-			$statement = $db -> prepare($query);
-			$statement -> execute();
 			$db -> commit();
 
 			error_log(date('M d H:i:s ').'INFO: '.$GLOBALS['messages'][90004]);
@@ -831,10 +829,6 @@ function updateDatabase($db) {
 			$statement = $db -> prepare($query);
 			$statement -> execute();
 
-			// Adding admin user
-			$query = "INSERT INTO permissions (lab_id, role, username) SELECT '*', 'admin', 'admin';";
-			$statement = $db -> prepare($query);
-			$statement -> execute();
 			$db -> commit();
 
 			error_log(date('M d H:i:s ').'ERROR: '.$GLOBALS['messages'][90007]);
@@ -862,10 +856,6 @@ function updateDatabase($db) {
 			$statement = $db -> prepare($query);
 			$statement -> execute();
 
-			// Adding admin user
-			$query = "INSERT INTO pods (id, expiration, username) SELECT 0, -1, 'admin';";
-			$statement = $db -> prepare($query);
-			$statement -> execute();
 			$db -> commit();
 
 			error_log(date('M d H:i:s ').'INFO: '.$GLOBALS['messages'][90009]);

@@ -5,6 +5,10 @@
  * html/templates/c7200.php
  *
  * c7200 template for UNetLab.
+ *
+ * Modified by TeraLab contributors, 2026-11-17.
+ * The modifications are licensed under AGPL-3.0-or-later.
+ */
 $p['slot2'] = '';
 $p['slot3'] = '';
 $p['slot4'] = '';

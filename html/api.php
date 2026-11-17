@@ -11,9 +11,12 @@
  * @license https://opensource.org/licenses/BSD-3-Clause
  * @link http://www.unetlab.com/
  * @version 20160719
+ *
+ * Modified by TeraLab contributors, 2026-11-17.
+ * The modifications are licensed under AGPL-3.0-or-later.
  */
 
-require_once('/opt/unetlab/html/includes/init.php');
+require_once(__DIR__.'/includes/init.php');
 require_once(BASE_DIR.'/html/includes/Slim/Slim.php');
 require_once(BASE_DIR.'/html/includes/Slim-Extras/DateTimeFileWriter.php');
 require_once(BASE_DIR.'/html/includes/api_authentication.php');

@@ -1,0 +1,242 @@
+<?php
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 TeraLab contributors
+
+declare(strict_types=1);
+
+namespace TeraLab\Api\Auth;
+
+use PDO;
+use TeraLab\Api\Config;
+use TeraLab\Api\Http\HttpException;
+
+final class AuthService
+{
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly PasswordPolicy $passwordPolicy,
+        private readonly RateLimiter $rateLimiter,
+        private readonly AuditLogger $audit,
+        private readonly Config $config,
+    ) {
+    }
+
+    public function hasUsers(): bool
+    {
+        $statement = $this->pdo->query('SELECT COUNT(*) FROM users');
+        if ($statement === false) {
+            return false;
+        }
+
+        return (int) $statement->fetchColumn() > 0;
+    }
+
+    public function setup(string $username, string $password, ?string $email, string $ip): void
+    {
+        if ($this->hasUsers()) {
+            throw new HttpException(409, 'Setup has already been completed.');
+        }
+
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$/', $username) !== 1) {
+            throw new HttpException(422, 'Invalid username.');
+        }
+
+        $errors = $this->passwordPolicy->validate($password);
+        if ($errors !== []) {
+            throw new HttpException(422, 'Password does not meet the policy.', ['password' => $errors]);
+        }
+
+        $now = time();
+        $userId = bin2hex(random_bytes(16));
+        $statement = $this->pdo->prepare(
+            'INSERT INTO users '
+            . '(id, username, email, name, password_hash, role, expiration, created_at, updated_at) '
+            . 'VALUES (:id, :username, :email, :name, :password_hash, :role, -1, :created_at, :updated_at)'
+        );
+        $statement->execute([
+            ':id' => $userId,
+            ':username' => $username,
+            ':email' => $email,
+            ':name' => null,
+            ':password_hash' => password_hash($password, PASSWORD_ARGON2ID, [
+                'memory_cost' => 65536,
+                'time_cost' => 3,
+                'threads' => 2,
+            ]),
+            ':role' => 'admin',
+            ':created_at' => $now,
+            ':updated_at' => $now,
+        ]);
+
+        $this->audit->log($userId, $ip, 'auth.setup', null, 'success', ['username' => $username]);
+    }
+
+    /**
+     * @return array{user: array<string, mixed>, session_id: string, csrf_token: string, expires_in: int}
+     */
+    public function login(string $username, string $password, string $ip, string $userAgent): array
+    {
+        $this->rateLimiter->assertAllowed($username, $ip);
+
+        $user = $this->findUserByUsername($username);
+        if ($user === null || !password_verify($password, (string) $user['password_hash'])) {
+            $this->rateLimiter->record($username, $ip, false);
+            $this->audit->log(null, $ip, 'auth.login', null, 'failure', ['username' => $username]);
+            throw new HttpException(401, 'Invalid username or password.');
+        }
+
+        if ((int) $user['expiration'] >= 0 && (int) $user['expiration'] < time()) {
+            $this->audit->log((string) $user['id'], $ip, 'auth.login', null, 'failure', ['reason' => 'expired']);
+            throw new HttpException(403, 'This account has expired.');
+        }
+
+        if (password_needs_rehash((string) $user['password_hash'], PASSWORD_ARGON2ID, [
+            'memory_cost' => 65536,
+            'time_cost' => 3,
+            'threads' => 2,
+        ])) {
+            $statement = $this->pdo->prepare(
+                'UPDATE users SET password_hash = :password_hash, updated_at = :updated_at WHERE id = :id'
+            );
+            $statement->execute([
+                ':password_hash' => password_hash($password, PASSWORD_ARGON2ID, [
+                    'memory_cost' => 65536,
+                    'time_cost' => 3,
+                    'threads' => 2,
+                ]),
+                ':updated_at' => time(),
+                ':id' => (string) $user['id'],
+            ]);
+        }
+
+        $this->rateLimiter->clear($username, $ip);
+        $session = $this->createSession((string) $user['id'], $ip, $userAgent);
+        $this->audit->log((string) $user['id'], $ip, 'auth.login', null, 'success');
+
+        return [
+            'user' => $this->publicUser($user),
+            'session_id' => $session['session_id'],
+            'csrf_token' => $session['csrf_token'],
+            'expires_in' => $this->config->sessionTtl,
+        ];
+    }
+
+    /**
+     * @return array{user: array<string, mixed>, session: array<string, mixed>}
+     */
+    public function authenticate(string $sessionId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT s.id_hash, s.csrf_hash, s.expires_at, '
+            . 'u.id, u.username, u.email, u.name, u.role, u.expiration '
+            . 'FROM sessions s JOIN users u ON u.id = s.user_id '
+            . 'WHERE s.id_hash = :id_hash'
+        );
+        $statement->execute([':id_hash' => hash('sha256', $sessionId)]);
+        $row = $statement->fetch();
+
+        if (!is_array($row)) {
+            throw new HttpException(401, 'Authentication required.');
+        }
+
+        if ((int) $row['expires_at'] < time()) {
+            $delete = $this->pdo->prepare('DELETE FROM sessions WHERE id_hash = :id_hash');
+            $delete->execute([':id_hash' => (string) $row['id_hash']]);
+            throw new HttpException(401, 'Session expired.');
+        }
+
+        if ((int) $row['expiration'] >= 0 && (int) $row['expiration'] < time()) {
+            throw new HttpException(403, 'This account has expired.');
+        }
+
+        $update = $this->pdo->prepare('UPDATE sessions SET last_seen_at = :now WHERE id_hash = :id_hash');
+        $update->execute([':now' => time(), ':id_hash' => (string) $row['id_hash']]);
+
+        return [
+            'user' => $this->publicUser($row),
+            'session' => [
+                'id_hash' => (string) $row['id_hash'],
+                'csrf_hash' => (string) $row['csrf_hash'],
+                'expires_at' => (int) $row['expires_at'],
+            ],
+        ];
+    }
+
+    public function logout(string $sessionId, ?string $userId, string $ip): void
+    {
+        $statement = $this->pdo->prepare('DELETE FROM sessions WHERE id_hash = :id_hash');
+        $statement->execute([':id_hash' => hash('sha256', $sessionId)]);
+        $this->audit->log($userId, $ip, 'auth.logout', null, 'success');
+    }
+
+    public function rotateCsrf(string $sessionId): string
+    {
+        $token = bin2hex(random_bytes(32));
+        $statement = $this->pdo->prepare(
+            'UPDATE sessions SET csrf_hash = :csrf_hash WHERE id_hash = :id_hash'
+        );
+        $statement->execute([
+            ':csrf_hash' => hash('sha256', $token),
+            ':id_hash' => hash('sha256', $sessionId),
+        ]);
+
+        return $token;
+    }
+
+    /**
+     * @return array{session_id: string, csrf_token: string}
+     */
+    private function createSession(string $userId, string $ip, string $userAgent): array
+    {
+        $sessionId = bin2hex(random_bytes(32));
+        $csrfToken = bin2hex(random_bytes(32));
+        $now = time();
+        $statement = $this->pdo->prepare(
+            'INSERT INTO sessions '
+            . '(id_hash, user_id, csrf_hash, ip, user_agent, created_at, last_seen_at, expires_at) '
+            . 'VALUES (:id_hash, :user_id, :csrf_hash, :ip, :user_agent, :created_at, :last_seen_at, :expires_at)'
+        );
+        $statement->execute([
+            ':id_hash' => hash('sha256', $sessionId),
+            ':user_id' => $userId,
+            ':csrf_hash' => hash('sha256', $csrfToken),
+            ':ip' => $ip,
+            ':user_agent' => $userAgent,
+            ':created_at' => $now,
+            ':last_seen_at' => $now,
+            ':expires_at' => $now + $this->config->sessionTtl,
+        ]);
+
+        return ['session_id' => $sessionId, 'csrf_token' => $csrfToken];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function findUserByUsername(string $username): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT * FROM users WHERE username = :username');
+        $statement->execute([':username' => $username]);
+        $row = $statement->fetch();
+
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
+    private function publicUser(array $user): array
+    {
+        $email = $user['email'] ?? null;
+        $name = $user['name'] ?? null;
+
+        return [
+            'id' => (string) $user['id'],
+            'username' => (string) $user['username'],
+            'email' => is_string($email) ? $email : null,
+            'name' => is_string($name) ? $name : null,
+            'role' => (string) $user['role'],
+        ];
+    }
+}
