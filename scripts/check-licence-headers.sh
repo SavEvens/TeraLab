@@ -20,7 +20,7 @@ check_file() {
 		*.png|*.jpg|*.jpeg|*.gif|*.ico|*.svg|*.woff|*.woff2|*.ttf|*.eot)
 			return 0
 			;;
-		*.json|*.lock|*.xml|*.neon|*.dist|*.ini|*.unl|*.exe|*.bin|*.qcow2|*.iso|*.img|*.phar)
+		*.json|*.lock|*.sum|*.xml|*.neon|*.dist|*.ini|*.unl|*.exe|*.bin|*.qcow2|*.iso|*.img|*.phar)
 			return 0
 			;;
 	esac

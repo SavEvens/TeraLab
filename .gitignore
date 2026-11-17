@@ -88,3 +88,9 @@ api/var/
 
 # Product test fixture (intentionally committed)
 !api/tests/fixtures/sample.unl
+
+# Go agent build artifacts
+agent/teralab-agent
+agent/bin/
+agent/coverage.out
+agent/.gocache/

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+
+[Unit]
+Description=TeraLab privileged agent
+Documentation=https://github.com/SavEvens/TeraLab
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/opt/teralab/bin/teralab-agent
+Environment=TERALAB_AGENT_SOCKET=/run/teralab/agent.sock
+Environment=TERALAB_AGENT_CONSOLE=127.0.0.1:8091
+Environment=TERALAB_AGENT_SECRET_FILE=/etc/teralab/agent.secret
+Environment=TERALAB_AGENT_ALLOWED_UIDS=33
+Environment=TERALAB_AGENT_SOCKET_GROUP=www-data
+Environment=TERALAB_RUN_DIR=/var/lib/teralab/run
+Environment=TERALAB_IMAGES_DIR=/var/lib/teralab/images
+Environment=TERALAB_QEMU=/usr/bin/qemu-system-x86_64
+Environment=TERALAB_QEMU_IMG=/usr/bin/qemu-img
+Environment=TERALAB_VM_USER=teralab-vm
+RuntimeDirectory=teralab
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/teralab /run/teralab
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=no
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE
+
+[Install]
+WantedBy=multi-user.target

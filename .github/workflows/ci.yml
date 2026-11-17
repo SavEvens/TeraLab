@@ -76,6 +76,28 @@ jobs:
       - name: Tests
         run: composer test
 
+  agent:
+    name: Agent tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: agent/go.sum
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Tests
+        run: go test ./...
+      - name: Build
+        run: go build ./...
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-24.04

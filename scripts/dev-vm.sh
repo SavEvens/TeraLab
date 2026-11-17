@@ -228,6 +228,17 @@ provision_vm() {
 				sudo ln -sfn "$HOME/.local/go/bin/$b" "/usr/local/bin/$b"
 			done
 		fi
+		if ! id -u teralab-vm >/dev/null 2>&1; then
+			sudo useradd --system --no-create-home --shell /usr/sbin/nologin teralab-vm
+		fi
+		sudo usermod -aG kvm teralab-vm
+		sudo install -d -m 0750 -o root -g www-data /etc/teralab
+		if [ ! -f /etc/teralab/agent.secret ]; then
+			head -c 32 /dev/urandom | base64 | tr -d "\n" | sudo tee /etc/teralab/agent.secret >/dev/null
+		fi
+		sudo chown root:www-data /etc/teralab/agent.secret
+		sudo chmod 0640 /etc/teralab/agent.secret
+		sudo install -d -m 0755 -o savanna -g savanna /var/lib/teralab/run /var/lib/teralab/images
 		printf "provisioned: "
 		php -v | head -1
 	'
