@@ -160,6 +160,9 @@ final class App
         $app->post('/api/v2/labs/{id}/wipe', fn ($request, $response, array $args) => $labs->wipe($request, $response, $args))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/move', fn ($request, $response, array $args) => $labs->move($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/labs/{id}/duplicate', fn ($request, $response, array $args) => $labs->duplicate($request, $response, $args))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));

@@ -133,6 +133,7 @@ final class UnlParser
             'name' => $node->getAttribute('name'),
             'type' => $node->getAttribute('type') !== '' ? $node->getAttribute('type') : 'qemu',
             'template' => $node->getAttribute('template'),
+            'icon' => $node->getAttribute('icon'),
             'image' => $node->getAttribute('image'),
             'iso' => $node->getAttribute('iso'),
             'kernel' => $node->getAttribute('kernel'),
@@ -145,10 +146,13 @@ final class UnlParser
             'serial' => (int) ($node->getAttribute('serial') !== '' ? $node->getAttribute('serial') : 0),
             'uuid' => $node->getAttribute('uuid'),
             'platform' => $node->getAttribute('platform'),
+            'left' => (int) ($node->getAttribute('left') !== '' ? $node->getAttribute('left') : 0),
+            'top' => (int) ($node->getAttribute('top') !== '' ? $node->getAttribute('top') : 0),
             'interfaces' => $interfaces,
             'attributes' => $this->extraAttributes($node, [
-                'id', 'name', 'type', 'template', 'image', 'console', 'cpu', 'ram',
+                'id', 'name', 'type', 'template', 'icon', 'image', 'console', 'cpu', 'ram',
                 'ethernet', 'serial', 'uuid', 'platform', 'iso', 'kernel', 'initrd', 'append',
+                'left', 'top',
             ]),
         ];
     }

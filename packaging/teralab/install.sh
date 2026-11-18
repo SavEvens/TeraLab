@@ -81,9 +81,24 @@ rsync -a --delete \
 	--exclude 'agent/bin' \
 	--exclude 'dist' \
 	--exclude 'node_modules' \
+	--exclude 'ui/node_modules' \
+	--exclude 'ui/dist' \
 	"$SOURCE/" "$ROOT/"
 
 install -d -m 0755 "$ROOT/bin"
+if [ -f "$ROOT/ui/package.json" ]; then
+	if [ ! -d "$ROOT/ui/dist" ]; then
+		if command -v npm >/dev/null 2>&1; then
+			( cd "$ROOT/ui" && npm ci --no-audit --no-fund && npm run build )
+		else
+			printf 'warning: npm not found; the Vue UI will not be built\n' >&2
+		fi
+	fi
+	if [ -d "$ROOT/ui/dist" ]; then
+		install -d -m 0755 "$ROOT/html/ui"
+		cp -a "$ROOT/ui/dist/." "$ROOT/html/ui/"
+	fi
+fi
 if [ -n "$AGENT_BINARY" ]; then
 	install -m 0755 "$AGENT_BINARY" "$ROOT/bin/teralab-agent"
 else
@@ -124,6 +139,13 @@ Alias /api "$ROOT/api/public"
     Options -Indexes +FollowSymLinks
     AllowOverride None
     Require all granted
+</Directory>
+Alias /ui "$ROOT/html/ui"
+<Directory "$ROOT/html/ui">
+    Options -Indexes +FollowSymLinks
+    AllowOverride None
+    Require all granted
+    FallbackResource /ui/index.html
 </Directory>
 ProxyPass        /ws/console ws://127.0.0.1:8091/ws
 ProxyPassReverse /ws/console ws://127.0.0.1:8091/ws

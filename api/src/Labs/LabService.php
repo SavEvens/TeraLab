@@ -159,6 +159,36 @@ final class LabService
         return $this->metadata($lab, $path);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function move(string $id, string $folder, ?string $ownerId = null): array
+    {
+        [$lab, $oldPath] = $this->load($id);
+        $folder = trim($folder, '/');
+        if ($folder !== '' && preg_match('#^[A-Za-z0-9][A-Za-z0-9_./-]{0,127}$#', $folder) !== 1) {
+            throw new HttpException(422, 'Invalid lab folder.');
+        }
+        if (str_contains($folder, '..')) {
+            throw new HttpException(422, 'Invalid lab folder.');
+        }
+        $directory = $this->config->labsDir . ($folder !== '' ? '/' . $folder : '');
+        $path = $this->targetPath($this->slug((string) $lab['name']), $folder === '' ? null : $folder);
+        if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
+            throw new RuntimeException('Cannot create the lab folder.');
+        }
+        $lab['attributes']['updated_at'] = gmdate('c');
+        if ($ownerId !== null && !isset($lab['attributes']['owner'])) {
+            $lab['attributes']['owner'] = $ownerId;
+        }
+        $this->write($path, $lab);
+        if ($oldPath !== $path) {
+            @unlink($oldPath);
+        }
+
+        return $this->metadata($lab, $path);
+    }
+
     public function delete(string $id): void
     {
         [$lab, $path] = $this->load($id);
@@ -175,9 +205,9 @@ final class LabService
     public function start(string $id, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
-        $nodes = $this->labNodes($lab);
+        $nodes = $this->engineNodes($lab);
         if ($nodes === []) {
-            throw new HttpException(422, 'The lab has no nodes.');
+            throw new HttpException(422, 'The lab has no engine nodes.');
         }
 
         if ($userId !== null) {
@@ -213,7 +243,7 @@ final class LabService
     {
         [$lab] = $this->load($id);
         $stopped = [];
-        foreach ($this->labNodes($lab) as $node) {
+        foreach ($this->engineNodes($lab) as $node) {
             $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
             try {
                 $result = $this->agent->stop($agentID);
@@ -239,7 +269,7 @@ final class LabService
     {
         [$lab] = $this->load($id);
         $wiped = [];
-        foreach ($this->labNodes($lab) as $node) {
+        foreach ($this->engineNodes($lab) as $node) {
             $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
             try {
                 $this->agent->stop($agentID);
@@ -333,7 +363,7 @@ final class LabService
     {
         [$lab] = $this->load($id);
         $result = [];
-        foreach ($this->labNodes($lab) as $node) {
+        foreach ($this->engineNodes($lab) as $node) {
             $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
             $state = 'stopped';
             try {
@@ -391,6 +421,18 @@ final class LabService
         }
 
         throw new HttpException(404, 'Lab not found.');
+    }
+
+    /**
+     * @param array<string, mixed> $lab
+     * @return list<array<string, mixed>>
+     */
+    private function engineNodes(array $lab): array
+    {
+        return array_values(array_filter(
+            $this->labNodes($lab),
+            static fn (array $node): bool => in_array($node['type'] ?? '', ['qemu', 'vpcs', 'iol', 'dynamips'], true),
+        ));
     }
 
     /**
@@ -710,6 +752,7 @@ final class LabService
                 'name' => (string) ($raw['name'] ?? $id),
                 'type' => (string) ($raw['type'] ?? 'qemu'),
                 'template' => (string) ($raw['template'] ?? ''),
+                'icon' => (string) ($raw['icon'] ?? ''),
                 'image' => (string) ($raw['image'] ?? ''),
                 'iso' => (string) ($raw['iso'] ?? ''),
                 'kernel' => (string) ($raw['kernel'] ?? ''),
@@ -722,6 +765,8 @@ final class LabService
                 'serial' => 0,
                 'uuid' => (string) ($raw['uuid'] ?? ''),
                 'platform' => (string) ($raw['platform'] ?? ''),
+                'left' => max(0, (int) ($raw['left'] ?? 0)),
+                'top' => max(0, (int) ($raw['top'] ?? 0)),
                 'interfaces' => $interfaces,
                 'attributes' => [],
             ];

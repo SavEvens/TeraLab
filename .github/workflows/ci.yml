@@ -134,6 +134,29 @@ jobs:
             packaging/teralab/install.sh \
             scripts/teralab-project-init.sh
 
+  ui:
+    name: UI build and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Browser E2E
+        run: npm run e2e
+
   release-gate:
     name: Release gate
     runs-on: ubuntu-24.04

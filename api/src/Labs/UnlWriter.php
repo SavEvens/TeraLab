@@ -53,6 +53,7 @@ final class UnlWriter
             $element->setAttribute('type', (string) ($node['type'] ?? 'qemu'));
             foreach ([
                 'template' => 'template',
+                'icon' => 'icon',
                 'image' => 'image',
                 'iso' => 'iso',
                 'kernel' => 'kernel',
@@ -65,6 +66,8 @@ final class UnlWriter
                 'serial' => 'serial',
                 'uuid' => 'uuid',
                 'platform' => 'platform',
+                'left' => 'left',
+                'top' => 'top',
             ] as $key => $attribute) {
                 if (isset($node[$key]) && $node[$key] !== '') {
                     $element->setAttribute($attribute, (string) $node[$key]);
