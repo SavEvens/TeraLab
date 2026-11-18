@@ -165,6 +165,15 @@ export function startMockServer(port = 8099) {
   })
 
   return new Promise((resolve) => {
-    server.listen(port, '127.0.0.1', () => resolve({ server, wss, close: () => { wss.close(); server.close() } }))
+    server.listen(port, '127.0.0.1', () => resolve({
+      server,
+      wss,
+      close: () => {
+        for (const client of wss.clients) client.terminate()
+        wss.close()
+        server.closeAllConnections?.()
+        server.close()
+      }
+    }))
   })
 }

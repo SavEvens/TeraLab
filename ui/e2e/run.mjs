@@ -21,13 +21,18 @@ const env = {
   TERALAB_UI_API: `http://127.0.0.1:${mockPort}`,
   TERALAB_UI_WS: `ws://127.0.0.1:${mockPort}`
 }
-const vite = spawn('npm', ['run', 'dev', '--', '--port', String(uiPort)], {
-  cwd: new URL('..', import.meta.url).pathname,
+const uiDir = new URL('..', import.meta.url).pathname
+const vite = spawn(`${uiDir}/node_modules/.bin/vite`, ['--host', '127.0.0.1', '--port', String(uiPort)], {
+  cwd: uiDir,
   env,
-  stdio: ['ignore', 'pipe', 'pipe']
+  detached: true,
+  stdio: 'ignore'
 })
-vite.stdout.on('data', () => {})
-vite.stderr.on('data', (chunk) => process.stderr.write(chunk))
+const watchdog = setTimeout(() => {
+  console.error('E2E_TIMEOUT')
+  process.exit(1)
+}, 180000)
+watchdog.unref()
 
 async function waitFor(url, timeout = 30000) {
   const start = Date.now()
@@ -167,7 +172,8 @@ try {
   if (!/start/i.test(startToast)) throw new Error('start job toast missing')
   console.log('UI_E2E_OK')
 } finally {
+  clearTimeout(watchdog)
   await browser?.close()
-  vite.kill('SIGTERM')
+  try { process.kill(-vite.pid, 'SIGTERM') } catch {}
   mock.close()
 }
