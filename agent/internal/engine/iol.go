@@ -107,6 +107,15 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		return NodeInfo{}, err
 	}
 
+	if spec.Config != "" {
+		if err := os.WriteFile(filepath.Join(runDir, "startup-config"), []byte(spec.Config), 0o640); err != nil {
+			cleanup()
+			return NodeInfo{}, fmt.Errorf("write iol startup configuration: %w", err)
+		}
+		m.chown(filepath.Join(runDir, "startup-config"))
+		args = append(args, "-c", "startup-config")
+	}
+
 	ptmx, tty, err := pty.Open()
 	if err != nil {
 		cleanup()

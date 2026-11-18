@@ -158,7 +158,7 @@ export function startMockServer(port = 8099) {
     return send(response, 404, { message: 'not found' })
   })
 
-  const wss = new WebSocketServer({ server, path: '/ws/console' })
+  const wss = new WebSocketServer({ server, path: '/ws' })
   wss.on('connection', (socket) => {
     socket.send('hello from mock console\r\n')
     socket.on('message', (message) => socket.send(`echo:${message}`))

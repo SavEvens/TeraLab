@@ -70,6 +70,53 @@ final class TemplateController
     /**
      * @param array<string, string> $args
      */
+    public function export(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $this->access->user($request);
+        $export = $this->templates->export($args['id'] ?? '');
+        $response->getBody()->write($export['yaml']);
+
+        return $response
+            ->withHeader('Content-Type', 'application/yaml; charset=utf-8')
+            ->withHeader('Content-Disposition', 'attachment; filename="' . $export['filename'] . '"');
+    }
+
+    public function import(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $files = $request->getUploadedFiles();
+        $file = $files['file'] ?? null;
+        if (!$file instanceof \Psr\Http\Message\UploadedFileInterface) {
+            throw new HttpException(422, 'A multipart "file" field is required.');
+        }
+        if ($file->getError() !== UPLOAD_ERR_OK) {
+            throw new HttpException(400, 'The template upload did not complete.');
+        }
+        $stream = $file->getStream();
+        $stream->rewind();
+        $template = $this->templates->import($stream->getContents());
+        $this->audit->log((string) $user['id'], $this->address($request), 'template.import', (string) $template['id'], 'success');
+
+        return Json::response($response, ['status' => 'success', 'data' => $template], 201);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function duplicate(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $template = $this->templates->duplicate($args['id'] ?? '');
+        $this->audit->log((string) $user['id'], $this->address($request), 'template.duplicate', (string) $template['id'], 'success');
+
+        return Json::response($response, ['status' => 'success', 'data' => $template]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
     public function delete(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);

@@ -83,6 +83,9 @@ for VNC the generated password.
 - `GET|POST /api/v2/images`, `GET|DELETE /api/v2/images/{id}`.
 - `GET /api/v2/templates` lists built-in and custom YAML templates.
 - `GET /api/v2/templates/{id}` returns a template and its YAML.
+- `GET /api/v2/templates/{id}/export` downloads a template YAML.
+- `POST /api/v2/templates/import` imports YAML (multipart `file`).
+- `POST /api/v2/templates/{id}/duplicate` creates a custom copy.
 - `PUT /api/v2/templates/{id}` creates/updates a custom YAML template (editor).
 - `DELETE /api/v2/templates/{id}` removes a custom template.
 - `PUT /api/v2/images/{id}/template` maps an image to a template.

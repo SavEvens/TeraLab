@@ -93,6 +93,64 @@ final class TemplateRepository
         return $this->load($path, 'custom');
     }
 
+    /**
+     * @return array{filename: string, yaml: string}
+     */
+    public function export(string $id): array
+    {
+        $template = $this->find($id);
+        if ($template === null) {
+            throw new HttpException(404, 'Template not found.');
+        }
+
+        return ['filename' => $id . '.yaml', 'yaml' => (string) $template['yaml']];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function import(string $yaml): array
+    {
+        $parsed = $this->parse($yaml);
+        $id = $parsed['id'] ?? null;
+        if (!is_string($id) || $id === '') {
+            throw new HttpException(422, 'Template id is required.');
+        }
+        $this->validate($parsed);
+        if (is_file($this->builtinDir() . '/' . $id . '.yaml')) {
+            throw new HttpException(409, 'A built-in template already uses this id.');
+        }
+        if (is_file($this->config->templatesDir . '/' . $id . '.yaml')) {
+            throw new HttpException(409, 'A custom template already uses this id.');
+        }
+
+        return $this->saveCustom($id, $yaml);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function duplicate(string $id): array
+    {
+        $template = $this->find($id);
+        if ($template === null) {
+            throw new HttpException(404, 'Template not found.');
+        }
+        $base = $id . '-copy';
+        $newId = $base;
+        $suffix = 1;
+        while ($this->find($newId) !== null) {
+            $suffix++;
+            $newId = $base . '-' . $suffix;
+        }
+        $template['id'] = $newId;
+        $template['name'] = (string) $template['name'] . ' copy';
+        unset($template['source'], $template['yaml']);
+        $yaml = Yaml::dump($template, 8, 2);
+
+        return $this->saveCustom($newId, $yaml);
+    }
+
     public function deleteCustom(string $id): void
     {
         $path = $this->config->templatesDir . '/' . $id . '.yaml';

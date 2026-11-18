@@ -14,6 +14,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': { target: apiTarget, changeOrigin: true },
+      '/ws/console': { target: wsTarget, ws: true, rewrite: (path) => path.replace(/^\/ws\/console/, '/ws') },
+      '/ws/vnc': { target: wsTarget, ws: true, rewrite: (path) => path.replace(/^\/ws\/vnc/, '/vnc') },
+      '/ws/tcp': { target: wsTarget, ws: true, rewrite: (path) => path.replace(/^\/ws\/tcp/, '/tcp') },
       '/ws': { target: wsTarget, ws: true }
     }
   },

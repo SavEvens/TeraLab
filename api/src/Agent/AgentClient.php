@@ -19,7 +19,7 @@ use TeraLab\Api\Http\HttpException;
  */
 final class AgentClient
 {
-    private const TIMEOUT_SECONDS = 5;
+    private const TIMEOUT_SECONDS = 60;
     private const MAX_RESPONSE_BYTES = 1048576;
 
     /** @var Closure(string, string, array<string, mixed>): array{int, string}|null */

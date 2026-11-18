@@ -88,6 +88,11 @@ final class UnlWriter
                 $this->applyAttributes($child, $interface['attributes'] ?? []);
                 $element->appendChild($child);
             }
+            if (isset($node['config']) && $node['config'] !== '') {
+                $config = $document->createElement('config');
+                $config->appendChild($document->createTextNode((string) $node['config']));
+                $element->appendChild($config);
+            }
             $nodes->appendChild($element);
         }
 

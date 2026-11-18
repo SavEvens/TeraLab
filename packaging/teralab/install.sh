@@ -114,7 +114,8 @@ chown root:"$OWNER" /etc/teralab/agent.secret
 chmod 0640 /etc/teralab/agent.secret
 
 install -d -m 0751 -o "$OWNER" -g "$OWNER" "$DATA"
-install -d -m 0750 -o "$OWNER" -g "$OWNER" "$DATA/labs" "$DATA/images"
+install -d -m 0750 -o "$OWNER" -g "$OWNER" "$DATA/labs"
+install -d -m 0755 -o "$OWNER" -g "$OWNER" "$DATA/images"
 install -d -m 0711 "$DATA/run"
 install -d -m 0750 -o root -g "$OWNER" /run/teralab
 

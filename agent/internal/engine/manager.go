@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -567,15 +568,25 @@ func (m *Manager) runDir(spec Spec) (string, error) {
 	}
 	parts := []string{base}
 	if spec.LabID != "" {
-		parts = append(parts, spec.LabID)
+		parts = append(parts, shortPathComponent(spec.LabID))
 	}
-	parts = append(parts, spec.ID)
+	parts = append(parts, shortPathComponent(spec.ID))
 	target := filepath.Join(parts...)
 	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
 		return "", errors.New("run directory escapes the run root")
 	}
 
 	return target, nil
+}
+
+// shortPathComponent keeps nested runtime paths below Unix socket limits.
+func shortPathComponent(value string) string {
+	if len(value) <= 32 {
+		return value
+	}
+	sum := sha256.Sum256([]byte(value))
+
+	return hex.EncodeToString(sum[:8])
 }
 
 func (m *Manager) createOverlay(image, overlay string) error {
@@ -676,7 +687,7 @@ func randomHex(bytes int) string {
 }
 
 func (m *Manager) setVNCPassword(monitorPath, password string) error {
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	var connection net.Conn
 	for {
 		var err error
