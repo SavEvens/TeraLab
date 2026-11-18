@@ -132,7 +132,7 @@ try {
   const xtermCount = await page.locator('.xterm').count()
 
   await page.getByRole('button', { name: 'Start' }).click()
-  await page.waitForSelector('.toast', { timeout: 8000 })
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /start/i.test(toast.textContent || '')), null, { timeout: 12000 })
   const startToast = await page.locator('.toasts').innerText()
   await page.waitForTimeout(800)
 
