@@ -30,17 +30,17 @@ async function request(path, { method = 'GET', body, raw = false } = {}) {
     body: payload
   })
   const text = await response.text()
-  let data = null
+  if (!response.ok) {
+    let error = null
+    try { error = text ? JSON.parse(text) : null } catch {}
+    throw new ApiError(response.status, error?.message || `HTTP ${response.status}`, error?.details || {})
+  }
+  if (raw) return text
   try {
-    data = text ? JSON.parse(text) : null
+    return text ? JSON.parse(text) : null
   } catch {
     throw new ApiError(response.status, 'Invalid server response')
   }
-  if (!response.ok) {
-    throw new ApiError(response.status, data?.message || `HTTP ${response.status}`, data?.details || {})
-  }
-  if (raw) return text
-  return data
 }
 
 export const api = {
@@ -71,6 +71,13 @@ export const api = {
   template: (id) => request(`/templates/${encodeURIComponent(id)}`),
   saveTemplate: (id, yaml) => request(`/templates/${encodeURIComponent(id)}`, { method: 'PUT', body: { yaml } }),
   deleteTemplate: (id) => request(`/templates/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  exportTemplate: (id) => request(`/templates/${encodeURIComponent(id)}/export`, { raw: true }),
+  importTemplate: (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('/templates/import', { method: 'POST', body: form })
+  },
+  duplicateTemplate: (id) => request(`/templates/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }),
   images: () => request('/images'),
   engines: () => request('/engines'),
   job: (id) => request(`/jobs/${encodeURIComponent(id)}`),

@@ -54,6 +54,7 @@ type Spec struct {
 	NVRAM    int      `json:"nvram,omitempty"`
 	Slots    []string `json:"slots,omitempty"`
 	Iourc    string   `json:"iourc,omitempty"`
+	Config   string   `json:"config,omitempty"`
 }
 
 func (s *Spec) Normalize() {
@@ -172,6 +173,9 @@ func (s Spec) validateQEMU(imagesDir string) error {
 	if len(s.Append) > 256 || strings.ContainsAny(s.Append, "\r\n\x00") {
 		return errors.New("invalid kernel append string")
 	}
+	if len(s.Config) > 65536 || strings.ContainsRune(s.Config, 0) {
+		return errors.New("invalid startup configuration")
+	}
 
 	return nil
 }
@@ -232,6 +236,9 @@ func (s Spec) validateIOL(imagesDir string) error {
 		if err := validateFilePath(s.Iourc, imagesDir); err != nil {
 			return err
 		}
+	}
+	if len(s.Config) > 65536 || strings.ContainsRune(s.Config, 0) {
+		return errors.New("invalid startup configuration")
 	}
 
 	return nil

@@ -65,6 +65,7 @@
         @update="updateNode"
         @delete="deleteNode"
         @console="openNodeConsole"
+        @config="downloadConfig"
         @ports="updatePorts"
       />
     </div>
@@ -199,6 +200,7 @@ function buildNode(raw, index) {
       ram: raw.ram || 512,
       uuid: raw.uuid || '',
       platform: raw.platform || '',
+      config: raw.config || '',
       interfaces: interfaces.map((iface, port) => ({
         id: Number(iface.id ?? port),
         name: iface.name || `eth${port}`,
@@ -314,6 +316,7 @@ function addTemplate(template, position = null) {
       ram: defaults.ram || 512,
       uuid: '',
       platform: '',
+      config: '',
       interfaces
     }
   }
@@ -419,6 +422,16 @@ function deleteNode(node) {
   dirty.value = true
 }
 
+function downloadConfig(node) {
+  const blob = new Blob([node.data.config || ''], { type: 'text/plain' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${node.data.name || node.id}.cfg`
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
 async function openNodeConsole(node) {
   try {
     await openConsole(props.id, { id: node.data.id, name: node.data.name })
@@ -444,6 +457,7 @@ function payload() {
       ram: node.data.ram,
       uuid: node.data.uuid,
       platform: node.data.platform,
+      config: node.data.config || '',
       left: Math.round(node.position.x),
       top: Math.round(node.position.y),
       interfaces: node.data.interfaces.map((iface) => ({

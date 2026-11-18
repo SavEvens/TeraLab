@@ -117,6 +117,12 @@ final class UnlParser
      */
     private function parseNode(DOMElement $node): array
     {
+        $config = '';
+        foreach ($node->childNodes as $child) {
+            if ($child instanceof DOMElement && $child->tagName === 'config') {
+                $config = (string) $child->textContent;
+            }
+        }
         $interfaces = [];
         foreach ($node->getElementsByTagName('interface') as $interface) {
             $interfaces[] = [
@@ -145,6 +151,7 @@ final class UnlParser
             'ethernet' => (int) ($node->getAttribute('ethernet') !== '' ? $node->getAttribute('ethernet') : count($interfaces)),
             'serial' => (int) ($node->getAttribute('serial') !== '' ? $node->getAttribute('serial') : 0),
             'uuid' => $node->getAttribute('uuid'),
+            'config' => $config,
             'platform' => $node->getAttribute('platform'),
             'left' => (int) ($node->getAttribute('left') !== '' ? $node->getAttribute('left') : 0),
             'top' => (int) ($node->getAttribute('top') !== '' ? $node->getAttribute('top') : 0),
@@ -152,7 +159,7 @@ final class UnlParser
             'attributes' => $this->extraAttributes($node, [
                 'id', 'name', 'type', 'template', 'icon', 'image', 'console', 'cpu', 'ram',
                 'ethernet', 'serial', 'uuid', 'platform', 'iso', 'kernel', 'initrd', 'append',
-                'left', 'top',
+                'left', 'top', 'config',
             ]),
         ];
     }

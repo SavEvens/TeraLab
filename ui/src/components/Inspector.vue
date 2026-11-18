@@ -23,8 +23,12 @@
     <label>Ethernet
       <input type="number" min="0" max="16" :value="node.data.interfaces.length" @change="updatePorts(Number($event.target.value))" />
     </label>
+    <label>Startup config (IOL)
+      <textarea :value="node.data.config || ''" rows="6" placeholder="hostname R1&#10;interface Ethernet0/0" @input="update('config', $event.target.value)" />
+    </label>
     <div class="row">
       <button @click="$emit('console', node)">Console</button>
+      <button class="ghost" :disabled="!node.data.config" @click="$emit('config', node)">Config</button>
       <button class="danger" @click="$emit('delete', node)">Delete</button>
     </div>
   </aside>

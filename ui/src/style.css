@@ -124,3 +124,7 @@ button.ghost.active { border-color: var(--accent); color: var(--accent); }
 .text-node { background: transparent; color: var(--text); font-size: 14px; padding: 4px 8px; border: 1px dashed var(--line); border-radius: 6px; }
 .picture-node { background: transparent; border: 1px dashed var(--line); border-radius: 6px; padding: 4px; max-width: 240px; color: var(--muted); }
 .picture-node img { max-width: 100%; display: block; }
+.templates { max-width: 1300px; margin: 0 auto; }
+.template-editor { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.template-editor textarea { min-height: 480px; width: 100%; font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; }
+.palette li.active { border-color: var(--accent); }

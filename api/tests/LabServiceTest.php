@@ -147,9 +147,11 @@ final class LabServiceTest extends TestCase
             'ram' => 64,
             'interfaces' => [],
         ];
+        $engine = $this->node('1', 'PC1', 'vpcs', '', []);
+        $engine['config'] = "hostname PC1\n";
         $lab = $service->create([
             'name' => 'Text Lab',
-            'nodes' => [$text, $this->node('1', 'PC1', 'vpcs', '', [])],
+            'nodes' => [$text, $engine],
         ]);
 
         $result = $service->start((string) $lab['id']);
@@ -163,6 +165,9 @@ final class LabServiceTest extends TestCase
         $export = $service->export((string) $lab['id']);
         self::assertStringContainsString('type="text"', $export['xml']);
         self::assertStringContainsString('name="Notes"', $export['xml']);
+        self::assertStringContainsString('<config>hostname PC1', $export['xml']);
+        $parsed = $this->parser->parseXml($export['xml']);
+        self::assertSame("hostname PC1\n", $parsed['node_list'][1]['config']);
     }
 
     public function testLegacySampleLabParses(): void

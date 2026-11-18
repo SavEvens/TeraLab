@@ -166,6 +166,30 @@ final class Phase1ApiTest extends TestCase
         self::assertSame(200, $removed->getStatusCode());
     }
 
+    public function testTemplateImportExportDuplicate(): void
+    {
+        [$editorCookie, $editorCsrf] = $this->login('editor', self::EDITOR_PASSWORD);
+        $yaml = "schema: 1\nid: custom1\nname: Custom One\nkind: qemu\ndefaults:\n  cpu: 2\noptions: {}\n";
+        self::assertSame(200, $this->request('PUT', '/api/v2/templates/custom1', ['yaml' => $yaml], [], $editorCookie, $editorCsrf)->getStatusCode());
+
+        $export = $this->request('GET', '/api/v2/templates/custom1/export', [], [], $editorCookie);
+        self::assertSame(200, $export->getStatusCode());
+        self::assertStringContainsString('id: custom1', (string) $export->getBody());
+
+        $duplicate = $this->request('POST', '/api/v2/templates/custom1/duplicate', [], [], $editorCookie, $editorCsrf);
+        self::assertSame(200, $duplicate->getStatusCode(), (string) $duplicate->getBody());
+        self::assertSame('custom1-copy', $this->json($duplicate)['data']['id']);
+
+        $builtinCopy = $this->request('POST', '/api/v2/templates/linux/duplicate', [], [], $editorCookie, $editorCsrf);
+        self::assertSame(200, $builtinCopy->getStatusCode(), (string) $builtinCopy->getBody());
+        self::assertSame('linux-copy', $this->json($builtinCopy)['data']['id']);
+
+        $importYaml = "schema: 1\nid: imported1\nname: Imported\nkind: vpcs\ndefaults:\n  ethernet: 1\noptions: {}\n";
+        $import = $this->request('POST', '/api/v2/templates/import', [], [], $editorCookie, $editorCsrf, $this->upload($importYaml, 'imported1.yaml'));
+        self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
+        self::assertSame('custom', $this->json($import)['data']['source']);
+    }
+
     public function testPasswordChangeRevokesOtherSessions(): void
     {
         [$firstCookie, $firstCsrf] = $this->login('editor', self::EDITOR_PASSWORD);

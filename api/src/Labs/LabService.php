@@ -529,6 +529,9 @@ final class LabService
         if (($node['platform'] ?? '') !== '') {
             $spec['platform'] = (string) $node['platform'];
         }
+        if (($node['config'] ?? '') !== '') {
+            $spec['config'] = (string) $node['config'];
+        }
         foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {
             $path = $this->imagePath((string) ($node[$key] ?? ''));
             if ($path !== '') {
@@ -765,6 +768,7 @@ final class LabService
                 'serial' => 0,
                 'uuid' => (string) ($raw['uuid'] ?? ''),
                 'platform' => (string) ($raw['platform'] ?? ''),
+                'config' => (string) ($raw['config'] ?? ''),
                 'left' => max(0, (int) ($raw['left'] ?? 0)),
                 'top' => max(0, (int) ($raw['top'] ?? 0)),
                 'interfaces' => $interfaces,

@@ -228,6 +228,16 @@ final class App
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->show($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/templates/{id}/export', fn ($request, $response, array $args) => $templates->export($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/templates/import', fn ($request, $response) => $templates->import($request, $response))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/templates/{id}/duplicate', fn ($request, $response, array $args) => $templates->duplicate($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
         $app->put('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->save($request, $response, $args))
             ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
