@@ -3,6 +3,8 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { chromium } from 'playwright-core'
 import { startMockServer } from './mock-server.mjs'
