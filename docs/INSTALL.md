@@ -50,12 +50,27 @@ sudo systemctl reload apache2
 `/ws/console`, `/ws/vnc`, and `/ws/tcp` proxy to the loopback agent gateway.
 The agent is the only privileged process; the web tier never starts QEMU.
 
+## TLS and cookies
+
+Session cookies use the `Secure` attribute automatically when the request
+arrives over HTTPS (direct TLS, `X-Forwarded-Proto: https`, or port 443). On a
+plain-HTTP install the cookie is not marked Secure, so first-run login works
+without extra configuration.
+
+For a TLS-terminating reverse proxy, forward `X-Forwarded-Proto: https`, or set
+`TERALAB_COOKIE_SECURE=1` (environment) / `'cookie_secure' => true` in
+`/etc/teralab/config.php`. Do not expose the agent or the API without TLS in
+production.
+
 ## First run
 
 1. Open `http://<host>/` or call `GET /api/v2/health`.
 2. Create the administrator once with `POST /api/v2/setup`.
 3. Log in with the session cookie and use `/api/v2/labs` to create/start labs.
+
 4. Open the new UI at `http://<host>/ui/` (the legacy jQuery UI remains at `/`).
+5. Upload qcow2/ISO/IOL/Dynamips files on the Images page, then pick them in
+   the node inspector. Custom YAML templates live in `/etc/teralab/templates`.
 
 There are no default accounts, no telemetry, and no `setcap` usage.
 

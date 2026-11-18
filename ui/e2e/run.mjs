@@ -2,7 +2,7 @@
 // Copyright (C) 2026 TeraLab contributors
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -84,6 +84,25 @@ try {
   await page.getByLabel('Password').fill('Teralab-Admin-2026!')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await page.waitForURL(`**/ui/labs`)
+
+  // Images: upload, rename, map a template.
+  await page.getByRole('link', { name: 'Images' }).click()
+  await page.waitForURL('**/ui/images')
+  const imageFile = path.join(outDir, 'base.qcow2')
+  writeFileSync(imageFile, 'QFI\xfb' + '\0'.repeat(64))
+  await page.locator('.images-view input[type=file]').setInputFiles(imageFile)
+  await page.getByRole('button', { name: 'Upload' }).click()
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /uploaded/i.test(toast.textContent || '')), null, { timeout: 10000 })
+  await page.waitForSelector('.images-view tbody tr')
+  page.once('dialog', (dialog) => dialog.accept('Renamed base'))
+  await page.getByRole('button', { name: 'Rename' }).click()
+  await page.waitForFunction(() => document.querySelector('.images-view tbody')?.textContent.includes('Renamed base'), null, { timeout: 10000 })
+  await page.locator('.images-view tbody tr').first().locator('select').selectOption('linux')
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /Template mapped/i.test(toast.textContent || '')), null, { timeout: 10000 })
+  const imageRow = await page.locator('.images-view tbody tr').first().innerText()
+
+  await page.getByRole('link', { name: 'Labs', exact: true }).click()
+  await page.waitForURL('**/ui/labs')
   await page.getByRole('link', { name: 'Editor Lab' }).click()
   await page.waitForURL(`**/ui/labs/lab1`)
   await page.waitForSelector('.lab-node')
@@ -96,6 +115,8 @@ try {
 
   // Inspector edit triggers autosave.
   await page.locator('.lab-node').first().click()
+  const imageSelect = page.locator('.inspector label').filter({ hasText: 'Image' }).locator('select')
+  const imageOptions = await imageSelect.locator('option').allTextContents()
   const nameInput = page.locator('.inspector input').first()
   await nameInput.fill('Renamed R1')
   const nicSelect = page.locator('.inspector select').filter({ has: page.locator('option[value="e1000"]') })
@@ -153,6 +174,14 @@ try {
   const largeMs = Date.now() - largeStart
   await page.screenshot({ path: `${outDir}/editor-100.png`, fullPage: true })
 
+  await page.getByRole('link', { name: 'Images' }).click()
+  await page.waitForURL('**/ui/images')
+  await page.waitForSelector('.images-view tbody tr', { timeout: 10000 })
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Delete' }).first().click()
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /deleted/i.test(toast.textContent || '')), null, { timeout: 10000 })
+  const imagesAfterDelete = await page.locator('.images-view tbody tr').count()
+
   const result = {
     initialNodes,
     addedNodes,
@@ -160,11 +189,14 @@ try {
     conflictText: conflictText.replace(/\s+/g, ' ').trim(),
     consoleTab,
     nodeFields,
+    imageRow: imageRow.replace(/\s+/g, ' ').trim(),
+    imageOptions,
     dockPersists,
     tableRows,
     xtermCount,
     startToast: startToast.replace(/\s+/g, ' ').trim(),
     largeMs,
+    imagesAfterDelete,
     pageErrors: errors
   }
   console.log(JSON.stringify(result, null, 2))
@@ -172,12 +204,15 @@ try {
   if (addedNodes !== initialNodes + 1) throw new Error('palette add failed')
   if (!savedText.includes('Saved')) throw new Error('autosave did not complete')
   if (nodeFields.nic !== 'virtio-net-pci' || nodeFields.serial !== 2) throw new Error('node nic/serial were not saved')
+  if (!imageRow.includes('Renamed base')) throw new Error('image rename failed')
+  if (!imageOptions.some((option) => option.includes('Renamed base'))) throw new Error('inspector image picker missing uploaded image')
   if (!conflictText.includes('Save conflict')) throw new Error('conflict dialog missing')
   if (!consoleTab.trim()) throw new Error('console tab missing')
   if (xtermCount < 1) throw new Error('xterm not mounted')
   if (tableRows < 5) throw new Error('table fallback missing nodes')
   if (dockPersists !== 1) throw new Error('console dock did not persist across routes')
   if (largeMs > 10000) throw new Error(`100-node editor open took ${largeMs}ms`)
+  if (imagesAfterDelete !== 0) throw new Error('image delete failed')
   if (!/start/i.test(startToast)) throw new Error('start job toast missing')
   console.log('UI_E2E_OK')
 } finally {

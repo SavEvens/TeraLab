@@ -132,3 +132,9 @@ button.ghost.active { border-color: var(--accent); color: var(--accent); }
 .drop-hint { background: #16233f; border: 1px dashed var(--accent); border-radius: 8px; padding: 10px 14px; color: var(--accent); }
 .trash { margin-top: 28px; }
 .trash h2 { font-size: 16px; margin: 0 0 4px; }
+.images-view { max-width: 1300px; margin: 0 auto; }
+.images-view .upload { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 16px; }
+.images-view .upload label { min-width: 160px; }
+.images-view td small { display: block; color: var(--muted); font-size: 11px; word-break: break-all; }
+.images-view code { font-size: 11px; color: var(--muted); }
+.images-view td select { max-width: 140px; }

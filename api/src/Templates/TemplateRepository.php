@@ -47,7 +47,11 @@ final class TemplateRepository
         }
         $custom = $this->config->templatesDir . '/' . $id . '.yaml';
         if (is_file($custom)) {
-            return $this->load($custom, 'custom');
+            try {
+                return $this->load($custom, 'custom');
+            } catch (HttpException) {
+                return null;
+            }
         }
         $builtin = $this->builtinDir() . '/' . $id . '.yaml';
         if (is_file($builtin)) {

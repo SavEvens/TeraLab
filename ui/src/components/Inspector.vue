@@ -17,7 +17,28 @@
         <option value="dynamips">dynamips</option>
       </select>
     </label>
-    <label>Image <input :value="node.data.image" @input="update('image', $event.target.value)" placeholder="/var/lib/teralab/images/..." /></label>
+    <label>Image
+      <select :value="node.data.image" @change="update('image', $event.target.value)">
+        <option value="">—</option>
+        <option v-if="node.data.image && !imagesFor(node.data.kind).some((image) => image.path === node.data.image)" :value="node.data.image">
+          {{ node.data.image }}
+        </option>
+        <option v-for="image in imagesFor(node.data.kind)" :key="image.id" :value="image.path">
+          {{ image.name }} ({{ image.format || image.kind }})
+        </option>
+      </select>
+    </label>
+    <label v-if="node.data.kind === 'qemu'">ISO
+      <select :value="node.data.iso" @change="update('iso', $event.target.value)">
+        <option value="">—</option>
+        <option v-if="node.data.iso && !imagesFor('iso').some((image) => image.path === node.data.iso)" :value="node.data.iso">
+          {{ node.data.iso }}
+        </option>
+        <option v-for="image in imagesFor('iso')" :key="image.id" :value="image.path">
+          {{ image.name }} ({{ image.format || image.kind }})
+        </option>
+      </select>
+    </label>
     <label>Console
       <select :value="node.data.console" @change="update('console', $event.target.value)">
         <option value="telnet">telnet</option>
@@ -57,9 +78,14 @@
 <script setup>
 const props = defineProps({
   node: { type: Object, default: null },
-  templates: { type: Array, default: () => [] }
+  templates: { type: Array, default: () => [] },
+  images: { type: Array, default: () => [] }
 })
 const emit = defineEmits(['update', 'delete', 'console', 'config', 'ports', 'template'])
+
+function imagesFor(kind) {
+  return props.images.filter((image) => image.kind === kind)
+}
 
 function update(key, value) {
   emit('update', { key, value })

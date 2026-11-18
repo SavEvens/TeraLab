@@ -10,7 +10,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "e2e": "node e2e/run.mjs",
-    "e2e:real": "node e2e/real.mjs"
+    "e2e:real": "node e2e/real.mjs",
+    "e2e:apache": "node e2e/apache.mjs"
   },
   "dependencies": {
     "@novnc/novnc": "^1.5.0",

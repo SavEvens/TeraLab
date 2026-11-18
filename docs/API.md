@@ -83,7 +83,7 @@ for VNC the generated password.
 - `POST /api/v2/labs/{id}/networks/cleanup`.
 - `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol availability.
 - `GET /api/v2/system/host` reports agent load, disk, nodes, and engines.
-- `GET|POST /api/v2/images`, `GET|DELETE /api/v2/images/{id}`.
+- `GET|POST /api/v2/images`, `GET|DELETE /api/v2/images/{id}`, `PATCH` to rename.
 - `GET /api/v2/templates` lists built-in and custom YAML templates.
 - `GET /api/v2/templates/{id}` returns a template and its YAML.
 - `GET /api/v2/templates/{id}/export` downloads a template YAML.

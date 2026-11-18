@@ -30,6 +30,8 @@ npm run dev        # http://127.0.0.1:5173/ui/
 npm test           # Vitest unit tests
 npm run build      # dist/
 npm run e2e        # mock API + Chromium E2E
+npm run e2e:real   # real API/agent via Vite + SSH tunnels
+npm run e2e:apache # installed Apache /ui/ + /api + /ws (real stack)
 ```
 
 The dev server proxies `/api` to `TERALAB_UI_API` (default
@@ -41,6 +43,16 @@ The dev server proxies `/api` to `TERALAB_UI_API` (default
 `packaging/teralab/install.sh` builds the app and installs `dist/` at
 `html/ui`; Apache serves it at `/ui/` with SPA fallback. The app expects the
 API on the same origin and the console gateway at `/ws/*`.
+
+## Apache E2E
+
+`e2e/apache.mjs` drives the installed `/ui/` through Apache and checks login
+over HTTP (non-Secure cookie), `/api/v2/version`, template import/export,
+image upload/rename/map, drag-drop import, VNC, telnet WebSocket, and a
+100-node interaction FPS budget.
+
+Environment: `TERALAB_APACHE_URL` (default `http://127.0.0.1:18080`),
+`TERALAB_TEST_IMAGE` (small qcow2), `TERALAB_ADMIN_PASSWORD`.
 
 ## Licence
 
