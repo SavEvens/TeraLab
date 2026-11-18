@@ -45,6 +45,7 @@ type Spec struct {
 	CPU      int      `json:"cpu"`
 	RAM      int      `json:"ram"`
 	Ethernet int      `json:"ethernet"`
+	Serial   int      `json:"serial,omitempty"`
 	Networks []string `json:"networks,omitempty"`
 	NIC      string   `json:"nic,omitempty"`
 	Machine  string   `json:"machine,omitempty"`
@@ -124,6 +125,9 @@ func (s Spec) Validate(imagesDir string) error {
 	}
 	if s.Console != "telnet" && s.Console != "vnc" {
 		return errors.New("console must be either telnet or vnc")
+	}
+	if s.Serial < 0 || s.Serial > 8 {
+		return errors.New("serial must be between 0 and 8")
 	}
 	if !uuidPattern.MatchString(s.UUID) {
 		return errors.New("invalid uuid")

@@ -52,6 +52,9 @@ func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig, kvm
 			"-serial", "stdio",
 		)
 	}
+	for index := 0; index < spec.Serial; index++ {
+		args = append(args, "-serial", "pty")
+	}
 
 	if kvm {
 		args = append(args, "-accel", "kvm", "-cpu", "host")

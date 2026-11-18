@@ -119,10 +119,72 @@ final class LabController
         $user = $this->access->user($request);
         $this->access->requireRole($user, 'editor');
         $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
-        $this->service->delete((string) $lab['id']);
+        $this->service->delete((string) $lab['id'], (string) $user['id']);
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.delete', (string) $lab['id'], 'success');
 
         return Json::response($response, ['status' => 'success']);
+    }
+
+    public function trash(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $entries = $this->service->trash();
+        if (!$this->access->isAdmin($user)) {
+            $entries = array_values(array_filter(
+                $entries,
+                static fn (array $entry): bool => (string) ($entry['deleted_by'] ?? '') === (string) $user['id'],
+            ));
+        }
+
+        return Json::response($response, ['data' => $entries]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function restore(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $this->assertTrashEntry($user, $args['id'] ?? '');
+        $lab = $this->service->restore($args['id'] ?? '');
+        $this->audit->log((string) $user['id'], $this->ip($request), 'lab.restore', (string) $lab['id'], 'success');
+
+        return Json::response($response, ['status' => 'success', 'data' => $lab]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function purge(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $this->assertTrashEntry($user, $args['id'] ?? '');
+        $this->service->purge($args['id'] ?? '');
+        $this->audit->log((string) $user['id'], $this->ip($request), 'lab.purge', (string) ($args['id'] ?? ''), 'success');
+
+        return Json::response($response, ['status' => 'success']);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     */
+    private function assertTrashEntry(array $user, string $id): void
+    {
+        foreach ($this->service->trash() as $entry) {
+            if ((string) $entry['id'] !== $id && (string) $entry['name'] !== $id) {
+                continue;
+            }
+            if (!$this->access->isAdmin($user) && (string) ($entry['deleted_by'] ?? '') !== (string) $user['id']) {
+                throw new HttpException(403, 'You cannot restore a lab deleted by another user.');
+            }
+
+            return;
+        }
+
+        throw new HttpException(404, 'Lab not found in trash.');
     }
 
     /**

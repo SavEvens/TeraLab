@@ -38,6 +38,9 @@ CSRF=$(curl -b jar $B/api/v2/auth/me | jq -r .csrf_token)
 | POST | `/api/v2/labs/{id}/stop` | Stop all nodes and remove lab bridges |
 | POST | `/api/v2/labs/{id}/wipe` | Stop, wipe node state, and remove bridges |
 | GET | `/api/v2/labs/{id}/nodes` | Per-node agent state |
+| GET | `/api/v2/labs/trash` | Trashed labs (30-day restore window) |
+| POST | `/api/v2/labs/{id}/restore` | Restore a trashed lab |
+| DELETE | `/api/v2/labs/trash/{id}` | Permanently delete a trashed lab |
 | GET | `/api/v2/labs/{id}/permissions` | Admin: list per-lab permissions |
 | POST | `/api/v2/labs/{id}/permissions` | Admin: grant `{username, role}` |
 | DELETE | `/api/v2/labs/{id}/permissions/{user}` | Admin: revoke |

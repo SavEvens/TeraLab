@@ -3,6 +3,12 @@
   <aside v-if="node" class="inspector">
     <h2>{{ node.data.name || node.id }}</h2>
     <label>Name <input :value="node.data.name" @input="update('name', $event.target.value)" /></label>
+    <label v-if="templates.length">Apply template
+      <select :value="node.data.template" @change="$emit('template', $event.target.value)">
+        <option value="">—</option>
+        <option v-for="template in templates" :key="template.id" :value="template.id">{{ template.name || template.id }}</option>
+      </select>
+    </label>
     <label>Type
       <select :value="node.data.kind" @change="update('kind', $event.target.value)">
         <option value="qemu">qemu</option>
@@ -20,8 +26,18 @@
     </label>
     <label>CPU <input type="number" min="1" :value="node.data.cpu" @input="update('cpu', Number($event.target.value))" /></label>
     <label>RAM (MiB) <input type="number" min="64" :value="node.data.ram" @input="update('ram', Number($event.target.value))" /></label>
+    <label>NIC driver
+      <select :value="node.data.nic || 'e1000'" @change="update('nic', $event.target.value)">
+        <option value="e1000">e1000</option>
+        <option value="virtio-net-pci">virtio-net-pci</option>
+        <option value="rtl8139">rtl8139</option>
+      </select>
+    </label>
     <label>Ethernet
       <input type="number" min="0" max="16" :value="node.data.interfaces.length" @change="updatePorts(Number($event.target.value))" />
+    </label>
+    <label>Serial ports
+      <input type="number" min="0" max="8" :value="node.data.serial || 0" @input="update('serial', Number($event.target.value))" />
     </label>
     <label>Startup config (IOL)
       <textarea :value="node.data.config || ''" rows="6" placeholder="hostname R1&#10;interface Ethernet0/0" @input="update('config', $event.target.value)" />
@@ -39,8 +55,11 @@
 </template>
 
 <script setup>
-const props = defineProps({ node: { type: Object, default: null } })
-const emit = defineEmits(['update', 'delete', 'console', 'ports'])
+const props = defineProps({
+  node: { type: Object, default: null },
+  templates: { type: Array, default: () => [] }
+})
+const emit = defineEmits(['update', 'delete', 'console', 'config', 'ports', 'template'])
 
 function update(key, value) {
   emit('update', { key, value })

@@ -139,7 +139,15 @@ final class App
         $app->post('/api/v2/labs/import', fn ($request, $response) => $labs->import($request, $response))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/labs/trash', fn ($request, $response) => $labs->trash($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->delete('/api/v2/labs/trash/{id}', fn ($request, $response, array $args) => $labs->purge($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/labs/{id}', fn ($request, $response, array $args) => $labs->show($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/restore', fn ($request, $response, array $args) => $labs->restore($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->put('/api/v2/labs/{id}', fn ($request, $response, array $args) => $labs->save($request, $response, $args))
             ->add($container->get(CsrfMiddleware::class))

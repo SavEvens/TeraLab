@@ -14,6 +14,8 @@ use TeraLab\Api\Http\HttpException;
 
 final class LabService
 {
+    private const TRASH_TTL = 2592000; // 30 days
+
     public function __construct(
         private readonly Config $config,
         private readonly UnlParser $parser,
@@ -189,13 +191,143 @@ final class LabService
         return $this->metadata($lab, $path);
     }
 
-    public function delete(string $id): void
+    public function delete(string $id, ?string $userId = null): void
     {
         [$lab, $path] = $this->load($id);
         $this->assertNoRunningNodes($lab);
+        $this->purgeExpiredTrash();
 
-        if (!unlink($path)) {
-            throw new RuntimeException('Cannot delete the lab file.');
+        $trash = $this->trashDir();
+        if (!is_dir($trash) && !mkdir($trash, 0770, true) && !is_dir($trash)) {
+            throw new RuntimeException('Cannot create the trash directory.');
+        }
+        $token = bin2hex(random_bytes(8));
+        $target = $trash . '/' . $token . '.unl';
+        if (!rename($path, $target)) {
+            throw new RuntimeException('Cannot move the lab to trash.');
+        }
+        $metadata = [
+            'id' => (string) $lab['id'],
+            'name' => (string) $lab['name'],
+            'original_path' => ltrim(str_replace($this->config->labsDir, '', $path), '/'),
+            'deleted_by' => $userId,
+            'deleted_at' => time(),
+        ];
+        file_put_contents(
+            $trash . '/' . $token . '.json',
+            json_encode($metadata, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT)
+        );
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function trash(): array
+    {
+        $this->purgeExpiredTrash();
+        $directory = $this->trashDir();
+        if (!is_dir($directory)) {
+            return [];
+        }
+        $entries = [];
+        foreach (glob($directory . '/*.json') ?: [] as $metadataFile) {
+            $metadata = json_decode((string) file_get_contents($metadataFile), true);
+            if (!is_array($metadata)) {
+                continue;
+            }
+            $token = basename($metadataFile, '.json');
+            $labFile = $directory . '/' . $token . '.unl';
+            if (!is_file($labFile)) {
+                continue;
+            }
+            try {
+                $lab = $this->parser->parse($labFile);
+            } catch (\Throwable) {
+                continue;
+            }
+            $entries[] = [
+                'id' => (string) $lab['id'],
+                'name' => (string) ($metadata['name'] ?? $lab['name']),
+                'original_path' => (string) ($metadata['original_path'] ?? ''),
+                'deleted_at' => (int) ($metadata['deleted_at'] ?? 0),
+                'deleted_by' => $metadata['deleted_by'] ?? null,
+                'expires_at' => (int) ($metadata['deleted_at'] ?? 0) + self::TRASH_TTL,
+                'trash_token' => $token,
+            ];
+        }
+        usort($entries, static fn (array $a, array $b): int => $b['deleted_at'] <=> $a['deleted_at']);
+
+        return $entries;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function restore(string $id): array
+    {
+        $this->purgeExpiredTrash();
+        $directory = $this->trashDir();
+        if (!is_dir($directory)) {
+            throw new HttpException(404, 'Lab not found in trash.');
+        }
+        foreach ($this->trash() as $entry) {
+            if ((string) $entry['id'] !== $id && (string) $entry['name'] !== $id) {
+                continue;
+            }
+            $token = (string) $entry['trash_token'];
+            $labFile = $directory . '/' . $token . '.unl';
+            $lab = $this->parser->parse($labFile);
+            $folder = dirname((string) $entry['original_path']);
+            $folder = $folder === '.' ? '' : $folder;
+            $path = $this->targetPath($this->slug((string) $lab['name']), $folder === '' ? null : $folder);
+            if (!rename($labFile, $path)) {
+                throw new RuntimeException('Cannot restore the lab.');
+            }
+            @unlink($directory . '/' . $token . '.json');
+
+            return $this->metadata($lab, $path);
+        }
+
+        throw new HttpException(404, 'Lab not found in trash.');
+    }
+
+    public function purge(string $id): void
+    {
+        $directory = $this->trashDir();
+        foreach ($this->trash() as $entry) {
+            if ((string) $entry['id'] !== $id && (string) $entry['name'] !== $id) {
+                continue;
+            }
+            $token = (string) $entry['trash_token'];
+            @unlink($directory . '/' . $token . '.unl');
+            @unlink($directory . '/' . $token . '.json');
+
+            return;
+        }
+
+        throw new HttpException(404, 'Lab not found in trash.');
+    }
+
+    private function trashDir(): string
+    {
+        return $this->config->labsDir . '/.trash';
+    }
+
+    private function purgeExpiredTrash(): void
+    {
+        $directory = $this->trashDir();
+        if (!is_dir($directory)) {
+            return;
+        }
+        $cutoff = time() - self::TRASH_TTL;
+        foreach (glob($directory . '/*.json') ?: [] as $metadataFile) {
+            $metadata = json_decode((string) file_get_contents($metadataFile), true);
+            if (!is_array($metadata) || (int) ($metadata['deleted_at'] ?? 0) > $cutoff) {
+                continue;
+            }
+            $token = basename($metadataFile, '.json');
+            @unlink($directory . '/' . $token . '.unl');
+            @unlink($metadataFile);
         }
     }
 
@@ -410,6 +542,9 @@ final class LabService
             if ($path === false || !str_starts_with($path, $root . DIRECTORY_SEPARATOR)) {
                 continue;
             }
+            if (str_contains($path, DIRECTORY_SEPARATOR . '.trash' . DIRECTORY_SEPARATOR)) {
+                continue;
+            }
             try {
                 $lab = $this->parser->parse($path);
             } catch (\Throwable) {
@@ -529,6 +664,13 @@ final class LabService
         if (($node['platform'] ?? '') !== '') {
             $spec['platform'] = (string) $node['platform'];
         }
+        if (($node['nic'] ?? '') !== '') {
+            $spec['nic'] = (string) $node['nic'];
+        }
+        if (($node['machine'] ?? '') !== '') {
+            $spec['machine'] = (string) $node['machine'];
+        }
+        $spec['serial'] = (int) ($node['serial'] ?? 0);
         if (($node['config'] ?? '') !== '') {
             $spec['config'] = (string) $node['config'];
         }
@@ -765,9 +907,11 @@ final class LabService
                 'cpu' => max(1, (int) ($raw['cpu'] ?? 1)),
                 'ram' => max(64, (int) ($raw['ram'] ?? 512)),
                 'ethernet' => count($interfaces),
-                'serial' => 0,
+                'serial' => max(0, min(8, (int) ($raw['serial'] ?? 0))),
                 'uuid' => (string) ($raw['uuid'] ?? ''),
                 'platform' => (string) ($raw['platform'] ?? ''),
+                'nic' => (string) ($raw['nic'] ?? ''),
+                'machine' => (string) ($raw['machine'] ?? ''),
                 'config' => (string) ($raw['config'] ?? ''),
                 'left' => max(0, (int) ($raw['left'] ?? 0)),
                 'top' => max(0, (int) ($raw['top'] ?? 0)),

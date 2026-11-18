@@ -98,8 +98,15 @@ try {
   await page.locator('.lab-node').first().click()
   const nameInput = page.locator('.inspector input').first()
   await nameInput.fill('Renamed R1')
+  const nicSelect = page.locator('.inspector select').filter({ has: page.locator('option[value="e1000"]') })
+  await nicSelect.selectOption('virtio-net-pci')
+  const serialInput = page.locator('.inspector label').filter({ hasText: 'Serial ports' }).locator('input')
+  await serialInput.fill('2')
   await page.waitForTimeout(1800)
   const savedText = await page.locator('.save-state').innerText()
+  const saved = (await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()).lab
+  const savedNode = saved.node_list.find((node) => node.id === '1')
+  const nodeFields = { nic: savedNode?.nic, serial: savedNode?.serial }
 
   // Force one conflict and check the dialog.
   await fetch(`http://127.0.0.1:${mockPort}/__conflict`, { method: 'POST' })
@@ -152,6 +159,7 @@ try {
     savedText,
     conflictText: conflictText.replace(/\s+/g, ' ').trim(),
     consoleTab,
+    nodeFields,
     dockPersists,
     tableRows,
     xtermCount,
@@ -163,6 +171,7 @@ try {
   if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`)
   if (addedNodes !== initialNodes + 1) throw new Error('palette add failed')
   if (!savedText.includes('Saved')) throw new Error('autosave did not complete')
+  if (nodeFields.nic !== 'virtio-net-pci' || nodeFields.serial !== 2) throw new Error('node nic/serial were not saved')
   if (!conflictText.includes('Save conflict')) throw new Error('conflict dialog missing')
   if (!consoleTab.trim()) throw new Error('console tab missing')
   if (xtermCount < 1) throw new Error('xterm not mounted')
