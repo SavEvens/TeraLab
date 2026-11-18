@@ -62,11 +62,13 @@
       </div>
       <Inspector
         :node="selected"
+        :templates="templates"
         @update="updateNode"
         @delete="deleteNode"
         @console="openNodeConsole"
         @config="downloadConfig"
         @ports="updatePorts"
+        @template="applyTemplate"
       />
     </div>
 
@@ -200,6 +202,8 @@ function buildNode(raw, index) {
       ram: raw.ram || 512,
       uuid: raw.uuid || '',
       platform: raw.platform || '',
+      nic: raw.nic || '',
+      serial: raw.serial || 0,
       config: raw.config || '',
       interfaces: interfaces.map((iface, port) => ({
         id: Number(iface.id ?? port),
@@ -316,6 +320,8 @@ function addTemplate(template, position = null) {
       ram: defaults.ram || 512,
       uuid: '',
       platform: '',
+      nic: defaults.nic || '',
+      serial: defaults.serial || 0,
       config: '',
       interfaces
     }
@@ -391,6 +397,24 @@ function updateNode({ key, value }) {
   dirty.value = true
 }
 
+function applyTemplate(templateId) {
+  if (!selected.value) return
+  const template = templates.value.find((item) => item.id === templateId)
+  if (!template) return
+  record()
+  const defaults = template.defaults || {}
+  selected.value.data.template = template.id
+  selected.value.data.icon = template.icon || selected.value.data.icon
+  if (template.kind) selected.value.data.kind = template.kind
+  if (defaults.cpu) selected.value.data.cpu = defaults.cpu
+  if (defaults.ram) selected.value.data.ram = defaults.ram
+  if (defaults.console) selected.value.data.console = defaults.console
+  if (defaults.nic) selected.value.data.nic = defaults.nic
+  if (defaults.serial) selected.value.data.serial = defaults.serial
+  if (Number.isInteger(defaults.ethernet)) updatePorts(defaults.ethernet)
+  dirty.value = true
+}
+
 function updatePorts(count) {
   if (!selected.value) return
   record()
@@ -457,6 +481,8 @@ function payload() {
       ram: node.data.ram,
       uuid: node.data.uuid,
       platform: node.data.platform,
+      nic: node.data.nic || '',
+      serial: node.data.serial || 0,
       config: node.data.config || '',
       left: Math.round(node.position.x),
       top: Math.round(node.position.y),

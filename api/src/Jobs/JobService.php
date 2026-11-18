@@ -69,8 +69,11 @@ final class JobService
         if ($job === null) {
             throw new HttpException(404, 'Job not found.');
         }
-        if (!in_array($job['state'], ['queued', 'running'], true)) {
-            throw new HttpException(409, 'Job is already finished.');
+        if ($job['state'] !== 'queued') {
+            throw new HttpException(
+                409,
+                'Only queued jobs can be cancelled; running synchronous operations cannot be aborted.',
+            );
         }
         $statement = $this->pdo->prepare('UPDATE jobs SET state = :state, finished_at = :finished WHERE id = :id');
         $statement->execute([':state' => 'cancelled', ':finished' => time(), ':id' => $id]);

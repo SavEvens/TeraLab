@@ -1,6 +1,12 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
-  <section class="labs">
+  <section
+    class="labs"
+    :class="{ dragging }"
+    @dragover.prevent="dragging = true"
+    @dragleave.prevent="dragging = false"
+    @drop.prevent="dropImport"
+  >
     <div class="toolbar">
       <h1>Labs</h1>
       <form class="create" @submit.prevent="create">
@@ -13,7 +19,9 @@
         <input type="file" accept=".unl,application/xml" hidden @change="importLab" />
       </label>
       <button class="ghost" @click="load">Refresh</button>
+      <button class="ghost" @click="toggleTrash">Trash ({{ trash.length }})</button>
     </div>
+    <p v-if="dragging" class="drop-hint">Drop a `.unl` file to import it</p>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
 
@@ -43,7 +51,28 @@
         </tr>
       </tbody>
     </table>
-    <p v-if="!labs.length" class="empty">No labs yet. Create one or import a `.unl` file.</p>
+    <p v-if="!labs.length" class="empty">No labs yet. Create one, drop a `.unl` file, or import one.</p>
+
+    <section v-if="showTrash" class="trash">
+      <h2>Trash</h2>
+      <p class="hint">Deleted labs are kept for 30 days and can be restored.</p>
+      <table class="lab-table">
+        <thead><tr><th>Name</th><th>Original path</th><th>Deleted</th><th>Expires</th><th>Actions</th></tr></thead>
+        <tbody>
+          <tr v-for="entry in trash" :key="entry.trash_token">
+            <td>{{ entry.name }}</td>
+            <td>{{ entry.original_path || '—' }}</td>
+            <td>{{ new Date(entry.deleted_at * 1000).toLocaleString() }}</td>
+            <td>{{ new Date(entry.expires_at * 1000).toLocaleDateString() }}</td>
+            <td class="actions">
+              <button class="ghost" @click="restore(entry)">Restore</button>
+              <button class="danger" @click="purge(entry)">Delete forever</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-if="!trash.length" class="empty">Trash is empty.</p>
+    </section>
   </section>
 </template>
 
@@ -53,6 +82,9 @@ import { api } from '../api'
 import { notify } from '../stores/toasts'
 
 const labs = ref([])
+const trash = ref([])
+const showTrash = ref(false)
+const dragging = ref(false)
 const newName = ref('')
 const newFolder = ref('')
 const error = ref('')
@@ -61,6 +93,41 @@ async function load() {
   error.value = ''
   try {
     labs.value = (await api.labs()).data
+    await loadTrash()
+  } catch (exception) {
+    error.value = exception.message
+  }
+}
+
+async function loadTrash() {
+  try {
+    trash.value = (await api.trash()).data
+  } catch {
+    trash.value = []
+  }
+}
+
+async function toggleTrash() {
+  showTrash.value = !showTrash.value
+  if (showTrash.value) await loadTrash()
+}
+
+async function restore(entry) {
+  try {
+    await api.restoreLab(entry.id)
+    notify('success', 'Lab restored')
+    await load()
+  } catch (exception) {
+    error.value = exception.message
+  }
+}
+
+async function purge(entry) {
+  if (!window.confirm(`Permanently delete “${entry.name}”?`)) return
+  try {
+    await api.purgeLab(entry.id)
+    notify('success', 'Lab deleted permanently')
+    await load()
   } catch (exception) {
     error.value = exception.message
   }
@@ -128,8 +195,7 @@ async function exportLab(lab) {
   }
 }
 
-async function importLab(event) {
-  const file = event.target.files?.[0]
+async function importFile(file) {
   if (!file) return
   try {
     await api.importLab(file)
@@ -137,9 +203,24 @@ async function importLab(event) {
     await load()
   } catch (exception) {
     error.value = exception.message
-  } finally {
-    event.target.value = ''
   }
+}
+
+async function importLab(event) {
+  const file = event.target.files?.[0]
+  await importFile(file)
+  event.target.value = ''
+}
+
+async function dropImport(event) {
+  dragging.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (!file) return
+  if (!file.name.endsWith('.unl')) {
+    error.value = 'Only .unl files can be imported.'
+    return
+  }
+  await importFile(file)
 }
 
 onMounted(load)

@@ -153,12 +153,13 @@ final class UnlParser
             'uuid' => $node->getAttribute('uuid'),
             'config' => $config,
             'platform' => $node->getAttribute('platform'),
+            'nic' => $node->getAttribute('nic'),
             'left' => (int) ($node->getAttribute('left') !== '' ? $node->getAttribute('left') : 0),
             'top' => (int) ($node->getAttribute('top') !== '' ? $node->getAttribute('top') : 0),
             'interfaces' => $interfaces,
             'attributes' => $this->extraAttributes($node, [
                 'id', 'name', 'type', 'template', 'icon', 'image', 'console', 'cpu', 'ram',
-                'ethernet', 'serial', 'uuid', 'platform', 'iso', 'kernel', 'initrd', 'append',
+                'ethernet', 'serial', 'uuid', 'platform', 'nic', 'iso', 'kernel', 'initrd', 'append',
                 'left', 'top', 'config',
             ]),
         ];

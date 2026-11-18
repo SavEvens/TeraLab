@@ -26,10 +26,18 @@ describe('Palette', () => {
 
 describe('Inspector', () => {
   it('emits updates and actions', async () => {
-    const node = { id: '1', position: { x: 0, y: 0 }, data: { name: 'R1', kind: 'qemu', image: '', console: 'telnet', cpu: 1, ram: 512, interfaces: [{ id: 0 }] } }
-    const wrapper = mount(Inspector, { props: { node } })
+    const node = { id: '1', position: { x: 0, y: 0 }, data: { name: 'R1', template: 'linux', kind: 'qemu', image: '', console: 'telnet', cpu: 1, ram: 512, serial: 0, interfaces: [{ id: 0 }] } }
+    const wrapper = mount(Inspector, {
+      props: { node, templates: [{ id: 'linux', name: 'Linux' }, { id: 'vpcs', name: 'VPCS' }] }
+    })
     await wrapper.findAll('input')[0].setValue('R2')
     expect(wrapper.emitted('update')[0][0]).toEqual({ key: 'name', value: 'R2' })
+    const nic = wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'e1000'))
+    await nic.setValue('virtio-net-pci')
+    expect(wrapper.emitted('update').some((entry) => entry[0].key === 'nic' && entry[0].value === 'virtio-net-pci')).toBe(true)
+    const template = wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'vpcs'))
+    await template.setValue('vpcs')
+    expect(wrapper.emitted('template')[0][0]).toBe('vpcs')
     const consoleButton = wrapper.findAll('button').find((button) => button.text() === 'Console')
     const deleteButton = wrapper.findAll('button').find((button) => button.text() === 'Delete')
     await consoleButton.trigger('click')

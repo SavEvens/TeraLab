@@ -170,6 +170,48 @@ final class LabServiceTest extends TestCase
         self::assertSame("hostname PC1\n", $parsed['node_list'][1]['config']);
     }
 
+    public function testDeleteMovesToTrashAndRestore(): void
+    {
+        $service = $this->service();
+        $lab = $service->create(['name' => 'Trash Me']);
+        $service->delete((string) $lab['id'], 'user-1');
+
+        self::assertFileDoesNotExist($this->config->labsDir . '/' . $lab['path']);
+        $trash = $service->trash();
+        self::assertCount(1, $trash);
+        self::assertSame($lab['id'], $trash[0]['id']);
+        self::assertSame('Trash Me', $trash[0]['name']);
+        self::assertSame('user-1', $trash[0]['deleted_by']);
+
+        $restored = $service->restore((string) $lab['id']);
+        self::assertSame($lab['id'], $restored['id']);
+        self::assertSame('Trash Me', $restored['name']);
+        self::assertSame([], $service->trash());
+        self::assertFileExists($this->config->labsDir . '/' . $restored['path']);
+    }
+
+    public function testNicSerialAndTemplateRoundTrip(): void
+    {
+        $node = $this->node('1', 'R1', 'qemu', 'router.qcow2', [0]);
+        $node['nic'] = 'virtio-net-pci';
+        $node['serial'] = 3;
+        $node['template'] = 'linux';
+        $service = $this->service();
+        $lab = $service->create(['name' => 'NIC Lab', 'networks' => [['id' => '0']], 'nodes' => [$node]]);
+
+        $parsed = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertSame('virtio-net-pci', $parsed['node_list'][0]['nic']);
+        self::assertSame(3, $parsed['node_list'][0]['serial']);
+
+        $service->start((string) $lab['id']);
+        $starts = array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => $call['path'] === '/v1/node.start',
+        ));
+        self::assertSame('virtio-net-pci', $starts[0]['payload']['nic']);
+        self::assertSame(3, $starts[0]['payload']['serial']);
+    }
+
     public function testLegacySampleLabParses(): void
     {
         $fixture = dirname(__DIR__, 2) . '/labs/Featured/Cisco/Basic/STP.unl';

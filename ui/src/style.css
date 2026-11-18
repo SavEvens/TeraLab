@@ -128,3 +128,7 @@ button.ghost.active { border-color: var(--accent); color: var(--accent); }
 .template-editor { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .template-editor textarea { min-height: 480px; width: 100%; font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; }
 .palette li.active { border-color: var(--accent); }
+.labs.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; border-radius: 12px; }
+.drop-hint { background: #16233f; border: 1px dashed var(--accent); border-radius: 8px; padding: 10px 14px; color: var(--accent); }
+.trash { margin-top: 28px; }
+.trash h2 { font-size: 16px; margin: 0 0 4px; }

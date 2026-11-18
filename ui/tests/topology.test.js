@@ -13,6 +13,7 @@ const labNode = (id, network) => ({
     name: `N${id}`,
     kind: 'qemu',
     template: 'linux',
+    icon: '',
     image: '',
     iso: '',
     console: 'telnet',
@@ -20,6 +21,9 @@ const labNode = (id, network) => ({
     ram: 512,
     uuid: '',
     platform: '',
+    nic: '',
+    serial: 0,
+    config: '',
     interfaces: [{ id: 0, name: 'eth0', type: 'ethernet', network_id: network }]
   }
 })
@@ -31,6 +35,8 @@ describe('topology helpers', () => {
       name: 'R1',
       type: 'qemu',
       image: 'base.qcow2',
+      nic: 'virtio-net-pci',
+      serial: 2,
       cpu: 2,
       ram: 1024,
       left: 120,
@@ -40,6 +46,8 @@ describe('topology helpers', () => {
     expect(node.id).toBe('7')
     expect(node.position).toEqual({ x: 120, y: 80 })
     expect(node.data.interfaces[0].network_id).toBe('3')
+    expect(node.data.nic).toBe('virtio-net-pci')
+    expect(node.data.serial).toBe(2)
   })
 
   it('builds a chain of edges for a shared network', () => {
@@ -56,6 +64,8 @@ describe('topology helpers', () => {
     expect(payload.nodes[0].left).toBe(0)
     expect(payload.nodes[0].interfaces[0].network_id).toBe('0')
     expect(payload.networks[0].name).toBe('Net-1')
+    expect(payload.nodes[0].nic).toBe('')
+    expect(payload.nodes[0].serial).toBe(0)
   })
 
   it('handles 200 nodes within an interactive budget', () => {

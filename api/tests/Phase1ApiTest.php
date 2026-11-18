@@ -248,6 +248,9 @@ final class Phase1ApiTest extends TestCase
         self::assertSame('succeeded', $this->json($job)['data']['state']);
         self::assertSame(100, $this->json($job)['data']['progress']);
         self::assertNotEmpty($this->json($this->request('GET', '/api/v2/jobs', [], [], $this->adminCookie))['data']);
+        $cancel = $this->request('POST', '/api/v2/jobs/' . $jobID . '/cancel', [], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(409, $cancel->getStatusCode());
+        self::assertStringContainsString('cannot be aborted', (string) $cancel->getBody());
         $nodes = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes', [], [], $this->adminCookie);
         self::assertSame(200, $nodes->getStatusCode());
 

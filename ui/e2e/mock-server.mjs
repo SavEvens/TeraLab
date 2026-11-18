@@ -23,6 +23,7 @@ function body(request) {
 
 export function startMockServer(port = 8099) {
   let conflict = false
+  let trash = []
   let lab = {
     id: 'lab1',
     name: 'Editor Lab',
@@ -55,6 +56,21 @@ export function startMockServer(port = 8099) {
     if (request.method === 'POST' && path === '/__conflict') {
       conflict = true
       return send(response, 200, { ok: true })
+    }
+    if (request.method === 'POST' && path === '/__trash') {
+      trash = [{
+        id: 'trashed1',
+        name: 'Trashed Lab',
+        original_path: 'Trashed-Lab.unl',
+        deleted_at: Math.floor(Date.now() / 1000),
+        deleted_by: 'user1',
+        expires_at: Math.floor(Date.now() / 1000) + 2592000,
+        trash_token: 'token1'
+      }]
+      return send(response, 200, { ok: true })
+    }
+    if (request.method === 'GET' && path === '/__state') {
+      return send(response, 200, { lab: { name: lab.name, node_list: lab.node_list, network_list: lab.network_list } })
     }
     if (request.method === 'POST' && path === '/__large') {
       const nodeList = Array.from({ length: 100 }, (_, index) => ({
@@ -112,6 +128,23 @@ export function startMockServer(port = 8099) {
         path: 'New-Lab.unl'
       }
       return send(response, 201, { status: 'success', data: lab })
+    }
+    if (path === '/api/v2/labs/import' && request.method === 'POST') {
+      return send(response, 201, {
+        status: 'success',
+        data: { ...lab, id: 'importlab', name: 'Imported Lab', path: 'Imported-Lab.unl', nodes: 0, networks: 0, node_list: [], network_list: [] }
+      })
+    }
+    if (path === '/api/v2/labs/trash' && request.method === 'GET') {
+      return send(response, 200, { data: trash })
+    }
+    if (path.startsWith('/api/v2/labs/trash/') && request.method === 'DELETE') {
+      trash = []
+      return send(response, 200, { status: 'success' })
+    }
+    if (path === '/api/v2/labs/trashed1/restore' && request.method === 'POST') {
+      trash = []
+      return send(response, 200, { status: 'success', data: { ...lab, id: 'trashed1', name: 'Trashed Lab' } })
     }
     if (path === '/api/v2/labs/lab1' && request.method === 'GET') {
       return send(response, 200, { data: lab })

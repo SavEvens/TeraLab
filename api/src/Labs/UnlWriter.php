@@ -66,6 +66,7 @@ final class UnlWriter
                 'serial' => 'serial',
                 'uuid' => 'uuid',
                 'platform' => 'platform',
+                'nic' => 'nic',
                 'left' => 'left',
                 'top' => 'top',
             ] as $key => $attribute) {

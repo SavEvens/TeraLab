@@ -8,9 +8,11 @@ Vue 3 single-page application for TeraLab v1.2.0.
 ## Features
 
 - First-run setup, login, session/CSRF handling.
-- Lab list with create, import, export, duplicate, move, delete.
+- Lab list with create, drag-and-drop/import, export, duplicate, move, delete,
+  and a 30-day trash with restore.
 - Template library: YAML import/export, duplicate, custom editing.
-- Vue Flow topology editor: palette, inspector, links, undo/redo, copy/paste,
+- Vue Flow topology editor: palette, inspector (name, template, image, CPU,
+  RAM, NIC driver, port/serial counts, console), links, undo/redo, copy/paste,
   duplicate, align, snap-to-grid, grid toggle, fit, minimap, table fallback.
 - Autosave with revision conflict detection and reload/overwrite.
 - Validation surface for duplicate names, missing images, and port limits.

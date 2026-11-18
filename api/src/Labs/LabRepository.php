@@ -44,6 +44,9 @@ final class LabRepository
             if ($path === false || !str_starts_with($path, $root . DIRECTORY_SEPARATOR)) {
                 continue;
             }
+            if (str_contains($path, DIRECTORY_SEPARATOR . '.trash' . DIRECTORY_SEPARATOR)) {
+                continue;
+            }
 
             try {
                 $lab = $this->parser->parse($path);
