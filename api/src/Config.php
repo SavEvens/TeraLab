@@ -56,7 +56,7 @@ final class Config
             ),
             cookieSecure: self::boolEnv(
                 'TERALAB_COOKIE_SECURE',
-                self::boolValue($values, 'cookie_secure', true),
+                self::boolValue($values, 'cookie_secure', self::requestIsHttps()),
             ),
             sessionTtl: self::intEnv(
                 'TERALAB_SESSION_TTL',
@@ -137,7 +137,27 @@ final class Config
             }
         }
 
-        return '1.1.0';
+        return '1.2.0';
+    }
+
+    /**
+     * Detect HTTPS from the web SAPI so first-run HTTP installs can log in.
+     *
+     * @param array<string, mixed> $server
+     */
+    public static function requestIsHttps(array $server = []): bool
+    {
+        $server = $server !== [] ? $server : $_SERVER;
+        $https = $server['HTTPS'] ?? '';
+        if (is_string($https) && $https !== '' && strtolower($https) !== 'off') {
+            return true;
+        }
+        $proto = $server['HTTP_X_FORWARDED_PROTO'] ?? '';
+        if (is_string($proto) && strtolower(trim(explode(',', $proto)[0])) === 'https') {
+            return true;
+        }
+
+        return (string) ($server['SERVER_PORT'] ?? '') === '443';
     }
 
     public function migrationsDir(): string

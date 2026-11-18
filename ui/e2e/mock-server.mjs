@@ -24,6 +24,7 @@ function body(request) {
 export function startMockServer(port = 8099) {
   let conflict = false
   let trash = []
+  let images = []
   let lab = {
     id: 'lab1',
     name: 'Editor Lab',
@@ -183,7 +184,39 @@ export function startMockServer(port = 8099) {
         { id: 'vpcs', name: 'VPCS', kind: 'vpcs', source: 'builtin', defaults: { ethernet: 1, console: 'telnet' } }
       ] })
     }
-    if (path === '/api/v2/images') return send(response, 200, { data: [] })
+    if (path === '/api/v2/images' && request.method === 'GET') return send(response, 200, { data: images })
+    if (path === '/api/v2/images' && request.method === 'POST') {
+      const image = {
+        id: 'img1',
+        kind: 'qemu',
+        name: 'base',
+        path: '/var/lib/teralab/images/qemu/base.qcow2',
+        sha256: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+        size: 1048576,
+        virtual_size: 8388608,
+        format: 'qcow2',
+        backing_file: '',
+        notes: null,
+        template: null,
+        created_at: Math.floor(Date.now() / 1000)
+      }
+      images = [image]
+      return send(response, 201, { status: 'success', data: image })
+    }
+    if (path.startsWith('/api/v2/images/') && request.method === 'PATCH') {
+      const input = await body(request)
+      images = images.map((image) => ({ ...image, name: input.name || image.name }))
+      return send(response, 200, { status: 'success', data: images[0] })
+    }
+    if (path.startsWith('/api/v2/images/') && path.endsWith('/template') && request.method === 'PUT') {
+      const input = await body(request)
+      images = images.map((image) => ({ ...image, template: input.template }))
+      return send(response, 200, { status: 'success', data: images[0] })
+    }
+    if (path.startsWith('/api/v2/images/') && request.method === 'DELETE') {
+      images = []
+      return send(response, 200, { status: 'success' })
+    }
     if (path === '/api/v2/engines') return send(response, 200, { data: [] })
     if (path === '/api/v2/nodes/console') {
       return send(response, 200, { data: { kind: 'telnet', ws_path: '/ws/console?token=mock', expires_in: 300 } })

@@ -33,6 +33,44 @@ final class ConfigTest extends TestCase
         }
     }
 
+    public function testVersionMatchesTheVersionFile(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $file = $root . '/TERALAB_VERSION';
+        self::assertFileExists($file);
+        $expected = trim((string) file_get_contents($file));
+        self::assertSame('1.2.0', $expected);
+
+        putenv('TERALAB_ROOT=' . $root);
+        putenv('TERALAB_CONFIG=/nonexistent/teralab-config.php');
+        self::assertSame($expected, Config::fromEnvironment()->version());
+    }
+
+    public function testHttpsDetectionCoversDirectAndProxiedRequests(): void
+    {
+        self::assertFalse(Config::requestIsHttps([]));
+        self::assertFalse(Config::requestIsHttps(['HTTPS' => 'off', 'SERVER_PORT' => '80']));
+        self::assertTrue(Config::requestIsHttps(['HTTPS' => 'on']));
+        self::assertTrue(Config::requestIsHttps(['SERVER_PORT' => '443']));
+        self::assertTrue(Config::requestIsHttps(['HTTP_X_FORWARDED_PROTO' => 'https']));
+        self::assertTrue(Config::requestIsHttps(['HTTP_X_FORWARDED_PROTO' => 'https, http']));
+        self::assertFalse(Config::requestIsHttps(['HTTP_X_FORWARDED_PROTO' => 'http']));
+    }
+
+    public function testPlainHttpDefaultsToNonSecureCookies(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'teralab-config-');
+        self::assertIsString($file);
+        file_put_contents($file, "<?php\nreturn [];\n");
+
+        try {
+            putenv('TERALAB_CONFIG=' . $file);
+            self::assertFalse(Config::fromEnvironment()->cookieSecure);
+        } finally {
+            unlink($file);
+        }
+    }
+
     public function testLoadsConfigFileAndEnvironmentOverrides(): void
     {
         $file = tempnam(sys_get_temp_dir(), 'teralab-config-');

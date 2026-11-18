@@ -10,6 +10,7 @@ const routes = [
   { path: '/setup', name: 'setup', component: () => import('./views/SetupView.vue'), meta: { public: true } },
   { path: '/labs', name: 'labs', component: () => import('./views/LabsView.vue') },
   { path: '/templates', name: 'templates', component: () => import('./views/TemplatesView.vue') },
+  { path: '/images', name: 'images', component: () => import('./views/ImagesView.vue') },
   { path: '/labs/:id', name: 'editor', component: () => import('./views/EditorView.vue'), props: true }
 ]
 

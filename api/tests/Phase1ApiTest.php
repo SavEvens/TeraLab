@@ -190,6 +190,16 @@ final class Phase1ApiTest extends TestCase
         self::assertSame('custom', $this->json($import)['data']['source']);
     }
 
+    public function testVersionEndpointsReportProductVersion(): void
+    {
+        $version = $this->request('GET', '/api/v2/version');
+        self::assertSame(200, $version->getStatusCode());
+        self::assertSame('1.2.0', $this->json($version)['version']);
+        self::assertSame('AGPL-3.0-or-later', $this->json($version)['license']);
+        $health = $this->request('GET', '/api/v2/health');
+        self::assertSame('1.2.0', $this->json($health)['version']);
+    }
+
     public function testPasswordChangeRevokesOtherSessions(): void
     {
         [$firstCookie, $firstCsrf] = $this->login('editor', self::EDITOR_PASSWORD);

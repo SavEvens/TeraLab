@@ -5,6 +5,7 @@
     <nav>
       <router-link to="/labs">Labs</router-link>
       <router-link to="/templates">Templates</router-link>
+      <router-link to="/images">Images</router-link>
       <a href="/about.php" target="_blank" rel="noopener">About</a>
     </nav>
     <div class="spacer"></div>

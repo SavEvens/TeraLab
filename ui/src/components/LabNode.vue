@@ -2,7 +2,7 @@
 <template>
   <div class="lab-node" :class="[data.kind, data.state]">
     <header>
-      <img v-if="data.icon" :src="`/themes/default/images/${data.icon}`" alt="" />
+      <img v-if="data.icon" :src="`/images/icons/${data.icon}`" alt="" />
       {{ data.name || data.id }}
     </header>
     <small>{{ data.kind }} · {{ data.interfaces.length }} port(s)</small>

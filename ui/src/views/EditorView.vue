@@ -63,6 +63,7 @@
       <Inspector
         :node="selected"
         :templates="templates"
+        :images="images"
         @update="updateNode"
         @delete="deleteNode"
         @console="openNodeConsole"
@@ -116,6 +117,7 @@ const nodes = ref([])
 const edges = ref([])
 const networks = ref([])
 const templates = ref([])
+const images = ref([])
 const selected = ref(null)
 const revision = ref(1)
 const labName = ref('')
@@ -259,6 +261,7 @@ async function load() {
     nodes.value = (data.node_list || []).map(buildNode)
     rebuildEdges()
     templates.value = (await api.templates()).data
+    images.value = (await api.images()).data
     savedAt.value = new Date()
     dirty.value = false
   } catch (exception) {
