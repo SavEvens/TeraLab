@@ -109,7 +109,7 @@ try {
   const exported = download.suggestedFilename()
 
   // Real VNC console.
-  await page.getByRole('link', { name: 'Labs', exact: true }).click()
+  await page.getByRole('link', { name: '← Labs' }).click()
   await page.getByRole('link', { name: 'Real VNC Lab' }).click()
   await page.waitForSelector('.lab-node')
   await page.locator('.lab-node').first().click()
@@ -134,7 +134,7 @@ try {
   await page.screenshot({ path: `${outDir}/vnc-real.png`, fullPage: true })
 
   // 100-node interaction FPS and open time.
-  await page.getByRole('link', { name: 'Labs', exact: true }).click()
+  await page.getByRole('link', { name: '← Labs' }).click()
   const largeStart = Date.now()
   await page.getByRole('link', { name: new RegExp(big.name) }).click()
   await page.waitForFunction(() => document.querySelectorAll('.lab-node').length === 100, null, { timeout: 20000 })

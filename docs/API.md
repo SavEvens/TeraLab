@@ -3,7 +3,8 @@
 
 # TeraLab API quick reference
 
-The API is JSON-only under `/api/v2`. State-changing requests require the
+The API is JSON-only under `/api/v2`. The OpenAPI 3.1 draft is in
+`docs/openapi.yaml`. State-changing requests require the
 session cookie and `X-CSRF-Token` (returned by setup, login, and `/auth/me`).
 
 ## Session

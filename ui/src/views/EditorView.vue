@@ -1,81 +1,112 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
-  <section class="editor">
-    <div class="editor-toolbar">
-      <router-link to="/labs" class="ghost">← Labs</router-link>
-      <input v-model="labName" class="lab-name" aria-label="Lab name" @input="dirty = true" />
-      <span class="badge">rev {{ revision }}</span>
-      <span :class="['save-state', { dirty }]">{{ saveLabel }}</span>
-      <div class="spacer"></div>
-      <button class="ghost" :disabled="!canUndo" title="Undo (Ctrl+Z)" @click="undo">Undo</button>
-      <button class="ghost" :disabled="!canRedo" title="Redo (Ctrl+Y)" @click="redo">Redo</button>
-      <button class="ghost" @click="duplicateSelected">Duplicate</button>
-      <button class="ghost" @click="align('x')">Align ⇤</button>
-      <button class="ghost" @click="align('y')">Align ⇡</button>
-      <button class="ghost" @click="fit">Fit</button>
-      <button class="ghost" :class="{ active: snap }" @click="snap = !snap">Snap</button>
-      <button class="ghost" @click="showGrid = !showGrid">Grid</button>
-      <button class="ghost" @click="showTable = !showTable">{{ showTable ? 'Canvas' : 'Table' }}</button>
-      <button class="ghost" @click="validate">Validate</button>
-      <button @click="save()">Save</button>
-      <button class="ghost" @click="run('start')">Start</button>
-      <button class="ghost" @click="run('stop')">Stop</button>
-      <button class="danger" @click="run('wipe')">Wipe</button>
-    </div>
+  <section class="editor" :class="{ presentation, 'has-console': consoleOpen }">
+    <div class="canvas" @dragover.prevent @drop="dropTemplate">
+      <VueFlow
+        v-show="!showTable"
+        v-model:nodes="nodes"
+        v-model:edges="edges"
+        :node-types="nodeTypes"
+        :min-zoom="0.2"
+        :max-zoom="2.5"
+        :snap-to-grid="snap"
+        :snap-grid="[20, 20]"
+        :selection-on-drag="true"
+        :pan-on-drag="[1, 2]"
+        fit-view-on-init
+        @connect="connect"
+        @node-click="selectNode"
+        @pane-click="selected = null"
+        @edges-change="edgesChanged"
+        @move-end="saveViewport"
+        @viewport-change="() => {}"
+      >
+        <Background v-if="showGrid" pattern-color="#22346a" :gap="26" />
+        <Controls position="bottom-left" />
+        <MiniMap position="bottom-right" :pannable="true" :zoomable="true" />
+      </VueFlow>
 
-    <div v-if="error" class="error banner" role="alert">{{ error }}</div>
-
-    <div class="editor-grid">
-      <Palette :templates="templates" @add="addTemplate" />
-      <div class="canvas" @dragover.prevent @drop="dropTemplate">
-        <VueFlow
-          v-show="!showTable"
-          v-model:nodes="nodes"
-          v-model:edges="edges"
-          :node-types="nodeTypes"
-          :min-zoom="0.2"
-          :max-zoom="2.5"
-          :snap-to-grid="snap"
-          :snap-grid="[20, 20]"
-          fit-view-on-init
-          @connect="connect"
-          @node-click="selectNode"
-          @pane-click="selected = null"
-          @edges-change="edgesChanged"
-          @move-end="saveViewport"
-        >
-          <Background v-if="showGrid" pattern-color="#26304d" :gap="24" />
-          <Controls />
-          <MiniMap />
-        </VueFlow>
-        <div v-if="showTable" class="node-table">
-          <table>
-            <thead><tr><th>Name</th><th>Type</th><th>Image</th><th>Ports</th></tr></thead>
-            <tbody>
-              <tr v-for="node in nodes" :key="node.id" @click="selected = node">
-                <td>{{ node.data.name }}</td><td>{{ node.data.kind }}</td>
-                <td>{{ node.data.image || '—' }}</td><td>{{ node.data.interfaces.length }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+      <div v-if="showTable" class="node-table">
+        <table>
+          <thead><tr><th>Name</th><th>Type</th><th>Image</th><th>Ports</th></tr></thead>
+          <tbody>
+            <tr v-for="node in nodes" :key="node.id" @click="selected = node">
+              <td>{{ node.data.name }}</td><td>{{ node.data.kind }}</td>
+              <td>{{ node.data.image || '—' }}</td><td>{{ node.data.interfaces.length }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <Inspector
-        :node="selected"
-        :templates="templates"
-        :images="images"
-        @update="updateNode"
-        @delete="deleteNode"
-        @console="openNodeConsole"
-        @config="downloadConfig"
-        @ports="updatePorts"
-        @template="applyTemplate"
-      />
-    </div>
 
-    <div v-if="problems.length" class="validation-panel" role="status">
-      <strong>Validation</strong>
-      <ul><li v-for="problem in problems" :key="problem">{{ problem }}</li></ul>
+      <div v-if="error" class="error banner" role="alert">{{ error }}</div>
+
+      <template v-if="!presentation">
+        <div class="ed-topbar">
+          <router-link to="/labs" class="ed-back">← Labs</router-link>
+          <div class="ed-title">
+            <input v-model="labName" class="lab-name" aria-label="Lab name" @input="dirty = true" />
+            <span class="badge">rev {{ revision }}</span>
+            <span :class="['save-state', { dirty }]">{{ saveLabel }}</span>
+          </div>
+          <div class="spacer"></div>
+          <div class="ed-actions">
+            <button class="ghost icon" title="Toggle devices palette" aria-label="Toggle devices palette" @click="paletteOpen = !paletteOpen">▤</button>
+            <button class="ghost icon" title="Toggle inspector" aria-label="Toggle inspector" @click="inspectorOpen = !inspectorOpen">▥</button>
+            <button class="ghost" :disabled="!canUndo" title="Undo (Ctrl+Z)" @click="undo">↶</button>
+            <button class="ghost" :disabled="!canRedo" title="Redo (Ctrl+Y)" @click="redo">↷</button>
+            <button @click="save()">Save</button>
+            <button class="ghost" @click="run('start')">▶ Start</button>
+            <button class="ghost" @click="run('stop')">■ Stop</button>
+            <button class="danger" @click="run('wipe')">Wipe</button>
+          </div>
+        </div>
+
+        <Palette v-show="paletteOpen" class="floating-palette" :templates="templates" @add="addTemplate" />
+        <Inspector
+          v-show="inspectorOpen"
+          class="floating-inspector"
+          :node="selected"
+          :templates="templates"
+          :images="images"
+          @update="updateNode"
+          @delete="deleteNode"
+          @console="openNodeConsole"
+          @config="downloadConfig"
+          @ports="updatePorts"
+          @template="applyTemplate"
+        />
+
+        <div class="ed-bottom" role="toolbar" aria-label="Topology tools">
+          <button class="ghost" @click="duplicateSelected">Duplicate</button>
+          <button class="ghost" @click="align('x')">Align ⇤</button>
+          <button class="ghost" @click="align('y')">Align ⇡</button>
+          <button class="ghost" @click="fit">Fit</button>
+          <button class="ghost" :class="{ active: snap }" @click="snap = !snap">Snap</button>
+          <button class="ghost" :class="{ active: showGrid }" @click="showGrid = !showGrid">Grid</button>
+          <button class="ghost" @click="showTable = !showTable">{{ showTable ? 'Canvas' : 'Table' }}</button>
+          <button class="ghost" @click="validate">Validate</button>
+          <button class="ghost" @click="presentation = true">Presentation</button>
+        </div>
+
+        <div class="ed-status">
+          <span><strong>{{ nodes.length }}</strong> nodes</span>
+          <span><strong>{{ networks.length }}</strong> links</span>
+          <span>zoom <strong>{{ zoom }}%</strong></span>
+          <span v-if="selected">selected <strong>{{ selected.data.name }}</strong></span>
+          <span class="spacer"></span>
+          <span v-if="conflict" class="err">conflict</span>
+          <span v-else-if="problems.length" class="warn">validation issues</span>
+          <span v-else-if="dirty" class="warn">unsaved</span>
+          <span v-else class="ok">saved</span>
+        </div>
+      </template>
+
+      <button v-else class="presentation-exit" @click="presentation = false">Exit presentation</button>
+
+      <div v-if="problems.length" class="validation-panel" role="status">
+        <strong>Validation</strong>
+        <ul><li v-for="problem in problems" :key="problem">{{ problem }}</li></ul>
+      </div>
     </div>
 
     <div v-if="conflict" class="modal-backdrop">
@@ -106,7 +137,8 @@ import TextNode from '../components/TextNode.vue'
 import PictureNode from '../components/PictureNode.vue'
 import { api } from '../api'
 import { notify, progress, dismiss } from '../stores/toasts'
-import { openConsole } from '../stores/consoles'
+import { openConsole, consoleState } from '../stores/consoles'
+import { session } from '../stores/session'
 
 const props = defineProps({ id: { type: String, required: true } })
 const router = useRouter()
@@ -127,6 +159,9 @@ const savedAt = ref(null)
 const error = ref('')
 const conflict = ref(null)
 const autosavePaused = ref(false)
+const presentation = ref(false)
+const paletteOpen = ref(true)
+const inspectorOpen = ref(true)
 const loading = ref(true)
 const history = ref([])
 const future = ref([])
@@ -136,6 +171,8 @@ const showGrid = ref(true)
 const showTable = ref(false)
 const clipboard = ref(null)
 const problems = ref([])
+const zoom = computed(() => Math.round(((getViewport.value?.zoom ?? 1)) * 100))
+const consoleOpen = computed(() => consoleState.tabs.length > 0)
 const canUndo = computed(() => history.value.length > 0)
 const canRedo = computed(() => future.value.length > 0)
 const saveLabel = computed(() => {
@@ -650,13 +687,13 @@ function pasteSelection() {
 
 function saveViewport() {
   try {
-    localStorage.setItem(`teralab.view.${props.id}`, JSON.stringify(getViewport.value))
+    localStorage.setItem(`teralab.view.${session.user?.id || 'anon'}.${props.id}`, JSON.stringify(getViewport.value))
   } catch {}
 }
 
 function restoreViewport() {
   try {
-    const raw = localStorage.getItem(`teralab.view.${props.id}`)
+    const raw = localStorage.getItem(`teralab.view.${session.user?.id || 'anon'}.${props.id}`)
     if (raw) setViewport(JSON.parse(raw), { duration: 0 })
   } catch {}
 }
@@ -664,6 +701,10 @@ function restoreViewport() {
 function keydown(event) {
   const target = event.target
   if (target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+  if (event.key === 'Escape' && presentation.value) {
+    presentation.value = false
+    return
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
     save()

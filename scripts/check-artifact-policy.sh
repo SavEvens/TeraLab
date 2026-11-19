@@ -69,7 +69,7 @@ for file in "${files[@]}"; do
 	case "$file" in
 		docs/*)
 			case "$file" in
-				docs/README.md|docs/INSTALL.md|docs/UPGRADE.md|docs/API.md|docs/AGENT.md|docs/SECURITY.md|docs/UX.md|docs/RELEASE-NOTES.md|docs/CHANGELOG.md|docs/SBOM.md)
+				docs/README.md|docs/INSTALL.md|docs/UPGRADE.md|docs/API.md|docs/AGENT.md|docs/SECURITY.md|docs/UX.md|docs/RELEASE-NOTES.md|docs/CHANGELOG.md|docs/SBOM.md|docs/UX-BENCHMARK.md|docs/openapi.yaml)
 					;;
 				*)
 					printf 'unapproved documentation path: %s\n' "$file" >&2

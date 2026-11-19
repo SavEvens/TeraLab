@@ -1,0 +1,500 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+openapi: 3.1.0
+info:
+  title: TeraLab API
+  version: 1.3.0
+  description: |
+    JSON API for TeraLab lab orchestration. State-changing requests require a
+    session cookie and the `X-CSRF-Token` header returned by setup/login/me.
+  license:
+    name: AGPL-3.0-or-later
+    identifier: AGPL-3.0-or-later
+servers:
+  - url: /
+tags:
+  - name: auth
+  - name: labs
+  - name: nodes
+  - name: templates
+  - name: images
+  - name: jobs
+  - name: system
+security:
+  - cookieAuth: []
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: teralab_session
+  schemas:
+    Error:
+      type: object
+      required: [code, status, message]
+      properties:
+        code: { type: integer }
+        status: { type: string, enum: [error] }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+        request_id: { type: string }
+    Node:
+      type: object
+      required: [id, name, type]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [qemu, vpcs, iol, dynamips, text, picture] }
+        template: { type: string }
+        image: { type: string }
+        iso: { type: string }
+        console: { type: string, enum: [telnet, vnc] }
+        cpu: { type: integer, minimum: 1 }
+        ram: { type: integer, minimum: 64 }
+        serial: { type: integer, minimum: 0, maximum: 8 }
+        nic: { type: string }
+        config: { type: string }
+        left: { type: integer }
+        top: { type: integer }
+        interfaces:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              type: { type: string }
+              network_id: { type: string }
+    Lab:
+      type: object
+      required: [id, name, revision]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        revision: { type: integer }
+        owner: { type: string }
+        path: { type: string }
+        description: { type: string }
+        body: { type: string }
+        tags: { type: array, items: { type: string } }
+        nodes: { type: integer }
+        networks: { type: integer }
+        node_list: { type: array, items: { $ref: '#/components/schemas/Node' } }
+        network_list: { type: array, items: { type: object } }
+        lock: { type: object, nullable: true }
+paths:
+  /api/v2/health:
+    get:
+      tags: [system]
+      summary: Liveness and product version
+      security: []
+      responses:
+        '200': { description: Health }
+  /api/v2/version:
+    get:
+      tags: [system]
+      summary: Product, licence, source, and component notices
+      security: []
+      responses:
+        '200': { description: Version }
+  /api/v2/system/host:
+    get:
+      tags: [system]
+      summary: Host load, disk, nodes, and engine versions
+      responses:
+        '200': { description: Host status }
+  /api/v2/setup:
+    post:
+      tags: [auth]
+      summary: Create the initial administrator (one time)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+                email: { type: string }
+      responses:
+        '201': { description: Administrator created }
+        '409': { description: Setup already completed }
+  /api/v2/auth/login:
+    post:
+      tags: [auth]
+      summary: Create a session and return the CSRF token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200': { description: Session cookie and CSRF token }
+        '401': { description: Invalid credentials }
+  /api/v2/auth/me:
+    get:
+      tags: [auth]
+      summary: Current user and CSRF token
+      responses:
+        '200': { description: Current user }
+  /api/v2/auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the current session
+      responses:
+        '200': { description: Logged out }
+  /api/v2/auth/password:
+    post:
+      tags: [auth]
+      summary: Change the current password and revoke other sessions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string }
+      responses:
+        '200': { description: Password changed }
+        '403': { description: Current password incorrect }
+  /api/v2/labs:
+    get:
+      tags: [labs]
+      summary: List labs visible to the current user
+      responses:
+        '200':
+          description: Labs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Lab' } }
+    post:
+      tags: [labs]
+      summary: Create a lab
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                body: { type: string }
+                nodes: { type: array, items: { $ref: '#/components/schemas/Node' } }
+                networks: { type: array, items: { type: object } }
+      responses:
+        '201': { description: Created }
+        '422': { description: Validation error }
+  /api/v2/labs/import:
+    post:
+      tags: [labs]
+      summary: Import a .unl file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201': { description: Imported }
+  /api/v2/labs/trash:
+    get:
+      tags: [labs]
+      summary: List trashed labs
+      responses:
+        '200': { description: Trash }
+  /api/v2/labs/trash/{id}:
+    delete:
+      tags: [labs]
+      summary: Permanently delete a trashed lab
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Purged }
+  /api/v2/labs/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [labs]
+      summary: Lab metadata and topology
+      responses:
+        '200': { description: Lab }
+        '403': { description: Forbidden }
+        '404': { description: Not found }
+    put:
+      tags: [labs]
+      summary: Save a lab with revision conflict detection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Lab'
+                - type: object
+                  properties:
+                    revision: { type: integer }
+      responses:
+        '200': { description: Saved }
+        '409': { description: Revision conflict or running-lab lock }
+    delete:
+      tags: [labs]
+      summary: Move a stopped lab to trash
+      responses:
+        '200': { description: Trashed }
+  /api/v2/labs/{id}/export:
+    get:
+      tags: [labs]
+      summary: Export a .unl file
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: XML export
+          content:
+            application/xml:
+              schema: { type: string }
+  /api/v2/labs/{id}/start:
+    post:
+      tags: [labs]
+      summary: Create networks and start all engine nodes
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202': { description: Started with job_id }
+  /api/v2/labs/{id}/stop:
+    post:
+      tags: [labs]
+      summary: Stop all nodes and remove lab bridges
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Stopped }
+  /api/v2/labs/{id}/wipe:
+    post:
+      tags: [labs]
+      summary: Stop, wipe node state, and remove bridges
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Wiped }
+  /api/v2/labs/{id}/duplicate:
+    post:
+      tags: [labs]
+      summary: Duplicate topology into a new lab
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '201': { description: Duplicated }
+  /api/v2/labs/{id}/nodes:
+    get:
+      tags: [nodes]
+      summary: Per-node agent state
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Node states }
+  /api/v2/labs/{id}/restore:
+    post:
+      tags: [labs]
+      summary: Restore a trashed lab
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Restored }
+  /api/v2/nodes/start:
+    post:
+      tags: [nodes]
+      summary: Start an agent node by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        '200': { description: Running }
+  /api/v2/nodes/stop:
+    post:
+      tags: [nodes]
+      summary: Stop an agent node by id
+      responses:
+        '200': { description: Stopped }
+  /api/v2/nodes/wipe:
+    post:
+      tags: [nodes]
+      summary: Wipe an agent node by id
+      responses:
+        '200': { description: Wiped }
+  /api/v2/nodes/status:
+    get:
+      tags: [nodes]
+      summary: Agent node state and resource usage
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Node status }
+  /api/v2/nodes/console:
+    post:
+      tags: [nodes]
+      summary: Issue a short-lived console token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node_id]
+              properties:
+                node_id: { type: string }
+      responses:
+        '200': { description: Console kind; token; and WebSocket path }
+  /api/v2/templates:
+    get:
+      tags: [templates]
+      summary: List built-in and custom YAML templates
+      responses:
+        '200': { description: Templates }
+  /api/v2/templates/import:
+    post:
+      tags: [templates]
+      summary: Import a YAML template
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201': { description: Imported }
+  /api/v2/templates/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [templates]
+      summary: Template YAML and parsed fields
+      responses:
+        '200': { description: Template }
+    put:
+      tags: [templates]
+      summary: Create or update a custom template
+      responses:
+        '200': { description: Saved }
+    delete:
+      tags: [templates]
+      summary: Delete a custom template
+      responses:
+        '200': { description: Deleted }
+  /api/v2/templates/{id}/export:
+    get:
+      tags: [templates]
+      summary: Export a template YAML file
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: YAML }
+  /api/v2/templates/{id}/duplicate:
+    post:
+      tags: [templates]
+      summary: Duplicate a template
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Duplicated }
+  /api/v2/images:
+    get:
+      tags: [images]
+      summary: List stored images
+      responses:
+        '200': { description: Images }
+    post:
+      tags: [images]
+      summary: Upload an image with kind and optional name
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [kind, file]
+              properties:
+                kind: { type: string, enum: [qemu, iso, iol, dynamips] }
+                name: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        '201': { description: Stored }
+        '422': { description: Validation error }
+  /api/v2/images/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [images]
+      summary: Image metadata
+      responses:
+        '200': { description: Image }
+    patch:
+      tags: [images]
+      summary: Rename an image
+      responses:
+        '200': { description: Renamed }
+    delete:
+      tags: [images]
+      summary: Delete an unreferenced image
+      responses:
+        '200': { description: Deleted }
+  /api/v2/images/{id}/template:
+    put:
+      tags: [images]
+      summary: Map an image to a template
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Mapped }
+  /api/v2/jobs:
+    get:
+      tags: [jobs]
+      summary: List recent jobs
+      responses:
+        '200': { description: Jobs }
+  /api/v2/jobs/{id}:
+    get:
+      tags: [jobs]
+      summary: Job state and progress
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Job }
+  /api/v2/jobs/{id}/cancel:
+    post:
+      tags: [jobs]
+      summary: Cancel a queued job
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Cancelled }
+        '409': { description: Job cannot be cancelled safely }

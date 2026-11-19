@@ -10,11 +10,14 @@
         :class="{ active: tab.id === state.active }"
         @click="activateConsole(tab.id)"
       >
-        {{ tab.name }} <span class="kind">{{ tab.kind }}</span>
+        <span class="led" :class="tab.kind"></span>{{ tab.name }} <span class="kind">{{ tab.kind }}</span>
+      </button>
+      <button class="ghost" :aria-label="collapsed ? 'Show consoles' : 'Hide consoles'" @click="collapsed = !collapsed">
+        {{ collapsed ? 'Show' : 'Hide' }}
       </button>
       <button class="ghost" aria-label="Close all consoles" @click="closeAll">Close all</button>
     </div>
-    <div class="console-body">
+    <div v-show="!collapsed" class="console-body">
       <template v-for="tab in state.tabs" :key="tab.id">
         <div v-show="tab.id === state.active" class="console-pane">
           <button class="ghost close" aria-label="Close console" @click="closeConsole(tab.id)">×</button>
@@ -27,11 +30,13 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import { consoleState, closeConsole, activateConsole } from '../stores/consoles'
 import TelnetConsole from '../consoles/TelnetConsole.vue'
 import VncConsole from '../consoles/VncConsole.vue'
 
 const state = consoleState
+const collapsed = ref(false)
 function closeAll() {
   for (const tab of [...state.tabs]) closeConsole(tab.id)
 }

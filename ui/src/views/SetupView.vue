@@ -1,16 +1,22 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
-  <section class="auth-card">
-    <h1>Create administrator</h1>
-    <p class="hint">This page works only while no administrator exists.</p>
-    <form @submit.prevent="submit">
+  <div class="auth-shell">
+    <section class="auth-card">
+      <div class="auth-brand">
+        <h1>TERALAB</h1>
+        <p>First Run Setup</p>
+      </div>
+      <h2>Create administrator</h2>
+      <p class="hint">This page works only while no administrator exists.</p>
+      <form @submit.prevent="submit">
       <label>Username <input v-model="username" autocomplete="username" required /></label>
       <label>Email <input v-model="email" type="email" autocomplete="email" /></label>
       <label>Password <input v-model="password" type="password" autocomplete="new-password" required /></label>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <button type="submit" :disabled="busy">{{ busy ? 'Creating…' : 'Create administrator' }}</button>
-    </form>
-  </section>
+      </form>
+    </section>
+  </div>
 </template>
 
 <script setup>

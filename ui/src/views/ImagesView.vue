@@ -22,7 +22,10 @@
       <label>File
         <input ref="fileInput" type="file" aria-label="Image file" required />
       </label>
-      <button type="submit" :disabled="uploading">{{ uploading ? 'Uploading…' : 'Upload' }}</button>
+      <button type="submit" :disabled="uploading">{{ uploading ? `Uploading ${uploadProgress}%` : 'Upload' }}</button>
+      <div v-if="uploading" class="progress" role="progressbar" :aria-valuenow="uploadProgress" aria-valuemin="0" aria-valuemax="100">
+        <i :style="{ width: uploadProgress + '%' }"></i>
+      </div>
     </form>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
@@ -46,6 +49,7 @@
           <td><code>{{ (image.sha256 || '').slice(0, 12) }}</code></td>
           <td>{{ new Date(image.created_at * 1000).toLocaleDateString() }}</td>
           <td class="actions">
+            <button class="ghost" @click="inspect(image)">Details</button>
             <button v-if="canEdit" class="ghost" @click="rename(image)">Rename</button>
             <button v-if="canEdit" class="danger" @click="remove(image)">Delete</button>
           </td>
@@ -53,12 +57,29 @@
       </tbody>
     </table>
     <p v-if="!images.length" class="empty">No images yet. Upload a qcow2, ISO, IOL, or Dynamips file.</p>
+
+    <div v-if="details" class="modal-backdrop" @click.self="details = null">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Image details">
+        <h2>{{ details.name }}</h2>
+        <dl class="template-preview">
+          <dt>kind</dt><dd>{{ details.kind }}</dd>
+          <dt>path</dt><dd>{{ details.path }}</dd>
+          <dt>format</dt><dd>{{ details.format || '—' }}</dd>
+          <dt>size</dt><dd>{{ bytes(details.size) }}</dd>
+          <dt>virtual size</dt><dd>{{ bytes(details.virtual_size) }}</dd>
+          <dt>backing file</dt><dd>{{ details.backing_file || '—' }}</dd>
+          <dt>template</dt><dd>{{ details.template || '—' }}</dd>
+          <dt>sha256</dt><dd class="mono">{{ details.sha256 }}</dd>
+        </dl>
+        <div class="row"><button class="ghost" @click="details = null">Close</button></div>
+      </div>
+    </div>
   </section>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { api } from '../api'
+import { api, uploadImageWithProgress } from '../api'
 import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
 
@@ -67,6 +88,8 @@ const templates = ref([])
 const kind = ref('qemu')
 const name = ref('')
 const uploading = ref(false)
+const uploadProgress = ref(0)
+const details = ref(null)
 const error = ref('')
 const fileInput = ref(null)
 const canEdit = computed(() => ['admin', 'editor'].includes(session.user?.role || 'user'))
@@ -93,13 +116,14 @@ async function upload() {
   const file = fileInput.value?.files?.[0]
   if (!file) return
   uploading.value = true
+  uploadProgress.value = 0
   error.value = ''
   try {
     const form = new FormData()
     form.append('kind', kind.value)
     if (name.value.trim()) form.append('name', name.value.trim())
     form.append('file', file)
-    await api.uploadImage(form)
+    await uploadImageWithProgress(form, (value) => { uploadProgress.value = value })
     notify('success', 'Image uploaded')
     name.value = ''
     fileInput.value.value = ''
@@ -109,6 +133,10 @@ async function upload() {
   } finally {
     uploading.value = false
   }
+}
+
+function inspect(image) {
+  details.value = image
 }
 
 async function rename(image) {

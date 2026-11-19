@@ -4,11 +4,38 @@
 let csrfToken = ''
 
 export class ApiError extends Error {
-  constructor(status, message, details = {}) {
+  constructor(status, message, details = {}, requestId = '') {
     super(message)
     this.status = status
     this.details = details
+    this.requestId = requestId
   }
+}
+
+export function uploadImageWithProgress(form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/v2/images')
+    xhr.withCredentials = true
+    if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken)
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100))
+    }
+    xhr.onerror = () => reject(new ApiError(0, 'Network error during upload'))
+    xhr.onload = () => {
+      let data = null
+      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(100)
+        resolve(data)
+        return
+      }
+      const requestId = typeof data?.request_id === 'string' ? data.request_id : ''
+      const message = data?.message || `HTTP ${xhr.status}`
+      reject(new ApiError(xhr.status, requestId ? `${message} (request ${requestId.slice(0, 8)})` : message, data?.details || {}, requestId))
+    }
+    xhr.send(form)
+  })
 }
 
 export function setCsrf(token) {
@@ -33,7 +60,14 @@ async function request(path, { method = 'GET', body, raw = false } = {}) {
   if (!response.ok) {
     let error = null
     try { error = text ? JSON.parse(text) : null } catch {}
-    throw new ApiError(response.status, error?.message || `HTTP ${response.status}`, error?.details || {})
+    const requestId = typeof error?.request_id === 'string' ? error.request_id : ''
+    const message = error?.message || `HTTP ${response.status}`
+    throw new ApiError(
+      response.status,
+      requestId ? `${message} (request ${requestId.slice(0, 8)})` : message,
+      error?.details || {},
+      requestId
+    )
   }
   if (raw) return text
   try {

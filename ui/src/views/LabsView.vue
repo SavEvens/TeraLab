@@ -7,8 +7,14 @@
     @dragleave.prevent="dragging = false"
     @drop.prevent="dropImport"
   >
-    <div class="toolbar">
+    <div class="page-head">
+      <span class="crumbs">Workspace /</span>
       <h1>Labs</h1>
+      <span class="badge">{{ labs.length }} total</span>
+      <div class="spacer"></div>
+      <input v-model="search" class="search" placeholder="Search labs" aria-label="Search labs" />
+    </div>
+    <div class="toolbar">
       <form class="create" @submit.prevent="create">
         <input v-model="newName" placeholder="New lab name" aria-label="New lab name" required />
         <input v-model="newFolder" placeholder="Folder (optional)" aria-label="Folder" />
@@ -30,7 +36,7 @@
         <tr><th>Name</th><th>Owner</th><th>Revision</th><th>Nodes</th><th>Lock</th><th>Actions</th></tr>
       </thead>
       <tbody>
-        <tr v-for="lab in labs" :key="lab.id">
+        <tr v-for="lab in filteredLabs" :key="lab.id">
           <td>
             <router-link :to="`/labs/${lab.id}`">{{ lab.name }}</router-link>
             <small>{{ lab.path }}</small>
@@ -52,6 +58,7 @@
       </tbody>
     </table>
     <p v-if="!labs.length" class="empty">No labs yet. Create one, drop a `.unl` file, or import one.</p>
+    <p v-else-if="!filteredLabs.length" class="empty">No labs match “{{ search }}”.</p>
 
     <section v-if="showTrash" class="trash">
       <h2>Trash</h2>
@@ -77,7 +84,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../stores/toasts'
 
@@ -85,9 +92,15 @@ const labs = ref([])
 const trash = ref([])
 const showTrash = ref(false)
 const dragging = ref(false)
+const search = ref('')
 const newName = ref('')
 const newFolder = ref('')
 const error = ref('')
+const filteredLabs = computed(() => {
+  const needle = search.value.trim().toLowerCase()
+  if (!needle) return labs.value
+  return labs.value.filter((lab) => `${lab.name} ${lab.path} ${lab.owner || ''}`.toLowerCase().includes(needle))
+})
 
 async function load() {
   error.value = ''

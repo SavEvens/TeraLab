@@ -70,8 +70,9 @@ try {
     }
   })
 
+  const loginStart = Date.now()
   await page.goto(`http://127.0.0.1:${uiPort}/ui/login`)
-  await page.waitForTimeout(1500)
+  await page.getByLabel('Username').waitFor({ timeout: 30000 })
   if (!(await page.getByLabel('Username').count())) {
     console.error('URL', page.url())
     console.error('TITLE', await page.title())
@@ -84,6 +85,7 @@ try {
   await page.getByLabel('Password').fill('Teralab-Admin-2026!')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await page.waitForURL(`**/ui/labs`)
+  const loginMs = Date.now() - loginStart
 
   // Images: upload, rename, map a template.
   await page.getByRole('link', { name: 'Images' }).click()
@@ -103,9 +105,11 @@ try {
 
   await page.getByRole('link', { name: 'Labs', exact: true }).click()
   await page.waitForURL('**/ui/labs')
+  const editorStart = Date.now()
   await page.getByRole('link', { name: 'Editor Lab' }).click()
   await page.waitForURL(`**/ui/labs/lab1`)
   await page.waitForSelector('.lab-node')
+  const editorMs = Date.now() - editorStart
   const initialNodes = await page.locator('.lab-node').count()
 
   // Add a node from the palette.
@@ -138,8 +142,11 @@ try {
 
   // Console tab over the mock WebSocket.
   await page.locator('.lab-node').first().click()
+  const consoleStart = Date.now()
   await page.getByRole('button', { name: 'Console' }).click()
   await page.waitForSelector('.console-dock')
+  await page.waitForSelector('.xterm')
+  const consoleMs = Date.now() - consoleStart
   const consoleTab = await page.locator('.console-dock .tabs button').first().innerText()
   await page.waitForTimeout(1000)
   await page.getByRole('link', { name: '← Labs' }).click()
@@ -166,7 +173,13 @@ try {
 
   await page.screenshot({ path: `${outDir}/editor.png`, fullPage: true })
 
-  // Large-lab open budget (100 nodes).
+  // Large-lab open budgets (50 and 100 nodes).
+  await fetch(`http://127.0.0.1:${mockPort}/__fifty`, { method: 'POST' })
+  const fiftyStart = Date.now()
+  await page.goto(`http://127.0.0.1:${uiPort}/ui/labs/lab1`)
+  await page.waitForFunction(() => document.querySelectorAll('.lab-node').length === 50, null, { timeout: 15000 })
+  const fiftyMs = Date.now() - fiftyStart
+
   await fetch(`http://127.0.0.1:${mockPort}/__large`, { method: 'POST' })
   const largeStart = Date.now()
   await page.goto(`http://127.0.0.1:${uiPort}/ui/labs/lab1`)
@@ -174,6 +187,8 @@ try {
   const largeMs = Date.now() - largeStart
   await page.screenshot({ path: `${outDir}/editor-100.png`, fullPage: true })
 
+  await page.getByRole('link', { name: '← Labs' }).click()
+  await page.waitForURL('**/ui/labs')
   await page.getByRole('link', { name: 'Images' }).click()
   await page.waitForURL('**/ui/images')
   await page.waitForSelector('.images-view tbody tr', { timeout: 10000 })
@@ -183,6 +198,9 @@ try {
   const imagesAfterDelete = await page.locator('.images-view tbody tr').count()
 
   const result = {
+    loginMs,
+    editorMs,
+    consoleMs,
     initialNodes,
     addedNodes,
     savedText,
@@ -195,6 +213,7 @@ try {
     tableRows,
     xtermCount,
     startToast: startToast.replace(/\s+/g, ' ').trim(),
+    fiftyMs,
     largeMs,
     imagesAfterDelete,
     pageErrors: errors
@@ -202,15 +221,16 @@ try {
   console.log(JSON.stringify(result, null, 2))
   if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`)
   if (addedNodes !== initialNodes + 1) throw new Error('palette add failed')
-  if (!savedText.includes('Saved')) throw new Error('autosave did not complete')
+  if (!/saved/i.test(savedText)) throw new Error('autosave did not complete')
   if (nodeFields.nic !== 'virtio-net-pci' || nodeFields.serial !== 2) throw new Error('node nic/serial were not saved')
   if (!imageRow.includes('Renamed base')) throw new Error('image rename failed')
   if (!imageOptions.some((option) => option.includes('Renamed base'))) throw new Error('inspector image picker missing uploaded image')
-  if (!conflictText.includes('Save conflict')) throw new Error('conflict dialog missing')
+  if (!/save conflict/i.test(conflictText)) throw new Error('conflict dialog missing')
   if (!consoleTab.trim()) throw new Error('console tab missing')
   if (xtermCount < 1) throw new Error('xterm not mounted')
   if (tableRows < 5) throw new Error('table fallback missing nodes')
   if (dockPersists !== 1) throw new Error('console dock did not persist across routes')
+  if (fiftyMs > 5000) throw new Error(`50-node editor open took ${fiftyMs}ms`)
   if (largeMs > 10000) throw new Error(`100-node editor open took ${largeMs}ms`)
   if (imagesAfterDelete !== 0) throw new Error('image delete failed')
   if (!/start/i.test(startToast)) throw new Error('start job toast missing')
