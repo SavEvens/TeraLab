@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 TeraLab contributors
 #
-# Install TeraLab v1.3.0 on a Debian 13 host.
+# Install TeraLab v1.4.0 on a Debian 13 host.
 #
 # The installer never overwrites configuration, the database, labs, or images.
 # It is safe to re-run and is the supported upgrade path from v1.1.
@@ -117,6 +117,7 @@ install -d -m 0751 -o "$OWNER" -g "$OWNER" "$DATA"
 install -d -m 0750 -o "$OWNER" -g "$OWNER" "$DATA/labs"
 install -d -m 0755 -o "$OWNER" -g "$OWNER" "$DATA/images"
 install -d -m 0711 "$DATA/run"
+install -d -m 0750 -o "$OWNER" -g "$OWNER" "$DATA/logs"
 install -d -m 0750 -o "$OWNER" -g "$OWNER" /etc/teralab/templates
 install -d -m 0750 -o root -g "$OWNER" /run/teralab
 

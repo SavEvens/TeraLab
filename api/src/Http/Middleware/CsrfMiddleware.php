@@ -17,7 +17,7 @@ final class CsrfMiddleware implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $method = strtoupper($request->getMethod());
-        if (in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+        if (in_array($method, ['GET', 'HEAD', 'OPTIONS'], true) || $request->getAttribute('api_token') === true) {
             return $handler->handle($request);
         }
 

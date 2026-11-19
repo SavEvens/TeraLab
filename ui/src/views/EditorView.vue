@@ -54,9 +54,10 @@
             <button class="ghost" :disabled="!canUndo" title="Undo (Ctrl+Z)" @click="undo">↶</button>
             <button class="ghost" :disabled="!canRedo" title="Redo (Ctrl+Y)" @click="redo">↷</button>
             <button @click="save()">Save</button>
-            <button class="ghost" @click="run('start')">▶ Start</button>
-            <button class="ghost" @click="run('stop')">■ Stop</button>
-            <button class="danger" @click="run('wipe')">Wipe</button>
+            <button class="ghost" @click="openSnapshots">Snapshots</button>
+            <button class="ghost" @click="run('start')">▶ Start lab</button>
+            <button class="ghost" @click="run('stop')">■ Stop lab</button>
+            <button class="danger" @click="run('wipe')">Wipe lab</button>
           </div>
         </div>
 
@@ -106,6 +107,33 @@
       <div v-if="problems.length" class="validation-panel" role="status">
         <strong>Validation</strong>
         <ul><li v-for="problem in problems" :key="problem">{{ problem }}</li></ul>
+      </div>
+    </div>
+
+    <div v-if="showSnapshots" class="modal-backdrop" @click.self="showSnapshots = false">
+      <div class="modal snapshot-modal" role="dialog" aria-modal="true" aria-label="Lab snapshots">
+        <h2>Lab snapshots</h2>
+        <p class="hint">Topology and configuration checkpoints. Runtime state is not included.</p>
+        <form class="row" @submit.prevent="createSnapshot">
+          <input v-model="snapshotName" placeholder="Snapshot name" aria-label="Snapshot name" required />
+          <button type="submit">Create snapshot</button>
+          <button type="button" class="ghost" @click="showSnapshots = false">Close</button>
+        </form>
+        <table class="lab-table">
+          <thead><tr><th>Name</th><th>Revision</th><th>Created</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="snapshot in snapshots" :key="snapshot.id">
+              <td>{{ snapshot.name }}</td>
+              <td>{{ snapshot.revision }}</td>
+              <td>{{ new Date(snapshot.created_at * 1000).toLocaleString() }}</td>
+              <td class="actions">
+                <button class="ghost" @click="restoreSnapshot(snapshot)">Restore</button>
+                <button class="danger" @click="deleteSnapshot(snapshot)">Delete</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="!snapshots.length" class="empty">No snapshots yet.</p>
       </div>
     </div>
 
@@ -172,8 +200,13 @@ const showTable = ref(false)
 const showMinimap = ref(true)
 const clipboard = ref(null)
 const problems = ref([])
+const showSnapshots = ref(false)
+const snapshots = ref([])
+const snapshotName = ref('')
+const bulkAction = ref('start')
 const zoom = computed(() => Math.round(((getViewport.value?.zoom ?? 1)) * 100))
 const consoleOpen = computed(() => consoleState.tabs.length > 0)
+const selectionCount = computed(() => getSelectedNodes.value.length || (selected.value ? 1 : 0))
 const canUndo = computed(() => history.value.length > 0)
 const canRedo = computed(() => future.value.length > 0)
 const saveLabel = computed(() => {
@@ -496,6 +529,68 @@ function downloadConfig(node) {
   anchor.download = `${node.data.name || node.id}.cfg`
   anchor.click()
   URL.revokeObjectURL(url)
+}
+
+async function openSnapshots() {
+  showSnapshots.value = true
+  await loadSnapshots()
+}
+
+async function loadSnapshots() {
+  try {
+    snapshots.value = (await api.snapshots(props.id)).data
+  } catch (exception) {
+    notify('error', exception.message)
+  }
+}
+
+async function createSnapshot() {
+  try {
+    await api.createSnapshot(props.id, snapshotName.value)
+    snapshotName.value = ''
+    notify('success', 'Snapshot created')
+    await loadSnapshots()
+  } catch (exception) {
+    notify('error', exception.message)
+  }
+}
+
+async function restoreSnapshot(snapshot) {
+  if (!window.confirm(`Restore snapshot “${snapshot.name}”?`)) return
+  try {
+    await save({ silent: true })
+    await api.restoreSnapshot(props.id, snapshot.id)
+    showSnapshots.value = false
+    await load()
+    notify('success', 'Snapshot restored')
+  } catch (exception) {
+    notify('error', exception.message)
+  }
+}
+
+async function deleteSnapshot(snapshot) {
+  try {
+    await api.deleteSnapshot(props.id, snapshot.id)
+    await loadSnapshots()
+  } catch (exception) {
+    notify('error', exception.message)
+  }
+}
+
+async function runBulk() {
+  const nodesToRun = getSelectedNodes.value.length ? getSelectedNodes.value : (selected.value ? [selected.value] : [])
+  if (!nodesToRun.length) return
+  for (const node of nodesToRun) {
+    try {
+      if (bulkAction.value === 'start') await api.labNodeStart(props.id, node.data.id)
+      if (bulkAction.value === 'stop') await api.labNodeStop(props.id, node.data.id)
+      if (bulkAction.value === 'wipe') await api.labNodeWipe(props.id, node.data.id)
+    } catch (exception) {
+      notify('error', `${node.data.name}: ${exception.message}`)
+      return
+    }
+  }
+  notify('success', `${bulkAction.value} requested for ${nodesToRun.length} node(s)`)
 }
 
 async function openNodeConsole(node) {

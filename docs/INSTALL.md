@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Installing TeraLab v1.3.0
+# Installing TeraLab v1.4.0
 
 TeraLab targets Debian 13 with PHP 8.4 and QEMU 10. QEMU, Dynamips, IOL, and
 the kernel remain separate components with their own licences.

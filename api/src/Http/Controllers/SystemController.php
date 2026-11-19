@@ -9,21 +9,33 @@ namespace TeraLab\Api\Http\Controllers;
 use PDO;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use TeraLab\Api\Auth\AccessService;
+use TeraLab\Api\Auth\AuditLogger;
+use TeraLab\Api\Auth\TokenService;
 use TeraLab\Api\Config;
+use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
 use TeraLab\Api\Labs\LabRepository;
+use TeraLab\Api\System\BackupService;
+use TeraLab\Api\System\SettingsService;
 
 final class SystemController
 {
     public function __construct(
-        private readonly PDO $pdo,
         private readonly Config $config,
+        private readonly PDO $pdo,
         private readonly LabRepository $labs,
+        private readonly AccessService $access,
+        private readonly SettingsService $settings,
+        private readonly BackupService $backup,
+        private readonly TokenService $tokens,
+        private readonly AuditLogger $audit,
     ) {
     }
 
     public function status(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        $this->access->user($request);
         $users = $this->pdo->query('SELECT COUNT(*) FROM users');
 
         return Json::response($response, [
@@ -36,5 +48,152 @@ final class SystemController
             'users' => $users === false ? 0 : (int) $users->fetchColumn(),
             'labs' => $this->labs->count(),
         ]);
+    }
+
+    public function settings(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $this->access->user($request);
+
+        return Json::response($response, ['data' => $this->settings->all()]);
+    }
+
+    public function updateSettings(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'admin');
+        $values = $this->settings->update(Json::body($request));
+        $this->audit->log((string) $user['id'], $this->address($request), 'system.settings', null, 'success');
+
+        return Json::response($response, ['status' => 'success', 'data' => $values]);
+    }
+
+    public function logs(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $this->access->user($request);
+        $query = $request->getQueryParams();
+        $source = is_string($query['source'] ?? null) ? $query['source'] : 'api';
+        if (!in_array($source, ['api', 'agent'], true)) {
+            throw new HttpException(422, 'Unknown log source.');
+        }
+        $path = $this->config->dataDir . '/logs/' . $source . '.log';
+        if (!is_file($path) || !is_readable($path)) {
+            return Json::response($response, ['data' => [
+                'source' => $source,
+                'lines' => [],
+                'size' => 0,
+                'modified' => null,
+            ]]);
+        }
+
+        return Json::response($response, ['data' => [
+            'source' => $source,
+            'lines' => $this->tail($path, 300),
+            'size' => filesize($path) ?: 0,
+            'modified' => filemtime($path) ?: null,
+        ]]);
+    }
+
+    public function backup(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $this->access->user($request);
+        $backup = $this->backup->create();
+        $contents = file_get_contents($backup['path']);
+        if ($contents === false) {
+            @unlink($backup['path']);
+            throw new HttpException(500, 'Cannot read the backup archive.');
+        }
+        @unlink($backup['path']);
+        $response->getBody()->write($contents);
+
+        return $response
+            ->withHeader('Content-Type', 'application/zip')
+            ->withHeader('Content-Disposition', 'attachment; filename="' . $backup['filename'] . '"');
+    }
+
+    public function restore(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'admin');
+        $files = $request->getUploadedFiles();
+        $file = $files['file'] ?? null;
+        if (!$file instanceof \Psr\Http\Message\UploadedFileInterface) {
+            throw new HttpException(422, 'A multipart "file" field is required.');
+        }
+        $result = $this->backup->restore($file);
+        $this->audit->log((string) $user['id'], $this->address($request), 'system.restore', null, 'success', $result);
+
+        return Json::response($response, ['status' => 'success', 'data' => $result]);
+    }
+
+    public function tokens(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+
+        return Json::response($response, ['data' => $this->tokens->all((string) $user['id'])]);
+    }
+
+    public function createToken(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $body = Json::body($request);
+        $name = $body['name'] ?? null;
+        $scopes = $body['scopes'] ?? ['read', 'write'];
+        $expiresIn = $body['expires_in'] ?? null;
+        if (!is_string($name)) {
+            throw new HttpException(422, 'name is required.');
+        }
+        if (!is_array($scopes)) {
+            throw new HttpException(422, 'scopes must be an array.');
+        }
+        $token = $this->tokens->create(
+            (string) $user['id'],
+            $name,
+            array_values(array_filter($scopes, 'is_string')),
+            is_int($expiresIn) ? $expiresIn : null,
+        );
+        $this->audit->log((string) $user['id'], $this->address($request), 'auth.token.create', (string) $token['id'], 'success');
+
+        return Json::response($response, ['status' => 'success', 'data' => $token], 201);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function revokeToken(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->tokens->revoke((string) $user['id'], $args['id'] ?? '');
+        $this->audit->log((string) $user['id'], $this->address($request), 'auth.token.revoke', (string) ($args['id'] ?? ''), 'success');
+
+        return Json::response($response, ['status' => 'success']);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function tail(string $path, int $lines): array
+    {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            return [];
+        }
+        $size = filesize($path) ?: 0;
+        $read = min($size, 524288);
+        fseek($handle, -$read, SEEK_END);
+        $data = (string) fread($handle, $read);
+        fclose($handle);
+        $all = explode("\n", rtrim($data, "\n"));
+        if ($size > $read) {
+            array_shift($all);
+        }
+
+        return array_slice($all, -$lines);
+    }
+
+    private function address(ServerRequestInterface $request): string
+    {
+        $address = $request->getServerParams()['REMOTE_ADDR'] ?? '0.0.0.0';
+
+        return is_string($address) ? $address : '0.0.0.0';
     }
 }

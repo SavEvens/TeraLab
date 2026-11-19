@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.3.0
+# Upgrading to TeraLab v1.4.0
 
-v1.3.0 keeps `.unl` labs, the v1 API surface, and the `/var/lib/teralab`
+v1.4.0 keeps `.unl` labs, the v1 API surface, and the `/var/lib/teralab`
 layout. The installer is idempotent and is the supported upgrade path.
 
 ## Before upgrading
@@ -20,7 +20,7 @@ layout. The installer is idempotent and is the supported upgrade path.
 
 ```sh
 git fetch --tags
-git checkout v1.3.0
+git checkout v1.4.0
 sudo packaging/teralab/install.sh
 ```
 

@@ -23,6 +23,8 @@ Environment=TERALAB_QEMU=/usr/bin/qemu-system-x86_64
 Environment=TERALAB_QEMU_IMG=/usr/bin/qemu-img
 Environment=TERALAB_VM_USER=teralab-vm
 Environment=TERALAB_NETWORK_BACKEND=auto
+StandardOutput=append:/var/lib/teralab/logs/agent.log
+StandardError=append:/var/lib/teralab/logs/agent.log
 RuntimeDirectory=teralab
 RuntimeDirectoryMode=0750
 Restart=on-failure

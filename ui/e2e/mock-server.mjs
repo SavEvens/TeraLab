@@ -25,6 +25,9 @@ export function startMockServer(port = 8099) {
   let conflict = false
   let trash = []
   let images = []
+  let snapshots = []
+  let tokens = []
+  let settings = { timezone: 'UTC', session_ttl: 3600, max_upload_bytes: 33554432, console_default: 'telnet' }
   let lab = {
     id: 'lab1',
     name: 'Editor Lab',
@@ -117,7 +120,7 @@ export function startMockServer(port = 8099) {
       lab.networks = 10
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.3.0' })
+    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.4.0' })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       return send(response, 200, {
@@ -205,6 +208,41 @@ export function startMockServer(port = 8099) {
         { id: 'linux', name: 'Linux', kind: 'qemu', source: 'builtin', defaults: { cpu: 1, ram: 512, ethernet: 4, console: 'telnet' } },
         { id: 'vpcs', name: 'VPCS', kind: 'vpcs', source: 'builtin', defaults: { ethernet: 1, console: 'telnet' } }
       ] })
+    }
+    if (path === '/api/v2/labs/lab1/snapshots' && request.method === 'GET') return send(response, 200, { data: snapshots })
+    if (path === '/api/v2/labs/lab1/snapshots' && request.method === 'POST') {
+      const input = await body(request)
+      const snapshot = { id: `snap${snapshots.length + 1}`, lab_id: 'lab1', name: input.name || 'Snapshot', revision: lab.revision, created_at: Math.floor(Date.now() / 1000) }
+      snapshots = [snapshot, ...snapshots]
+      return send(response, 201, { status: 'success', data: snapshot })
+    }
+    if (path.startsWith('/api/v2/labs/lab1/snapshots/') && path.endsWith('/restore')) return send(response, 200, { status: 'success', data: lab })
+    if (path.startsWith('/api/v2/labs/lab1/snapshots/') && request.method === 'DELETE') {
+      snapshots = []
+      return send(response, 200, { status: 'success' })
+    }
+    if (path === '/api/v2/labs/lab1/nodes/1/start' || path === '/api/v2/labs/lab1/nodes/1/stop' || path === '/api/v2/labs/lab1/nodes/1/wipe') {
+      return send(response, 200, { status: 'success', data: { state: 'ok' } })
+    }
+    if (path === '/api/v2/system/host') {
+      return send(response, 200, { data: { load1: 0.2, load5: 0.1, load15: 0.1, disk_free_bytes: 1000000, disk_total_bytes: 2000000, nodes: [], engines: [{ name: 'qemu', available: true, version: '10.0' }] } })
+    }
+    if (path === '/api/v2/system/settings' && request.method === 'GET') return send(response, 200, { data: settings })
+    if (path === '/api/v2/system/settings' && request.method === 'PUT') {
+      settings = { ...settings, ...(await body(request)) }
+      return send(response, 200, { status: 'success', data: settings })
+    }
+    if (path === '/api/v2/system/logs') return send(response, 200, { data: { source: 'api', lines: ['mock log line'], size: 14, modified: 0 } })
+    if (path === '/api/v2/system/tokens' && request.method === 'GET') return send(response, 200, { data: tokens })
+    if (path === '/api/v2/system/tokens' && request.method === 'POST') {
+      const input = await body(request)
+      const token = { id: 'tok1', name: input.name || 'token', token: 'tl_mock_token', scopes: input.scopes || ['read'], created_at: Math.floor(Date.now() / 1000), last_used_at: null, expires_at: null }
+      tokens = [token, ...tokens]
+      return send(response, 201, { status: 'success', data: token })
+    }
+    if (path.startsWith('/api/v2/system/tokens/') && request.method === 'DELETE') {
+      tokens = []
+      return send(response, 200, { status: 'success' })
     }
     if (path === '/api/v2/images' && request.method === 'GET') return send(response, 200, { data: images })
     if (path === '/api/v2/images' && request.method === 'POST') {
