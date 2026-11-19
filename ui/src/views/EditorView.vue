@@ -19,11 +19,10 @@
         @pane-click="selected = null"
         @edges-change="edgesChanged"
         @move-end="saveViewport"
-        @viewport-change="() => {}"
       >
         <Background v-if="showGrid" pattern-color="#22346a" :gap="26" />
         <Controls position="bottom-left" />
-        <MiniMap position="bottom-right" :pannable="true" :zoomable="true" />
+        <MiniMap v-if="showMinimap" position="bottom-right" :pannable="true" :zoomable="true" />
       </VueFlow>
 
       <div v-if="showTable" class="node-table">
@@ -85,6 +84,7 @@
           <button class="ghost" :class="{ active: showGrid }" @click="showGrid = !showGrid">Grid</button>
           <button class="ghost" @click="showTable = !showTable">{{ showTable ? 'Canvas' : 'Table' }}</button>
           <button class="ghost" @click="validate">Validate</button>
+                  <button class="ghost" :class="{ active: showMinimap }" @click="showMinimap = !showMinimap">Map</button>
           <button class="ghost" @click="presentation = true">Presentation</button>
         </div>
 
@@ -169,6 +169,7 @@ const edgeNetworks = new Map()
 const snap = ref(true)
 const showGrid = ref(true)
 const showTable = ref(false)
+const showMinimap = ref(true)
 const clipboard = ref(null)
 const problems = ref([])
 const zoom = computed(() => Math.round(((getViewport.value?.zoom ?? 1)) * 100))
@@ -296,6 +297,7 @@ async function load() {
     revision.value = data.revision || 1
     networks.value = (data.network_list || []).map((network) => ({ ...network }))
     nodes.value = (data.node_list || []).map(buildNode)
+    showMinimap.value = nodes.value.length <= 80
     rebuildEdges()
     templates.value = (await api.templates()).data
     images.value = (await api.images()).data

@@ -297,12 +297,20 @@ func (m *Manager) Stop(id string) error {
 	pid := node.Cmd.Process.Pid
 	m.mu.Unlock()
 
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("stop node %s: signal: %w", id, err)
+	}
 	select {
 	case <-node.Done:
 	case <-time.After(5 * time.Second):
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		<-node.Done
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("stop node %s: kill: %w", id, err)
+		}
+		select {
+		case <-node.Done:
+		case <-time.After(5 * time.Second):
+			return fmt.Errorf("stop node %s: timed out waiting for exit", id)
+		}
 	}
 
 	m.mu.Lock()

@@ -88,7 +88,7 @@ try {
   session = await login()
   const version = await call('GET', '/version')
   const health = await call('GET', '/health')
-  if (version.version !== '1.2.0' || health.version !== '1.2.0') {
+  if (version.version !== '1.3.0' || health.version !== '1.3.0') {
     throw new Error(`version mismatch: ${version.version}/${health.version}`)
   }
   if (session.cookieSecure) throw new Error('session cookie is Secure over plain HTTP')
@@ -184,7 +184,7 @@ try {
   if (!exported.endsWith('.yaml')) throw new Error(`template export filename invalid: ${exported}`)
 
   // Images: upload, rename, map template through the UI.
-  await page.getByRole('link', { name: '← Labs' }).click()
+  await page.getByRole('link', { name: 'Labs', exact: true }).click()
   await page.waitForURL('**/ui/labs')
   await page.getByRole('link', { name: 'Images' }).click()
   await page.waitForURL('**/ui/images')

@@ -11,10 +11,10 @@ E2E (`ui/e2e/run.mjs`); engine numbers come from the installed agent.
 |---|---|---|---|
 | Time to first running lab (known image) | ≤ 5 min | ~3.5 s browser path (login 1.3 s, editor 0.9 s, start 1 s) + engine boot | ✅ |
 | Clicks to first running lab | ≤ 12 | 9 (login, create, open, add node, save, start, console) | ✅ |
-| Lab open time, 50 nodes | ≤ 1.5 s | 1.46 s (mock API, Chromium) | ✅ |
-| Lab open time, 100 nodes | informational | 2.6–3.5 s | ✅ |
+| Lab open time, 50 nodes | ≤ 1.5 s | 1.42 s (mock API, Chromium) | ✅ |
+| Lab open time, 100 nodes | informational | 1.5 s (Apache real-stack) | ✅ |
 | Node start, warm QEMU | ≤ 10 s | < 3 s (KVM, blank qcow2) | ✅ |
-| Editor interaction | 60 fps at 100 nodes | 60 fps pan (Apache real-stack E2E) | ✅ |
+| Editor interaction | 60 fps at 100 nodes | 53–54 fps pan headless SwiftShader (61 fps idle baseline); client GPU target 60 fps | ⚠️ |
 | API p95 (CRUD) | ≤ 300 ms | 10–12 ms (health/labs, 100 requests) | ✅ |
 | Console connect | ≤ 2 s | 0.31 s telnet mock; real VNC connects in ~1–2 s | ✅ |
 | Crash-free save | 100% atomic writes | Atomic temp+rename, revision 409 tested | ✅ |
@@ -47,5 +47,8 @@ E2E (`ui/e2e/run.mjs`); engine numbers come from the installed agent.
 
 - UI timings: Playwright `Date.now()` around navigation/selector waits.
 - FPS: `requestAnimationFrame` counter during a 2 s pan at 100 nodes.
+  Headless Chromium uses software rendering; the same page idles at 61 fps,
+  so 53–54 fps reflects the software compositor rather than the client GPU.
+  The 60 fps target remains the acceptance criterion on hardware.
 - API latency: 100 sequential `curl` requests, p50/p95/max.
 - Engine start: agent/API timestamps on the host with KVM enabled.
