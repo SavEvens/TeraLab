@@ -31,8 +31,10 @@
 
 - PHP: 56 tests / 603 assertions; PHPStan level 6.
 - UI: 8 Vitest tests; production build; mock browser E2E (`UI_E2E_OK`).
-- Measured UX: login 1.3 s, editor open 0.9 s, 50 nodes 1.46 s, console 0.31 s;
-  real-stack 100-node pan at 60 fps.
+- Measured UX: login 1.3 s, editor open 0.9 s, 50 nodes 1.42 s, console 0.31 s;
+  real-stack 100 nodes open in 1.5 s. Headless panning measured 53–54 fps
+  (61 fps idle baseline under software rendering); 60 fps remains the
+  client-GPU acceptance target.
 - Accessibility: labelled controls, focus-visible outlines, table fallback,
   keyboard shortcuts, and palette Enter/Space activation.
 
