@@ -6,6 +6,7 @@ package system
 import (
 	"context"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,6 +29,7 @@ type Status struct {
 	Running     int               `json:"running"`
 	Nodes       []engine.NodeInfo `json:"nodes"`
 	Engines     []EngineStatus    `json:"engines"`
+	Interfaces  []InterfaceInfo   `json:"interfaces"`
 	Load1       float64           `json:"load1"`
 	Load5       float64           `json:"load5"`
 	Load15      float64           `json:"load15"`
@@ -52,6 +54,7 @@ func Collect(ctx context.Context, cfg config.Config, manager *engine.Manager) St
 		Running:     manager.Count(),
 		Nodes:       manager.List(),
 		Engines:     Engines(ctx, cfg, manager),
+		Interfaces:  interfaces(),
 		Load1:       load1,
 		Load5:       load5,
 		Load15:      load15,
@@ -62,6 +65,14 @@ func Collect(ctx context.Context, cfg config.Config, manager *engine.Manager) St
 }
 
 // EngineStatus reports whether an engine binary or image is available.
+type InterfaceInfo struct {
+	Name      string   `json:"name"`
+	MAC       string   `json:"mac,omitempty"`
+	MTU       int      `json:"mtu"`
+	Up        bool     `json:"up"`
+	Addresses []string `json:"addresses,omitempty"`
+}
+
 type EngineStatus struct {
 	Name      string `json:"name"`
 	Binary    string `json:"binary,omitempty"`
@@ -148,4 +159,28 @@ func diskUsage(path string) (uint64, uint64) {
 	blockSize := uint64(stat.Bsize)
 
 	return stat.Bavail * blockSize, stat.Blocks * blockSize
+}
+
+func interfaces() []InterfaceInfo {
+	links, err := net.Interfaces()
+	if err != nil {
+		return []InterfaceInfo{}
+	}
+	result := make([]InterfaceInfo, 0, len(links))
+	for _, link := range links {
+		info := InterfaceInfo{
+			Name: link.Name,
+			MAC:  link.HardwareAddr.String(),
+			MTU:  link.MTU,
+			Up:   link.Flags&net.FlagUp != 0,
+		}
+		if addrs, err := link.Addrs(); err == nil {
+			for _, addr := range addrs {
+				info.Addresses = append(info.Addresses, addr.String())
+			}
+		}
+		result = append(result, info)
+	}
+
+	return result
 }

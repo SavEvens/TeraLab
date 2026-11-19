@@ -299,6 +299,114 @@ final class LabController
     /**
      * @param array<string, string> $args
      */
+    public function snapshots(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+
+        return Json::response($response, ['data' => $this->service->snapshots((string) $lab['id'])]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function createSnapshot(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $body = Json::body($request);
+        $name = $body['name'] ?? ('Snapshot ' . gmdate('Y-m-d H:i'));
+        if (!is_string($name)) {
+            throw new HttpException(422, 'name must be a string.');
+        }
+        $snapshot = $this->service->createSnapshot((string) $lab['id'], $name, (string) $user['id']);
+        $this->audit->log((string) $user['id'], $this->ip($request), 'lab.snapshot.create', (string) $lab['id'], 'success', ['snapshot' => $snapshot['id']]);
+
+        return Json::response($response, ['status' => 'success', 'data' => $snapshot], 201);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function restoreSnapshot(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $restored = $this->service->restoreSnapshot(
+            (string) $lab['id'],
+            $args['snapshot'] ?? '',
+            (string) $user['id'],
+            $this->access->isAdmin($user),
+        );
+        $this->audit->log((string) $user['id'], $this->ip($request), 'lab.snapshot.restore', (string) $lab['id'], 'success', ['snapshot' => $args['snapshot'] ?? '']);
+
+        return Json::response($response, ['status' => 'success', 'data' => $restored]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function deleteSnapshot(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $this->service->deleteSnapshot((string) $lab['id'], $args['snapshot'] ?? '');
+        $this->audit->log((string) $user['id'], $this->ip($request), 'lab.snapshot.delete', (string) $lab['id'], 'success', ['snapshot' => $args['snapshot'] ?? '']);
+
+        return Json::response($response, ['status' => 'success']);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function nodeStart(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        return $this->nodeAction($request, $response, $args, 'start');
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function nodeStop(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        return $this->nodeAction($request, $response, $args, 'stop');
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function nodeWipe(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        return $this->nodeAction($request, $response, $args, 'wipe');
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    private function nodeAction(ServerRequestInterface $request, ResponseInterface $response, array $args, string $action): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $nodeID = $args['node'] ?? '';
+        $isAdmin = $this->access->isAdmin($user);
+        $data = match ($action) {
+            'start' => $this->service->startNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
+            'stop' => $this->service->stopNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
+            'wipe' => $this->service->wipeNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
+            default => [],
+        };
+        $this->audit->log((string) $user['id'], $this->ip($request), 'lab.node.' . $action, (string) $lab['id'], 'success', ['node' => $nodeID]);
+
+        return Json::response($response, ['status' => 'success', 'data' => $data]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
     public function permissions(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);

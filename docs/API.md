@@ -46,6 +46,11 @@ CSRF=$(curl -b jar $B/api/v2/auth/me | jq -r .csrf_token)
 | POST | `/api/v2/labs/{id}/permissions` | Admin: grant `{username, role}` |
 | DELETE | `/api/v2/labs/{id}/permissions/{user}` | Admin: revoke |
 
+`GET /api/v2/labs/{id}/snapshots` lists checkpoints;
+`POST /api/v2/labs/{id}/snapshots` creates one;
+`POST /api/v2/labs/{id}/snapshots/{snapshot}/restore` restores topology/config;
+`DELETE /api/v2/labs/{id}/snapshots/{snapshot}` removes it.
+
 `GET /api/v2/labs/{id}` includes `lock` when the lab is running. While a lab is
 locked, saves from another user return 409 with the owner and expiry.
 
@@ -83,7 +88,14 @@ for VNC the generated password.
 - `POST /api/v2/labs/{id}/networks` with `{"networks":[{"id":"0"}]}`.
 - `POST /api/v2/labs/{id}/networks/cleanup`.
 - `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol availability.
-- `GET /api/v2/system/host` reports agent load, disk, nodes, and engines.
+- `GET /api/v2/system/host` reports load, disk, nodes, engines, and host
+  interfaces.
+- `GET /api/v2/system/logs?source=api|agent` tails logs (admin).
+- `GET|PUT /api/v2/system/settings` reads/updates runtime settings (admin).
+- `GET /api/v2/system/backup` downloads a zip; `POST /api/v2/system/restore`
+  restores labs/templates/settings/metadata and stages the database.
+- `GET|POST /api/v2/system/tokens` and `DELETE /system/tokens/{id}` manage
+  scoped bearer tokens.
 - `GET|POST /api/v2/images`, `GET|DELETE /api/v2/images/{id}`, `PATCH` to rename.
 - `GET /api/v2/templates` lists built-in and custom YAML templates.
 - `GET /api/v2/templates/{id}` returns a template and its YAML.
@@ -97,6 +109,12 @@ for VNC the generated password.
   start/stop/wipe return `job_id`. `POST /api/v2/jobs/{id}/cancel` cancels a
   queued/running job.
 - `POST /api/v2/maintenance/reconcile` reclaims orphaned resources.
+
+## API tokens
+
+Create a token with `POST /api/v2/system/tokens`. Use it as
+`Authorization: Bearer <token>`; CSRF headers are not required for bearer
+requests. Read-only tokens reject non-GET methods.
 
 ## v1 compatibility
 

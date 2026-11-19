@@ -3,6 +3,48 @@
 
 # TeraLab release notes
 
+# TeraLab v1.4.0 release notes
+
+- Release date: 2026-11-19
+- Previous release: v1.3.0
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+- Source: https://github.com/SavEvens/TeraLab
+
+## Highlights
+
+- **Lab snapshots**: create, list, restore, and delete topology/config
+  checkpoints (runtime memory is excluded).
+- **System workspace**: host load/disk/engines/physical interfaces, API and
+  agent log tails, runtime settings, backup/restore, and API tokens.
+- **Settings** apply immediately to new sessions and uploads: timezone,
+  session TTL, maximum upload size, and default console.
+- **Backup** archives the SQLite database, labs, custom templates, settings,
+  and image metadata. Restore covers labs/templates/settings/metadata and
+  stages the database for the next API bootstrap, keeping a pre-restore copy.
+- **API tokens**: scoped read/read-write bearer tokens, hashed at rest,
+  revocable, with CSRF bypass only for token-authenticated requests.
+- **Bulk node actions**: start/stop/wipe a selection directly from the editor.
+- **Reliability**: the agent now has `CAP_KILL` plus fail-fast stop timeouts;
+  startup reconciliation reaps orphan engines, taps, cgroups, and run dirs.
+
+## Validation
+
+- PHP: 61 tests / 723 assertions; PHPStan level 6.
+- Go: agent tests including capabilities, reconciliation, cgroup usage, and
+  host interface enumeration.
+- UI: 8 Vitest tests; build; browser E2E with snapshots and the System page.
+- OpenAPI 3.1 draft updated and validated.
+- Release gate and CI green.
+
+## Known limits
+
+- NAT/cloud uplinks alter host networking and remain gated on explicit owner
+  approval; physical interfaces are visible in System but not attached to labs.
+- Database restore is applied at the next API request; stop lab workloads first.
+- Image URL import and loopback telnet remain optional/May items.
+- Headless editor panning remains below 60 fps under software rendering; the
+  60 fps target is a client-GPU acceptance criterion.
+
 # TeraLab v1.3.0 release notes
 
 - Release date: 2026-11-19

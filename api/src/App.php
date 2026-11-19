@@ -42,8 +42,12 @@ use TeraLab\Api\Http\Middleware\SecurityHeadersMiddleware;
 use TeraLab\Api\Http\Middleware\V1AuthMiddleware;
 use TeraLab\Api\Image\ImageStore;
 use TeraLab\Api\Jobs\JobService;
+use TeraLab\Api\Labs\LabLocks;
 use TeraLab\Api\Labs\LabRepository;
+use TeraLab\Api\Labs\LabService;
 use TeraLab\Api\Labs\UnlParser;
+use TeraLab\Api\Labs\UnlWriter;
+use TeraLab\Api\Snapshots\SnapshotRepository;
 use TeraLab\Api\Templates\TemplateRepository;
 
 final class App
@@ -64,14 +68,31 @@ final class App
         $container->set(PDO::class, static fn (Config $config): PDO => (new Database($config))->pdo());
         $container->set(
             LoggerInterface::class,
-            static fn (): LoggerInterface => new Logger('teralab-api', [
-                new StreamHandler('php://stderr', Logger::WARNING),
-            ])
+            static function (Config $config): LoggerInterface {
+                $handlers = [new StreamHandler('php://stderr', Logger::WARNING)];
+                $directory = $config->dataDir . '/logs';
+                if (is_dir($directory) || @mkdir($directory, 0770, true) || is_dir($directory)) {
+                    $handlers[] = new StreamHandler($directory . '/api.log', Logger::WARNING);
+                }
+
+                return new Logger('teralab-api', $handlers);
+            }
         );
         $container->set(UnlParser::class, static fn (): UnlParser => new UnlParser());
         $container->set(
             LabRepository::class,
             static fn (Config $config, UnlParser $parser): LabRepository => new LabRepository($config->labsDir, $parser)
+        );
+        $container->set(
+            LabService::class,
+            static fn (
+                Config $config,
+                UnlParser $parser,
+                UnlWriter $writer,
+                AgentClient $agent,
+                LabLocks $locks,
+                SnapshotRepository $snapshots,
+            ): LabService => new LabService($config, $parser, $writer, $agent, $locks, $snapshots)
         );
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
         $container->set(RateLimiter::class, static fn (PDO $pdo): RateLimiter => new RateLimiter($pdo));
@@ -84,7 +105,8 @@ final class App
                 RateLimiter $rateLimiter,
                 AuditLogger $audit,
                 Config $config,
-            ): AuthService => new AuthService($pdo, $policy, $rateLimiter, $audit, $config)
+                \TeraLab\Api\System\SettingsService $settings,
+            ): AuthService => new AuthService($pdo, $policy, $rateLimiter, $audit, $config, $settings)
         );
         $container->set(
             Migrator::class,
@@ -104,11 +126,16 @@ final class App
                 $pdo,
                 static fn (string $path): array => $container->get(AgentClient::class)->inspectImage($path),
                 $templates,
+                $container->get(\TeraLab\Api\System\SettingsService::class),
             )
         );
 
         $container->get(Migrator::class)->migrate();
         $container->get(JobService::class)->reconcile();
+        $timezone = $container->get(\TeraLab\Api\System\SettingsService::class)->string('timezone', 'UTC');
+        if (in_array($timezone, timezone_identifiers_list(), true)) {
+            date_default_timezone_set($timezone);
+        }
 
         $app = AppFactory::createFromContainer($container);
         $app->addRoutingMiddleware();
@@ -172,6 +199,32 @@ final class App
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/labs/{id}/duplicate', fn ($request, $response, array $args) => $labs->duplicate($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/labs/{id}/snapshots', fn ($request, $response, array $args) => $labs->snapshots($request, $response, $args))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/snapshots', fn ($request, $response, array $args) => $labs->createSnapshot($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/snapshots/{snapshot}/restore', fn ($request, $response, array $args) => $labs->restoreSnapshot($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->delete('/api/v2/labs/{id}/snapshots/{snapshot}', fn ($request, $response, array $args) => $labs->deleteSnapshot($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/nodes/{node}/start', fn ($request, $response, array $args) => $labs->nodeStart($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/nodes/{node}/stop', fn ($request, $response, array $args) => $labs->nodeStop($request, $response, $args))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/nodes/{node}/wipe', fn ($request, $response, array $args) => $labs->nodeWipe($request, $response, $args))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/labs/{id}/permissions', fn ($request, $response, array $args) => $labs->permissions($request, $response, $args))
@@ -263,6 +316,31 @@ final class App
         $app->get('/api/v2/engines', fn ($request, $response) => $engines->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/system/host', fn ($request, $response) => $container->get(HostController::class)->status($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $system = $container->get(SystemController::class);
+        $app->get('/api/v2/system/logs', fn ($request, $response) => $system->logs($request, $response))
+            ->add($adminRole())
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/system/settings', fn ($request, $response) => $system->settings($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->put('/api/v2/system/settings', fn ($request, $response) => $system->updateSettings($request, $response))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/system/backup', fn ($request, $response) => $system->backup($request, $response))
+            ->add($adminRole())
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/system/restore', fn ($request, $response) => $system->restore($request, $response))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/system/tokens', fn ($request, $response) => $system->tokens($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/system/tokens', fn ($request, $response) => $system->createToken($request, $response))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->delete('/api/v2/system/tokens/{id}', fn ($request, $response, array $args) => $system->revokeToken($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $jobs = $container->get(JobController::class);
         $app->get('/api/v2/jobs', fn ($request, $response) => $jobs->index($request, $response))

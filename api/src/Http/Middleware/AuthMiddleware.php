@@ -11,17 +11,39 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use TeraLab\Api\Auth\AuthService;
+use TeraLab\Api\Auth\TokenService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 
 final class AuthMiddleware implements MiddlewareInterface
 {
-    public function __construct(private readonly AuthService $auth)
-    {
+    public function __construct(
+        private readonly AuthService $auth,
+        private readonly TokenService $tokens,
+    ) {
     }
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
+        $authorization = $request->getHeaderLine('Authorization');
+        if (preg_match('/^Bearer\s+(.+)$/i', $authorization, $matches) === 1) {
+            $context = $this->tokens->authenticate(trim($matches[1]));
+            if ($context === null) {
+                throw new HttpException(401, 'Invalid or expired API token.');
+            }
+            $method = strtoupper($request->getMethod());
+            if (!in_array($method, ['GET', 'HEAD', 'OPTIONS'], true) && !in_array('write', $context['scopes'], true)) {
+                throw new HttpException(403, 'This API token is read-only.');
+            }
+
+            return $handler->handle(
+                $request
+                    ->withAttribute('user', $context['user'])
+                    ->withAttribute('api_token', true)
+                    ->withAttribute('token_scopes', $context['scopes'])
+            );
+        }
+
         $cookies = $request->getCookieParams();
         $sessionId = $cookies[Config::COOKIE_NAME] ?? null;
         if (!is_string($sessionId) || $sessionId === '') {

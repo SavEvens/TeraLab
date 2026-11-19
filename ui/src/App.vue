@@ -24,6 +24,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>
           <span>Images</span>
         </router-link>
+        <router-link to="/system" class="rail-link">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
+          <span>System</span>
+        </router-link>
         <a href="/about.php" target="_blank" rel="noopener" class="rail-link">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8h.01"/></svg>
           <span>About</span>
@@ -56,7 +60,7 @@ import ToastHost from './components/ToastHost.vue'
 
 const router = useRouter()
 const route = useRoute()
-const version = ref('1.3.0')
+const version = ref('1.4.0')
 const bare = computed(() => ['login', 'setup', 'editor'].includes(String(route.name)))
 
 async function doLogout() {

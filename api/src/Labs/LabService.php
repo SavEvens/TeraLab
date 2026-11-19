@@ -11,6 +11,7 @@ use RuntimeException;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Snapshots\SnapshotRepository;
 
 final class LabService
 {
@@ -22,6 +23,7 @@ final class LabService
         private readonly UnlWriter $writer,
         private readonly AgentClient $agent,
         private readonly LabLocks $locks,
+        private readonly ?SnapshotRepository $snapshots = null,
     ) {
     }
 
@@ -140,6 +142,76 @@ final class LabService
             'filename' => $this->slug((string) $lab['name']) . '.unl',
             'xml' => $this->writer->write($lab),
         ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function snapshots(string $id): array
+    {
+        [$lab] = $this->load($id);
+        $repository = $this->snapshotRepository();
+
+        return $repository->all((string) $lab['id']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function createSnapshot(string $id, string $name, ?string $userId): array
+    {
+        [$lab] = $this->load($id);
+        $name = trim($name);
+        if ($name === '' || strlen($name) > 128) {
+            throw new HttpException(422, 'Snapshot name is required.');
+        }
+
+        return $this->snapshotRepository()->create(
+            (string) $lab['id'],
+            $name,
+            (int) $lab['revision'],
+            $this->writer->write($lab),
+            $userId,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function restoreSnapshot(string $id, string $snapshotID, ?string $userId = null, bool $isAdmin = false): array
+    {
+        [$lab, $path] = $this->load($id);
+        if ($userId !== null) {
+            $this->locks->assertEditable((string) $lab['id'], $userId, $isAdmin);
+        }
+        $snapshot = $this->snapshotRepository()->find((string) $lab['id'], $snapshotID);
+        if ($snapshot === null) {
+            throw new HttpException(404, 'Snapshot not found.');
+        }
+        $restored = $this->parser->parseXml((string) $snapshot['xml']);
+        $restored['id'] = $lab['id'];
+        $restored['revision'] = (int) $lab['revision'] + 1;
+        $restored['attributes']['updated_at'] = gmdate('c');
+        $this->write($path, $restored);
+
+        return $this->metadata($restored, $path);
+    }
+
+    public function deleteSnapshot(string $id, string $snapshotID): void
+    {
+        [$lab] = $this->load($id);
+        if (!$this->snapshotRepository()->delete((string) $lab['id'], $snapshotID)) {
+            throw new HttpException(404, 'Snapshot not found.');
+        }
+    }
+
+    private function snapshotRepository(): SnapshotRepository
+    {
+        if ($this->snapshots === null) {
+            throw new HttpException(500, 'Snapshot storage is not configured.');
+        }
+
+        return $this->snapshots;
     }
 
     /**

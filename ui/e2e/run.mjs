@@ -87,6 +87,18 @@ try {
   await page.waitForURL(`**/ui/labs`)
   const loginMs = Date.now() - loginStart
 
+  // System page smoke: host, settings, logs, and tokens.
+  await page.getByRole('link', { name: 'System' }).click()
+  await page.waitForURL('**/ui/system')
+  await page.getByRole('tab', { name: 'Host' }).click()
+  await page.getByRole('tab', { name: 'Settings' }).click()
+  await page.getByRole('tab', { name: 'Tokens' }).click()
+  await page.locator('.token-form input').first().fill('e2e token')
+  await page.getByRole('button', { name: 'Create token' }).click()
+  await page.waitForFunction(() => document.querySelector('.token-once')?.textContent.includes('tl_mock_token'), null, { timeout: 10000 })
+  await page.getByRole('link', { name: 'Labs', exact: true }).click()
+  await page.waitForURL('**/ui/labs')
+
   // Images: upload, rename, map a template.
   await page.getByRole('link', { name: 'Images' }).click()
   await page.waitForURL('**/ui/images')
@@ -110,6 +122,13 @@ try {
   await page.waitForURL(`**/ui/labs/lab1`)
   await page.waitForSelector('.lab-node')
   const editorMs = Date.now() - editorStart
+
+  // Snapshot create/list.
+  await page.getByRole('button', { name: 'Snapshots' }).click()
+  await page.locator('.snapshot-modal input').fill('before changes')
+  await page.getByRole('button', { name: 'Create snapshot' }).click()
+  await page.waitForFunction(() => document.querySelector('.snapshot-modal tbody')?.textContent.includes('before changes'), null, { timeout: 10000 })
+  await page.getByRole('button', { name: 'Close' }).click()
   const initialNodes = await page.locator('.lab-node').count()
 
   // Add a node from the palette.
@@ -166,7 +185,7 @@ try {
   const tableRows = await page.locator('.node-table tbody tr').count()
   const xtermCount = await page.locator('.xterm').count()
 
-  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Start lab' }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /start/i.test(toast.textContent || '')), null, { timeout: 12000 })
   const startToast = await page.locator('.toasts').innerText()
   await page.waitForTimeout(800)

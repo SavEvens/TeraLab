@@ -9,6 +9,7 @@ namespace TeraLab\Api\Auth;
 use PDO;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\System\SettingsService;
 
 final class AuthService
 {
@@ -18,6 +19,7 @@ final class AuthService
         private readonly RateLimiter $rateLimiter,
         private readonly AuditLogger $audit,
         private readonly Config $config,
+        private readonly ?SettingsService $settings = null,
     ) {
     }
 
@@ -138,7 +140,7 @@ final class AuthService
             'user' => $this->publicUser($user),
             'session_id' => $session['session_id'],
             'csrf_token' => $session['csrf_token'],
-            'expires_in' => $this->config->sessionTtl,
+            'expires_in' => $this->sessionTtl(),
         ];
     }
 
@@ -248,6 +250,11 @@ final class AuthService
         return $token;
     }
 
+    private function sessionTtl(): int
+    {
+        return $this->settings?->int('session_ttl', $this->config->sessionTtl) ?? $this->config->sessionTtl;
+    }
+
     /**
      * @return array{session_id: string, csrf_token: string}
      */
@@ -269,7 +276,7 @@ final class AuthService
             ':user_agent' => $userAgent,
             ':created_at' => $now,
             ':last_seen_at' => $now,
-            ':expires_at' => $now + $this->config->sessionTtl,
+            ':expires_at' => $now + $this->sessionTtl(),
         ]);
 
         return ['session_id' => $sessionId, 'csrf_token' => $csrfToken];

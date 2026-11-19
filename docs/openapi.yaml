@@ -3,7 +3,7 @@
 openapi: 3.1.0
 info:
   title: TeraLab API
-  version: 1.3.0
+  version: 1.4.0
   description: |
     JSON API for TeraLab lab orchestration. State-changing requests require a
     session cookie and the `X-CSRF-Token` header returned by setup/login/me.
@@ -498,3 +498,126 @@ paths:
       responses:
         '200': { description: Cancelled }
         '409': { description: Job cannot be cancelled safely }
+  /api/v2/labs/{id}/snapshots:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [labs]
+      summary: List lab snapshots
+      responses:
+        '200': { description: Snapshots }
+    post:
+      tags: [labs]
+      summary: Create a topology/config snapshot
+      responses:
+        '201': { description: Snapshot created }
+  /api/v2/labs/{id}/snapshots/{snapshot}/restore:
+    post:
+      tags: [labs]
+      summary: Restore a lab snapshot
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: snapshot, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Restored }
+  /api/v2/labs/{id}/snapshots/{snapshot}:
+    delete:
+      tags: [labs]
+      summary: Delete a snapshot
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: snapshot, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Deleted }
+  /api/v2/labs/{id}/nodes/{node}/start:
+    post:
+      tags: [nodes]
+      summary: Start one lab node
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: node, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Running }
+  /api/v2/labs/{id}/nodes/{node}/stop:
+    post:
+      tags: [nodes]
+      summary: Stop one lab node
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: node, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Stopped }
+  /api/v2/labs/{id}/nodes/{node}/wipe:
+    post:
+      tags: [nodes]
+      summary: Wipe one lab node
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: node, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Wiped }
+  /api/v2/system/status:
+    get:
+      tags: [system]
+      summary: Database, user, and lab status
+      responses:
+        '200': { description: Status }
+  /api/v2/system/logs:
+    get:
+      tags: [system]
+      summary: Tail API or agent logs
+      parameters:
+        - { name: source, in: query, schema: { type: string, enum: [api, agent] } }
+      responses:
+        '200': { description: Log lines }
+  /api/v2/system/settings:
+    get:
+      tags: [system]
+      summary: Read runtime settings
+      responses:
+        '200': { description: Settings }
+    put:
+      tags: [system]
+      summary: Update runtime settings (admin)
+      responses:
+        '200': { description: Updated }
+  /api/v2/system/backup:
+    get:
+      tags: [system]
+      summary: Download a backup archive (admin)
+      responses:
+        '200': { description: Zip backup }
+  /api/v2/system/restore:
+    post:
+      tags: [system]
+      summary: Restore labs, templates, settings, and image metadata (admin)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200': { description: Restore result }
+  /api/v2/system/tokens:
+    get:
+      tags: [system]
+      summary: List the current user's API tokens
+      responses:
+        '200': { description: Tokens }
+    post:
+      tags: [system]
+      summary: Create an API token
+      responses:
+        '201': { description: Token created; plaintext returned once }
+  /api/v2/system/tokens/{id}:
+    delete:
+      tags: [system]
+      summary: Revoke an API token
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Revoked }

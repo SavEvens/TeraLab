@@ -194,10 +194,77 @@ final class Phase1ApiTest extends TestCase
     {
         $version = $this->request('GET', '/api/v2/version');
         self::assertSame(200, $version->getStatusCode());
-        self::assertSame('1.3.0', $this->json($version)['version']);
+        self::assertSame('1.4.0', $this->json($version)['version']);
         self::assertSame('AGPL-3.0-or-later', $this->json($version)['license']);
         $health = $this->request('GET', '/api/v2/health');
-        self::assertSame('1.3.0', $this->json($health)['version']);
+        self::assertSame('1.4.0', $this->json($health)['version']);
+    }
+
+    public function testSnapshotsAndBulkNodeActions(): void
+    {
+        $lab = $this->createLab('Snapshot Lab', true);
+        $snapshot = $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/snapshots', ['name' => 'before'], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(201, $snapshot->getStatusCode(), (string) $snapshot->getBody());
+        $snapshotId = (string) $this->json($snapshot)['data']['id'];
+        $list = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/snapshots', [], [], $this->adminCookie);
+        self::assertSame(200, $list->getStatusCode());
+        self::assertCount(1, $this->json($list)['data']);
+
+        $saved = $this->request('PUT', '/api/v2/labs/' . $lab['id'], ['name' => 'Changed', 'revision' => 1], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(200, $saved->getStatusCode());
+        $restored = $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/snapshots/' . $snapshotId . '/restore', [], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(200, $restored->getStatusCode(), (string) $restored->getBody());
+        self::assertSame('Snapshot Lab', $this->json($restored)['data']['name']);
+        self::assertSame(3, $this->json($restored)['data']['revision']);
+
+        $start = $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/start', [], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(200, $start->getStatusCode(), (string) $start->getBody());
+        $stop = $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/stop', [], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(200, $stop->getStatusCode());
+        $delete = $this->request('DELETE', '/api/v2/labs/' . $lab['id'] . '/snapshots/' . $snapshotId, [], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(200, $delete->getStatusCode());
+    }
+
+    public function testSettingsTokensLogsAndBackup(): void
+    {
+        $settings = $this->request('GET', '/api/v2/system/settings', [], [], $this->adminCookie);
+        self::assertSame(200, $settings->getStatusCode());
+        self::assertSame(3600, $this->json($settings)['data']['session_ttl']);
+        $updated = $this->request('PUT', '/api/v2/system/settings', ['session_ttl' => 600, 'console_default' => 'vnc'], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(200, $updated->getStatusCode(), (string) $updated->getBody());
+        self::assertSame(600, $this->json($updated)['data']['session_ttl']);
+        $invalid = $this->request('PUT', '/api/v2/system/settings', ['session_ttl' => 10], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(422, $invalid->getStatusCode());
+        $login = $this->request('POST', '/api/v2/auth/login', ['username' => 'admin', 'password' => self::PASSWORD]);
+        self::assertSame(600, $this->json($login)['expires_in']);
+
+        if (!is_dir($this->root . '/data/logs')) {
+            mkdir($this->root . '/data/logs', 0770, true);
+        }
+        file_put_contents($this->root . '/data/logs/api.log', "line-one\nline-two\n");
+        $logs = $this->request('GET', '/api/v2/system/logs?source=api', [], [], $this->adminCookie);
+        self::assertSame(200, $logs->getStatusCode());
+        self::assertSame(['line-one', 'line-two'], $this->json($logs)['data']['lines']);
+        self::assertSame(422, $this->request('GET', '/api/v2/system/logs?source=../etc/passwd', [], [], $this->adminCookie)->getStatusCode());
+
+        $tokenResponse = $this->request('POST', '/api/v2/system/tokens', ['name' => 'read-only', 'scopes' => ['read']], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(201, $tokenResponse->getStatusCode(), (string) $tokenResponse->getBody());
+        $token = $this->json($tokenResponse)['data'];
+        $read = $this->request('GET', '/api/v2/labs', [], ['Authorization' => 'Bearer ' . $token['token']], '');
+        self::assertSame(200, $read->getStatusCode());
+        $write = $this->request('POST', '/api/v2/labs', ['name' => 'Token Lab'], [], '', '');
+        // No bearer token at all must still fail.
+        self::assertSame(401, $write->getStatusCode());
+        $write = $this->request('POST', '/api/v2/labs', ['name' => 'Token Lab'], ['Authorization' => 'Bearer ' . $token['token']], '');
+        self::assertSame(403, $write->getStatusCode());
+        $revoke = $this->request('DELETE', '/api/v2/system/tokens/' . $token['id'], [], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(200, $revoke->getStatusCode());
+        $after = $this->request('GET', '/api/v2/labs', [], ['Authorization' => 'Bearer ' . $token['token']], '');
+        self::assertSame(401, $after->getStatusCode());
+
+        $backup = $this->request('GET', '/api/v2/system/backup', [], [], $this->adminCookie);
+        self::assertSame(200, $backup->getStatusCode());
+        self::assertStringStartsWith('PK', (string) $backup->getBody());
     }
 
     public function testPasswordChangeRevokesOtherSessions(): void

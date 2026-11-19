@@ -101,6 +101,25 @@ export const api = {
   stopLab: (id) => request(`/labs/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
   wipeLab: (id) => request(`/labs/${encodeURIComponent(id)}/wipe`, { method: 'POST' }),
   labNodes: (id) => request(`/labs/${encodeURIComponent(id)}/nodes`),
+  labNodeStart: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/start`, { method: 'POST' }),
+  labNodeStop: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/stop`, { method: 'POST' }),
+  labNodeWipe: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/wipe`, { method: 'POST' }),
+  snapshots: (id) => request(`/labs/${encodeURIComponent(id)}/snapshots`),
+  createSnapshot: (id, name) => request(`/labs/${encodeURIComponent(id)}/snapshots`, { method: 'POST', body: { name } }),
+  restoreSnapshot: (id, snapshot) => request(`/labs/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(snapshot)}/restore`, { method: 'POST' }),
+  deleteSnapshot: (id, snapshot) => request(`/labs/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(snapshot)}`, { method: 'DELETE' }),
+  host: () => request('/system/host'),
+  settings: () => request('/system/settings'),
+  saveSettings: (payload) => request('/system/settings', { method: 'PUT', body: payload }),
+  logs: (source) => request(`/system/logs?source=${encodeURIComponent(source)}`),
+  tokens: () => request('/system/tokens'),
+  createToken: (payload) => request('/system/tokens', { method: 'POST', body: payload }),
+  revokeToken: (id) => request(`/system/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  restoreBackup: (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('/system/restore', { method: 'POST', body: form })
+  },
   trash: () => request('/labs/trash'),
   restoreLab: (id) => request(`/labs/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
   purgeLab: (id) => request(`/labs/trash/${encodeURIComponent(id)}`, { method: 'DELETE' }),

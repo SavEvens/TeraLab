@@ -15,6 +15,7 @@ use RuntimeException;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Templates\TemplateRepository;
+use TeraLab\Api\System\SettingsService;
 
 /**
  * Content-addressed image store.
@@ -44,6 +45,7 @@ final class ImageStore
         private readonly PDO $pdo,
         ?Closure $inspector = null,
         private readonly ?TemplateRepository $templates = null,
+        private readonly ?SettingsService $settings = null,
     ) {
         $this->inspector = $inspector ?? static fn (string $path): array => [];
     }
@@ -113,7 +115,7 @@ final class ImageStore
         }
 
         $size = $file->getSize();
-        if ($size !== null && $size > $this->config->maxUploadBytes) {
+        if ($size !== null && $size > $this->maxUploadBytes()) {
             throw new HttpException(413, 'The image exceeds the configured size limit.');
         }
 
@@ -310,6 +312,11 @@ final class ImageStore
         return is_array($row) ? $this->publicRow($row) : null;
     }
 
+    private function maxUploadBytes(): int
+    {
+        return $this->settings?->int('max_upload_bytes', $this->config->maxUploadBytes) ?? $this->config->maxUploadBytes;
+    }
+
     /**
      * @param array<string, mixed> $row
      * @return array<string, mixed>
@@ -350,7 +357,7 @@ final class ImageStore
                     break;
                 }
                 $written += strlen($chunk);
-                if ($written > $this->config->maxUploadBytes) {
+                if ($written > $this->maxUploadBytes()) {
                     throw new HttpException(413, 'The image exceeds the configured size limit.');
                 }
                 if (fwrite($handle, $chunk) === false) {

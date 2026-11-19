@@ -88,7 +88,7 @@ try {
   session = await login()
   const version = await call('GET', '/version')
   const health = await call('GET', '/health')
-  if (version.version !== '1.3.0' || health.version !== '1.3.0') {
+  if (version.version !== '1.4.0' || health.version !== '1.4.0') {
     throw new Error(`version mismatch: ${version.version}/${health.version}`)
   }
   if (session.cookieSecure) throw new Error('session cookie is Secure over plain HTTP')
@@ -215,7 +215,7 @@ try {
   if (!imageOptions.some((option) => option.includes(`Apache Image ${stamp}`))) {
     throw new Error('inspector image picker missing the uploaded image')
   }
-  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Start lab' }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /start/i.test(toast.textContent || '')), null, { timeout: 20000 })
   await page.getByRole('button', { name: 'Console' }).click()
   await page.waitForSelector('.vnc canvas', { state: 'attached', timeout: 30000 })

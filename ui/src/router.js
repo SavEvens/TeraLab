@@ -11,6 +11,7 @@ const routes = [
   { path: '/labs', name: 'labs', component: () => import('./views/LabsView.vue') },
   { path: '/templates', name: 'templates', component: () => import('./views/TemplatesView.vue') },
   { path: '/images', name: 'images', component: () => import('./views/ImagesView.vue') },
+  { path: '/system', name: 'system', component: () => import('./views/SystemView.vue') },
   { path: '/labs/:id', name: 'editor', component: () => import('./views/EditorView.vue'), props: true }
 ]
 
