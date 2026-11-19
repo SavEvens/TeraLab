@@ -1,15 +1,20 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
   <section class="templates">
-    <div class="toolbar">
+    <div class="page-head">
+      <span class="crumbs">Workspace /</span>
       <h1>Templates</h1>
+      <span class="badge">{{ templates.length }} total</span>
+      <div class="spacer"></div>
+    </div>
+    <div class="toolbar">
       <label class="button">Import YAML
         <input type="file" accept=".yaml,.yml" hidden @change="importTemplate" />
       </label>
       <button class="ghost" @click="load">Refresh</button>
     </div>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <div class="editor-grid">
+    <div class="template-layout">
       <aside class="palette">
         <h2>Library</h2>
         <input v-model="search" placeholder="Filter templates" aria-label="Filter templates" />
@@ -30,7 +35,20 @@
             <button v-if="selected.source === 'custom'" class="danger" @click="removeTemplate">Delete</button>
             <button :disabled="selected.source !== 'custom'" @click="saveTemplate">Save</button>
           </div>
-          <textarea v-model="yamlText" spellcheck="false" aria-label="Template YAML" />
+          <div class="template-split">
+            <textarea v-model="yamlText" spellcheck="false" aria-label="Template YAML" />
+            <aside class="template-preview" aria-label="Template preview">
+              <dl>
+                <dt>id</dt><dd>{{ selected.id }}</dd>
+                <dt>kind</dt><dd>{{ selected.kind }}</dd>
+                <dt>source</dt><dd>{{ selected.source }}</dd>
+                <dt>defaults</dt>
+                <dd><span v-for="(value, key) in (selected.defaults || {})" :key="key">{{ key }}={{ value }} </span><span v-if="!Object.keys(selected.defaults || {}).length">—</span></dd>
+                <dt>options</dt>
+                <dd><span v-for="(value, key) in (selected.options || {})" :key="key">{{ key }} </span><span v-if="!Object.keys(selected.options || {}).length">—</span></dd>
+              </dl>
+            </aside>
+          </div>
         </template>
         <p v-else class="hint">Select a template to inspect it. YAML import and duplication create custom templates.</p>
       </div>

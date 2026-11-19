@@ -3,7 +3,15 @@
 
 # TeraLab UI
 
-Vue 3 single-page application for TeraLab v1.2.0.
+Vue 3 single-page application for TeraLab v1.3.0.
+
+## Design
+
+Synthwave tokens: deep indigo background, neon cyan primary, magenta accent,
+monospace uppercase chrome, and a subtle perspective grid. Layout follows a
+compact simulator model: a left section rail for workspace pages and a
+full-bleed editor with floating device palette, inspector, toolbar, and a
+persistent bottom console dock. No external UI kit or web fonts are used.
 
 ## Features
 

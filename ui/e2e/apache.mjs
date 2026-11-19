@@ -184,6 +184,8 @@ try {
   if (!exported.endsWith('.yaml')) throw new Error(`template export filename invalid: ${exported}`)
 
   // Images: upload, rename, map template through the UI.
+  await page.getByRole('link', { name: '← Labs' }).click()
+  await page.waitForURL('**/ui/labs')
   await page.getByRole('link', { name: 'Images' }).click()
   await page.waitForURL('**/ui/images')
   const beforeImageIds = new Set((await call('GET', '/images')).data.map((image) => image.id))

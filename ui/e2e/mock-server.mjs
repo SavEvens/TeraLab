@@ -73,6 +73,28 @@ export function startMockServer(port = 8099) {
     if (request.method === 'GET' && path === '/__state') {
       return send(response, 200, { lab: { name: lab.name, node_list: lab.node_list, network_list: lab.network_list } })
     }
+    if (request.method === 'POST' && path === '/__fifty') {
+      const nodeList = Array.from({ length: 50 }, (_, index) => ({
+        id: String(index + 1),
+        name: `N${index + 1}`,
+        type: 'qemu',
+        template: 'linux',
+        image: 'base.qcow2',
+        console: 'telnet',
+        cpu: 1,
+        ram: 512,
+        uuid: '',
+        platform: '',
+        left: 60 + (index % 10) * 180,
+        top: 60 + Math.floor(index / 10) * 110,
+        interfaces: [{ id: 0, name: 'eth0', type: 'ethernet', network_id: String(index % 10) }]
+      }))
+      lab.node_list = nodeList
+      lab.network_list = Array.from({ length: 10 }, (_, index) => ({ id: String(index), name: `Net-${index}`, type: 'bridge' }))
+      lab.nodes = 50
+      lab.networks = 10
+      return send(response, 200, { ok: true })
+    }
     if (request.method === 'POST' && path === '/__large') {
       const nodeList = Array.from({ length: 100 }, (_, index) => ({
         id: String(index + 1),

@@ -1,11 +1,15 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
   <div class="lab-node" :class="[data.kind, data.state]">
-    <header>
+    <div class="node-icon">
       <img v-if="data.icon" :src="`/images/icons/${data.icon}`" alt="" />
-      {{ data.name || data.id }}
+      <span v-else aria-hidden="true">{{ glyph }}</span>
+    </div>
+    <header>
+      <strong>{{ data.name || data.id }}</strong>
+      <small>{{ data.kind }} · {{ data.interfaces.length }}p</small>
     </header>
-    <small>{{ data.kind }} · {{ data.interfaces.length }} port(s)</small>
+    <span class="node-led" :title="data.state || 'stopped'"></span>
     <Handle
       v-for="(iface, index) in data.interfaces"
       :id="`t-${index}`"
@@ -26,9 +30,11 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 
-defineProps({ data: { type: Object, required: true } })
+const props = defineProps({ data: { type: Object, required: true } })
+const glyph = computed(() => ({ qemu: '▣', vpcs: '▤', iol: '▥', dynamips: '▦', docker: '◈' }[props.data.kind] || '◇'))
 
 function handleTop(index, total) {
   return `${((index + 1) / (total + 1)) * 100}%`

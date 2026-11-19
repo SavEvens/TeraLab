@@ -1,7 +1,46 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# TeraLab v1.2.0 release notes
+# TeraLab release notes
+
+# TeraLab v1.3.0 release notes
+
+- Release date: 2026-11-19
+- Previous release: v1.2.0
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+- Source: https://github.com/SavEvens/TeraLab
+
+## Highlights
+
+- **New synthwave interface**: deep indigo surfaces, cyan/magenta accents,
+  compact monospace chrome, neon topology grid, and a minimal GNS3-inspired
+  layout with floating device palette, inspector, toolbar, and console dock.
+- **Full-bleed editor**: presentation mode, status bar (nodes/links/zoom/save),
+  per-user/lab viewport persistence, box selection, and keyboard palette access.
+- **Images**: upload progress, metadata inspection, rename, template mapping,
+  and editor image/ISO pickers.
+- **Templates**: YAML preview panel, built-in/custom library, import/export,
+  duplicate, and schema validation.
+- **Consoles**: xterm telnet and noVNC tabs with reconnect/backoff, clipboard,
+  fullscreen, and route-persistent tabs.
+- **Errors**: API request IDs are surfaced in user-facing messages.
+- **API contract**: OpenAPI 3.1 draft in `docs/openapi.yaml`, validated in CI.
+- **UX benchmark**: `docs/UX-BENCHMARK.md` records journey timings and targets.
+
+## Validation
+
+- PHP: 56 tests / 603 assertions; PHPStan level 6.
+- UI: 8 Vitest tests; production build; mock browser E2E (`UI_E2E_OK`).
+- Measured UX: login 1.3 s, editor open 0.9 s, 50 nodes 1.46 s, console 0.31 s;
+  real-stack 100-node pan at 60 fps.
+- Accessibility: labelled controls, focus-visible outlines, table fallback,
+  keyboard shortcuts, and palette Enter/Space activation.
+
+## Compatibility
+
+- `.unl`, v1 API routes, v1.2 data layout, and the installer are unchanged.
+- The legacy jQuery UI remains at `/`; the SPA is at `/ui/`.
+
 
 - Release date: 2026-11-17
 - Previous release: v1.1.0 (UNetLab 1.0.2-2 baseline)

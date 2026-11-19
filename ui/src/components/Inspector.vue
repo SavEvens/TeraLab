@@ -1,77 +1,81 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
-  <aside v-if="node" class="inspector">
-    <h2>{{ node.data.name || node.id }}</h2>
-    <label>Name <input :value="node.data.name" @input="update('name', $event.target.value)" /></label>
-    <label v-if="templates.length">Apply template
-      <select :value="node.data.template" @change="$emit('template', $event.target.value)">
-        <option value="">—</option>
-        <option v-for="template in templates" :key="template.id" :value="template.id">{{ template.name || template.id }}</option>
-      </select>
-    </label>
-    <label>Type
-      <select :value="node.data.kind" @change="update('kind', $event.target.value)">
-        <option value="qemu">qemu</option>
-        <option value="vpcs">vpcs</option>
-        <option value="iol">iol</option>
-        <option value="dynamips">dynamips</option>
-      </select>
-    </label>
-    <label>Image
-      <select :value="node.data.image" @change="update('image', $event.target.value)">
-        <option value="">—</option>
-        <option v-if="node.data.image && !imagesFor(node.data.kind).some((image) => image.path === node.data.image)" :value="node.data.image">
-          {{ node.data.image }}
-        </option>
-        <option v-for="image in imagesFor(node.data.kind)" :key="image.id" :value="image.path">
-          {{ image.name }} ({{ image.format || image.kind }})
-        </option>
-      </select>
-    </label>
-    <label v-if="node.data.kind === 'qemu'">ISO
-      <select :value="node.data.iso" @change="update('iso', $event.target.value)">
-        <option value="">—</option>
-        <option v-if="node.data.iso && !imagesFor('iso').some((image) => image.path === node.data.iso)" :value="node.data.iso">
-          {{ node.data.iso }}
-        </option>
-        <option v-for="image in imagesFor('iso')" :key="image.id" :value="image.path">
-          {{ image.name }} ({{ image.format || image.kind }})
-        </option>
-      </select>
-    </label>
-    <label>Console
-      <select :value="node.data.console" @change="update('console', $event.target.value)">
-        <option value="telnet">telnet</option>
-        <option value="vnc">vnc</option>
-      </select>
-    </label>
-    <label>CPU <input type="number" min="1" :value="node.data.cpu" @input="update('cpu', Number($event.target.value))" /></label>
-    <label>RAM (MiB) <input type="number" min="64" :value="node.data.ram" @input="update('ram', Number($event.target.value))" /></label>
-    <label>NIC driver
-      <select :value="node.data.nic || 'e1000'" @change="update('nic', $event.target.value)">
-        <option value="e1000">e1000</option>
-        <option value="virtio-net-pci">virtio-net-pci</option>
-        <option value="rtl8139">rtl8139</option>
-      </select>
-    </label>
-    <label>Ethernet
-      <input type="number" min="0" max="16" :value="node.data.interfaces.length" @change="updatePorts(Number($event.target.value))" />
-    </label>
-    <label>Serial ports
-      <input type="number" min="0" max="8" :value="node.data.serial || 0" @input="update('serial', Number($event.target.value))" />
-    </label>
-    <label>Startup config (IOL)
-      <textarea :value="node.data.config || ''" rows="6" placeholder="hostname R1&#10;interface Ethernet0/0" @input="update('config', $event.target.value)" />
-    </label>
-    <div class="row">
-      <button @click="$emit('console', node)">Console</button>
-      <button class="ghost" :disabled="!node.data.config" @click="$emit('config', node)">Config</button>
-      <button class="danger" @click="$emit('delete', node)">Delete</button>
+  <aside class="inspector" aria-label="Node inspector">
+    <div class="palette-head">
+      <h2>Inspector</h2>
+      <span v-if="node" class="badge">{{ node.data.kind }}</span>
     </div>
-  </aside>
-  <aside v-else class="inspector">
-    <h2>Inspector</h2>
-    <p class="hint">Select a node to edit it, or drag a template from the palette.</p>
+    <template v-if="node">
+      <label>Name <input :value="node.data.name" @input="update('name', $event.target.value)" /></label>
+      <label v-if="templates.length">Apply template
+        <select :value="node.data.template" @change="$emit('template', $event.target.value)">
+          <option value="">—</option>
+          <option v-for="template in templates" :key="template.id" :value="template.id">{{ template.name || template.id }}</option>
+        </select>
+      </label>
+      <div class="field-grid">
+        <label>Type
+          <select :value="node.data.kind" @change="update('kind', $event.target.value)">
+            <option value="qemu">qemu</option>
+            <option value="vpcs">vpcs</option>
+            <option value="iol">iol</option>
+            <option value="dynamips">dynamips</option>
+          </select>
+        </label>
+        <label>Console
+          <select :value="node.data.console" @change="update('console', $event.target.value)">
+            <option value="telnet">telnet</option>
+            <option value="vnc">vnc</option>
+          </select>
+        </label>
+        <label>CPU <input type="number" min="1" :value="node.data.cpu" @input="update('cpu', Number($event.target.value))" /></label>
+        <label>RAM (MiB) <input type="number" min="64" :value="node.data.ram" @input="update('ram', Number($event.target.value))" /></label>
+        <label>NIC driver
+          <select :value="node.data.nic || 'e1000'" @change="update('nic', $event.target.value)">
+            <option value="e1000">e1000</option>
+            <option value="virtio-net-pci">virtio-net-pci</option>
+            <option value="rtl8139">rtl8139</option>
+          </select>
+        </label>
+        <label>Ethernet
+          <input type="number" min="0" max="16" :value="node.data.interfaces.length" @change="updatePorts(Number($event.target.value))" />
+        </label>
+        <label>Serial ports
+          <input type="number" min="0" max="8" :value="node.data.serial || 0" @input="update('serial', Number($event.target.value))" />
+        </label>
+      </div>
+      <label>Image
+        <select :value="node.data.image" @change="update('image', $event.target.value)">
+          <option value="">—</option>
+          <option v-if="node.data.image && !imagesFor(node.data.kind).some((image) => image.path === node.data.image)" :value="node.data.image">
+            {{ node.data.image }}
+          </option>
+          <option v-for="image in imagesFor(node.data.kind)" :key="image.id" :value="image.path">
+            {{ image.name }} ({{ image.format || image.kind }})
+          </option>
+        </select>
+      </label>
+      <label v-if="node.data.kind === 'qemu'">ISO
+        <select :value="node.data.iso" @change="update('iso', $event.target.value)">
+          <option value="">—</option>
+          <option v-if="node.data.iso && !imagesFor('iso').some((image) => image.path === node.data.iso)" :value="node.data.iso">
+            {{ node.data.iso }}
+          </option>
+          <option v-for="image in imagesFor('iso')" :key="image.id" :value="image.path">
+            {{ image.name }} ({{ image.format || image.kind }})
+          </option>
+        </select>
+      </label>
+      <label>Startup config (IOL)
+        <textarea :value="node.data.config || ''" rows="6" placeholder="hostname R1&#10;interface Ethernet0/0" @input="update('config', $event.target.value)" />
+      </label>
+      <div class="row">
+        <button @click="$emit('console', node)">Console</button>
+        <button class="ghost" :disabled="!node.data.config" @click="$emit('config', node)">Config</button>
+        <button class="danger" @click="$emit('delete', node)">Delete</button>
+      </div>
+    </template>
+    <p v-else class="hint">Select a node to edit it, or drag a template from the device palette.</p>
   </aside>
 </template>
 
