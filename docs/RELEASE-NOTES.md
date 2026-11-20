@@ -131,8 +131,10 @@ Verified on the running stack:
   the target files stayed intact.
 - CLI `import-legacy.php --legacy-addons=/opt/unetlab/addons` reported
   `existing 4` and imported the root-only-readable file (`imported 1`).
-- An EVE-NG-format lab with `image="csr1000vng"` imported with zero warnings,
-  and a QEMU node using it started.
+- An EVE-NG-format lab with `image="csr1000vng"` imported with zero warnings;
+  a QEMU node using it stayed running with its process alive (store
+  directories are created `0755`, like uploads, so the `teralab-vm` QEMU
+  process can open the link).
 - PHP suite: 102 tests, 1095 assertions, PHPStan clean. Go: all packages,
   including `-race`. UI: 23 tests and a successful build. Release gate green.
 
