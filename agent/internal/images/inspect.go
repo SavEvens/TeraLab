@@ -136,6 +136,13 @@ func checksum(path string) (string, error) {
 
 // ResolveUnder canonicalizes a path and confines it to root.
 func ResolveUnder(path, root string) (string, error) {
+	return ResolveUnderAny(path, []string{root})
+}
+
+// ResolveUnderAny canonicalizes a path and confines it to any of roots. A root
+// that cannot be resolved is inert as long as another root resolves; a resolved
+// target must land under one of them, so symlinks escaping every root fail.
+func ResolveUnderAny(path string, roots []string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", errors.New("invalid image path")
@@ -144,13 +151,36 @@ func ResolveUnder(path, root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("image does not exist: %w", err)
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", fmt.Errorf("image root does not exist: %w", err)
+	var rootErr error
+	resolvedRoots := 0
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			if rootErr == nil {
+				rootErr = fmt.Errorf("image root does not exist: %w", err)
+			}
+			continue
+		}
+		resolvedRoots++
+		if pathWithinRoot(resolvedRoot, resolved) {
+			return resolved, nil
+		}
 	}
-	if resolved != resolvedRoot && !strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator)) {
-		return "", errors.New("image path is outside the image root")
+	if resolvedRoots == 0 && rootErr != nil {
+		return "", rootErr
 	}
 
-	return resolved, nil
+	return "", errors.New("image path is outside the image root")
+}
+
+func pathWithinRoot(root, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
 }

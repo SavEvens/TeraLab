@@ -3,6 +3,141 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.4 release notes
+
+- Release date: 2026-11-20
+- Previous release: v1.5.3
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Adopt an existing `/opt/unetlab/addons` tree in place
+
+A host migrating from UNetLab, EVE-NG or PNetLab usually already has its images
+under `/opt/unetlab/addons`, often tens or hundreds of GiB. TeraLab can now
+register those images **without copying or re-uploading a single byte**.
+
+Recognised layouts:
+
+- `qemu/<folder>/` — one appliance per folder; the primary disk is
+  `hda.qcow2`, else the first `*.qcow2`. Further disks and ISO files become
+  separate entries.
+- `iol/bin/*.bin` — IOL images.
+- `dynamips/*.image`, `*.bin` — Dynamips IOS images.
+- `docker/` — skipped: there is no Docker engine integration.
+
+For each selected file TeraLab creates a symlink inside the official store,
+`/var/lib/teralab/images/<kind>/<id>/<basename>`, pointing at the existing
+addon file. The database row points at that store path and is marked
+`external = 1`. The addons tree is never modified.
+
+Reference rules follow the public UNetLab/EVE-NG conventions: a QEMU node's
+`image` attribute resolves to the addon **folder name** (so a lab with
+`image="csr1000vng"` matches), and IOL/Dynamips references use the filename.
+Secondary files use `<folder>-<basename>`. Each image gets a template
+suggestion (exact id match after lowercasing, else the longest template id
+that is a prefix of the folder or file name), which the administrator confirms
+or overrides in the dry run.
+
+Ways to run it:
+
+- **UI:** Images → Adopt images… — admin only: dry run, per-file status,
+  template selection, confirm, per-file import summary, then the list shows a
+  "linked" badge and an "Unlink" action.
+- **API:** `POST /api/v2/images/import` with `root`, `dry_run` (default
+  `true`), `files`, and optional `templates`; admin role plus CSRF and
+  authentication; audited as `image.import`.
+- **CLI:** `sudo php /opt/teralab/packaging/teralab/import-legacy.php
+  --legacy-addons=/opt/unetlab/addons`. The path defaults to
+  `/opt/unetlab/addons`, `--legacy-db` is optional when `--legacy-addons` is
+  given, and the CLI runs as root, so files unreadable by `www-data` still
+  import.
+
+### Security model
+
+- The agent accepts a resolved path only under the primary image store or an
+  approved extra root. The new colon-separated `TERALAB_IMAGE_EXTRA_ROOTS`
+  variable lists those roots (systemd default: `/opt/unetlab/addons`); relative
+  paths are rejected at startup, extra roots are never scanned automatically,
+  and a non-existent root is inert. A store symlink pointing outside all
+  approved roots is still rejected.
+- Every selected file is re-validated to resolve under the scanned root before
+  its store link is created.
+- `iourc` and any licence-looking file are never registered.
+- The import endpoint is administrator-only.
+- Uploads keep the existing single-root rules; nothing changes for them.
+
+### Removing a linked image
+
+Unlinking (delete) removes the database row and the store-side symlink only.
+The legacy addon file is never deleted. The running-node and lab-reference
+guards apply to linked images as before.
+
+### Quota and backup
+
+Linked images consume no store space and are excluded from the store quota
+sum (`external = 1`). Backup export/restore round-trips the `external` flag;
+on restore, linked rows whose target is missing on the new host are skipped and
+counted.
+
+### Fixes
+
+- Deleting or unlinking an image that is only used by stopped nodes no longer
+  fails with "in use by a running node"; the guard now considers running nodes
+  only. The lab-file reference guard is unchanged.
+
+### Limitations
+
+- Adoption computes a SHA-256 checksum; large images take time. The UI imports
+  per selection, the CLI has no runtime limit.
+- Files that `www-data` cannot read are reported as `unreadable`; fix
+  permissions or use the root CLI path.
+- Docker addons are skipped.
+- QEMU images with a backing file are adopted with a warning (uploads still
+  reject backing files).
+- If the addons tree is moved or removed, linked nodes fail to start with a
+  clear file-not-found error; unlink and re-adopt. Re-adopting a dangling row
+  currently reports `duplicate` until the stale row is unlinked.
+- **Compatibility note:** on a TeraLab host `/opt/unetlab` is normally a
+  symlink to `/opt/teralab`. A tree created at `/opt/unetlab/addons` then lives
+  inside the install tree, and the installer's `rsync --delete` replaces it on
+  upgrade. The intended migration case is a host with a real `/opt/unetlab`
+  directory; if the addons tree is elsewhere, add its path to
+  `TERALAB_IMAGE_EXTRA_ROOTS`.
+
+### API and upgrade notes
+
+- New endpoint `POST /api/v2/images/import` (administrator only).
+- The image representation gains `external` (`0` or `1`).
+- Migration `008_external_images.sql` adds the `external` column and an index.
+  This is the only automatic database change; there is no lab-format change.
+- `import-legacy.php` behaviour change: `--legacy-db` is now optional when
+  `--legacy-addons` is supplied.
+
+### Licensing and provenance
+
+No new dependency and no upstream-derived code: `NOTICE`, `PROVENANCE.md`,
+`LICENSES/` and the device templates are unchanged apart from version strings.
+
+## Validation
+
+Verified on the running stack:
+
+- API dry run reported `new 4, unreadable 1, skipped 2`; template suggestions
+  were `csr1000vng → csr1000v`, `vios-adventerprisek9-m → vios`, and
+  `c7200.image → c7200`; `iol/bin/iourc` was skipped as a licence file; a
+  mode-000 qcow2 was reported `unreadable`.
+- Import: 4/4 `imported` with `external = 1`; store links resolved to
+  `/opt/unetlab/addons/...`; a byte-identical pair was reported `duplicate`.
+- Unlink (`DELETE /api/v2/images/{id}`) removed the row and the store link;
+  the target files stayed intact.
+- CLI `import-legacy.php --legacy-addons=/opt/unetlab/addons` reported
+  `existing 4` and imported the root-only-readable file (`imported 1`).
+- An EVE-NG-format lab with `image="csr1000vng"` imported with zero warnings;
+  a QEMU node using it stayed running with its process alive (store
+  directories are created `0755`, like uploads, so the `teralab-vm` QEMU
+  process can open the link).
+- PHP suite: 102 tests, 1095 assertions, PHPStan clean. Go: all packages,
+  including `-race`. UI: 23 tests and a successful build. Release gate green.
+
 # TeraLab v1.5.3 release notes
 
 - Release date: 2026-11-20

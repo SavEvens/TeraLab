@@ -56,7 +56,7 @@ final class ImageStore
     public function all(): array
     {
         $statement = $this->pdo->query(
-            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
+            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, external, created_at '
             . 'FROM images ORDER BY created_at DESC, name'
         );
         if ($statement === false) {
@@ -79,7 +79,7 @@ final class ImageStore
     public function find(string $id): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
+            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, external, created_at '
             . 'FROM images WHERE id = :id'
         );
         $statement->execute([':id' => $id]);
@@ -137,7 +137,7 @@ final class ImageStore
 
             $sha256 = (string) hash_file('sha256', $temporary);
             if ($this->config->imageQuotaBytes > 0) {
-                $used = (int) $this->pdo->query('SELECT COALESCE(SUM(size), 0) FROM images')->fetchColumn();
+                $used = (int) $this->pdo->query('SELECT COALESCE(SUM(size), 0) FROM images WHERE external = 0')->fetchColumn();
                 if ($used + (filesize($temporary) ?: 0) > $this->config->imageQuotaBytes) {
                     throw new HttpException(507, 'The image store quota is exhausted.');
                 }
@@ -331,6 +331,8 @@ final class ImageStore
             throw new HttpException(409, 'Refusing to delete outside the image store.');
         }
 
+        // Adopted images keep only a symlink in the store: removing the
+        // directory unlinks it and never follows or removes the legacy file.
         $this->removeDirectory($resolved);
         $statement = $this->pdo->prepare('DELETE FROM images WHERE id = :id');
         $statement->execute([':id' => $id]);
@@ -369,7 +371,7 @@ final class ImageStore
     private function findByChecksum(string $sha256): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
+            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, external, created_at '
             . 'FROM images WHERE sha256 = :sha256'
         );
         $statement->execute([':sha256' => $sha256]);
@@ -391,6 +393,7 @@ final class ImageStore
     {
         $row['size'] = (int) $row['size'];
         $row['virtual_size'] = (int) $row['virtual_size'];
+        $row['external'] = (int) ($row['external'] ?? 0);
         $row['created_at'] = (int) $row['created_at'];
 
         return $row;
@@ -444,36 +447,21 @@ final class ImageStore
 
     private function validateMagic(string $path, string $extension): void
     {
-        $handle = fopen($path, 'rb');
-        if ($handle === false) {
-            throw new RuntimeException('Cannot read the uploaded image.');
-        }
         try {
-            $header = fread($handle, 4);
-            if ($extension === 'qcow2' && $header !== "QFI\xfb") {
-                throw new HttpException(422, 'The file is not a qcow2 image.');
-            }
-            if ($extension === 'iso') {
-                $found = false;
-                foreach ([0x8001, 0x8801] as $offset) {
-                    if (fseek($handle, $offset) !== 0) {
-                        continue;
-                    }
-                    if (fread($handle, 5) === 'CD001') {
-                        $found = true;
-                        break;
-                    }
-                }
-                if (!$found) {
-                    throw new HttpException(422, 'The file is not an ISO 9660 image.');
-                }
-            }
-            if ($extension === 'bin' && $header !== "\x7fELF") {
-                throw new HttpException(422, 'The file is not an ELF binary.');
-            }
-        } finally {
-            fclose($handle);
+            $valid = ImageMagic::matches($path, $extension);
+        } catch (RuntimeException $exception) {
+            throw new RuntimeException('Cannot read the uploaded image.', 0, $exception);
         }
+        if ($valid) {
+            return;
+        }
+
+        throw new HttpException(422, match ($extension) {
+            'qcow2' => 'The file is not a qcow2 image.',
+            'iso' => 'The file is not an ISO 9660 image.',
+            'bin' => 'The file is not an ELF binary.',
+            default => 'The file does not match its image kind.',
+        });
     }
 
     /**

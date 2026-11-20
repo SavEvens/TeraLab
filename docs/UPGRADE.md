@@ -1,16 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.5.3
+# Upgrading to TeraLab v1.5.4
 
-v1.5.3 is a patch release: it adds 12 built-in device templates and keeps
-`.unl` labs, the v1 API surface, and the `/var/lib/teralab` layout unchanged.
-There is no database migration and no lab-format change. The installer is
-idempotent and is the supported upgrade path.
-
-Built-in templates are discovered automatically from `api/templates/builtin`.
-The installer rsyncs that directory into place, so the 12 new templates appear
-after an upgrade with no manual import step.
+v1.5.4 is a patch release: it can adopt an existing
+`/opt/unetlab/addons` image tree in place, keeping `.unl` labs, the v1 API
+surface, and the `/var/lib/teralab` layout unchanged. There is no lab-format
+change. The only database change is the automatic migration
+`008_external_images.sql`, which adds an `external` column (default `0`) to the
+`images` table. The installer is idempotent and is the supported upgrade path.
 
 ## Before upgrading
 
@@ -26,7 +24,7 @@ after an upgrade with no manual import step.
 
 ```sh
 git fetch --tags
-git checkout v1.5.3
+git checkout v1.5.4
 sudo packaging/teralab/install.sh
 ```
 
@@ -38,7 +36,9 @@ What is preserved:
 - run directories are recreated and reconciled by the agent.
 
 Database migrations are forward-only and run at API startup. The images table
-is added by migration `002_images.sql`; existing tables are untouched.
+is added by migration `002_images.sql`; `008_external_images.sql` adds the
+`external` column used by linked images. Existing tables and rows are
+otherwise untouched.
 
 ### Lab format migration
 
@@ -66,6 +66,98 @@ sudo /opt/teralab/packaging/teralab/teralab-firewall
 Until the rule is present, IP traffic between lab nodes is dropped (IPv4
 always; IPv6 where the host's `FORWARD` policy is `DROP`). See
 `docs/INSTALL.md` for details.
+
+## Adopting existing `/opt/unetlab/addons` images
+
+On a host migrating from UNetLab, EVE-NG or PNetLab, the images usually
+already exist under `/opt/unetlab/addons` and can be tens or hundreds of GiB.
+TeraLab can adopt them **in place**: no file is copied or re-uploaded.
+
+### What linked adoption does
+
+For every selected image, TeraLab creates a symlink inside the official store,
+`/var/lib/teralab/images/<kind>/<id>/<basename>`, pointing at the existing
+addon file. The database row points at that store path and is marked
+`external = 1`. The legacy tree is never modified. Linked images consume no
+store space, so they are excluded from the store quota sum.
+
+The agent accepts the resolved link target only because
+`/opt/unetlab/addons` is on the approved extra-root list (see
+`TERALAB_IMAGE_EXTRA_ROOTS` below). A link aiming outside the store and the
+approved roots is still rejected.
+
+### UI: Images → Adopt images…
+
+An administrator opens **Images → Adopt images…**, reviews the dry-run table
+(file, kind, size, proposed reference and template), adjusts template choices
+if needed, and confirms. The dry run reports each file as new, existing,
+duplicate, unreadable or skipped; import results are shown per file and the
+list refreshes with a "linked" badge. The endpoint is admin-only.
+
+### CLI: `import-legacy.php --legacy-addons`
+
+```sh
+sudo php /opt/teralab/packaging/teralab/import-legacy.php \
+    --legacy-addons=/opt/unetlab/addons
+```
+
+The option defaults to `/opt/unetlab/addons`. When `--legacy-addons` is given,
+`--legacy-db` is optional. The CLI runs as root, so files that `www-data`
+cannot read still import; it prints a per-file summary and has no runtime
+limit.
+
+### Permissions
+
+The API and UI path runs as `www-data`, which must be able to read the addons
+tree. The dry run flags unreadable files and does not import them. If the tree
+is not world-readable, either grant read access to `www-data` or use the CLI
+path above, which runs as root.
+
+### Licence files are never registered
+
+`iourc` and any file whose name looks like a licence (`licence`/`license`) are
+always skipped. Only image files are recorded; no vendor licence material is
+copied into the store or the database.
+
+### Removing a linked image
+
+Deleting a linked image (the "Unlink" action, or
+`DELETE /api/v2/images/{id}`) removes the database row and the store-side
+symlink. The legacy file under `/opt/unetlab/addons` is never deleted.
+
+### `TERALAB_IMAGE_EXTRA_ROOTS`
+
+The agent reads the colon-separated `TERALAB_IMAGE_EXTRA_ROOTS` environment
+variable (systemd default: `/opt/unetlab/addons`). Each entry must be an
+absolute path; relative paths are rejected at startup. Extra roots only widen
+which resolved targets are accepted — they are never scanned automatically,
+and a root that does not exist is inert. If the addons tree lives somewhere
+other than `/opt/unetlab/addons`, add its path to this variable and restart
+the agent.
+
+### Warning: `/opt/unetlab` may be TeraLab's own symlink
+
+Check the path before creating or relying on a tree there:
+
+```sh
+readlink -f /opt/unetlab
+```
+
+On a TeraLab host, `/opt/unetlab` is normally a symlink to `/opt/teralab`
+(created by the installer and `scripts/setup-runtime-paths.sh`). In that case
+`/opt/unetlab/addons` lives **inside the install tree**, and the installer's
+`rsync --delete` will replace it on the next upgrade. The intended migration
+case is a host with a real `/opt/unetlab` directory, where the addons tree is
+outside the install tree. If the addons tree is elsewhere and that is not the
+configured default, add its path to `TERALAB_IMAGE_EXTRA_ROOTS`.
+
+### Dangling links
+
+If the addons tree is moved or removed, affected nodes fail to start with a
+clear "file does not exist" error rather than booting the wrong disk. Unlink
+the affected image and adopt it again from the new location. Note that
+re-adoption of a dangling row currently reports `duplicate` until the stale row
+is unlinked, so unlink first.
 
 ## Recovering a lab affected by v1.5.1
 
@@ -112,7 +204,8 @@ curl -fsS http://127.0.0.1/api/v2/version
 ```
 
 Open an existing lab and start one node. If a legacy lab references a missing
-image name, the API reports the missing file; upload the image and retry.
+image name, the API reports the missing file; upload the image or adopt it from
+an addons tree (see above) and retry.
 
 ## Rollback
 

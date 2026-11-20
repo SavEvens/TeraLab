@@ -1,16 +1,16 @@
-# Provenance — TeraLab v1.5.3
+# Provenance — TeraLab v1.5.4
 
 ## Official lineage
 
     UNetLab 1.0.2-2 (commit 8ef51974b448318697e5dd18a4e10496f2f56b39)
         -> TeraLab v1.1.0
-        -> TeraLab v1.5.3
+        -> TeraLab v1.5.4
 
 - Upstream: https://github.com/dainok/unetlab
 - Upstream version: 1.0.2-2
 - Upstream commit: 8ef51974b448318697e5dd18a4e10496f2f56b39
 - Upstream licence: BSD-3-Clause
-- TeraLab version: 1.5.3
+- TeraLab version: 1.5.4
 - TeraLab code licence: AGPL-3.0-or-later
 
 ## Verification

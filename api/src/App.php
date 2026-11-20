@@ -42,6 +42,7 @@ use TeraLab\Api\Http\Middleware\SecurityHeadersMiddleware;
 use TeraLab\Api\Http\Middleware\V1AuthMiddleware;
 use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Image\ImageStore;
+use TeraLab\Api\Image\LegacyAddonsImporter;
 use TeraLab\Api\Jobs\JobService;
 use TeraLab\Api\Labs\LabLocks;
 use TeraLab\Api\Labs\LabRepository;
@@ -129,6 +130,15 @@ final class App
                 static fn (string $path): array => $container->get(AgentClient::class)->inspectImage($path),
                 $templates,
                 $container->get(\TeraLab\Api\System\SettingsService::class),
+            )
+        );
+        $container->set(
+            LegacyAddonsImporter::class,
+            static fn (Config $config, PDO $pdo, TemplateRepository $templates): LegacyAddonsImporter => new LegacyAddonsImporter(
+                $config,
+                $pdo,
+                static fn (string $path): array => $container->get(AgentClient::class)->inspectImage($path),
+                $templates,
             )
         );
 
@@ -271,6 +281,10 @@ final class App
 
         $images = $container->get(ImageController::class);
         $app->get('/api/v2/images', fn ($request, $response) => $images->index($request, $response))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/images/import', fn ($request, $response) => $images->importLegacy($request, $response))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->show($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));

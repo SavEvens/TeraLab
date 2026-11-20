@@ -215,7 +215,7 @@ func (s *Server) handleImageInspect(writer http.ResponseWriter, request *http.Re
 		writeError(writer, http.StatusBadRequest, "invalid_request", "path is required")
 		return
 	}
-	resolved, err := images.ResolveUnder(payload.Path, s.cfg.ImagesDir)
+	resolved, err := images.ResolveUnderAny(payload.Path, s.cfg.ImageRoots())
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid_path", err.Error())
 		return

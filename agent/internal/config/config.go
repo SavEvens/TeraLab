@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -15,28 +16,29 @@ import (
 const Version = "0.1.0"
 
 type Config struct {
-	SocketPath     string
-	SocketGID      int
-	SocketMode     os.FileMode
-	ConsoleAddr    string
-	Secret         string
-	AllowedUIDs    map[uint32]bool
-	RunDir         string
-	ImagesDir      string
-	CgroupRoot     string
-	DisableCgroups bool
-	QEMUBinary     string
-	QEMUImg        string
-	VPCSBinary     string
-	DynamipsBinary string
-	IOLIourc       string
-	NetworkBackend string
-	VMUser         string
-	VMUID          uint32
-	VMGID          uint32
-	VMGroups       []uint32
-	AllowRootVM    bool
-	DisableKVM     bool
+	SocketPath      string
+	SocketGID       int
+	SocketMode      os.FileMode
+	ConsoleAddr     string
+	Secret          string
+	AllowedUIDs     map[uint32]bool
+	RunDir          string
+	ImagesDir       string
+	ImageExtraRoots []string
+	CgroupRoot      string
+	DisableCgroups  bool
+	QEMUBinary      string
+	QEMUImg         string
+	VPCSBinary      string
+	DynamipsBinary  string
+	IOLIourc        string
+	NetworkBackend  string
+	VMUser          string
+	VMUID           uint32
+	VMGID           uint32
+	VMGroups        []uint32
+	AllowRootVM     bool
+	DisableKVM      bool
 }
 
 func Load() (Config, error) {
@@ -58,6 +60,12 @@ func Load() (Config, error) {
 		AllowRootVM:    envBool("TERALAB_ALLOW_ROOT_VM", false),
 		DisableKVM:     envBool("TERALAB_DISABLE_KVM", false),
 	}
+
+	roots, err := imageExtraRoots()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ImageExtraRoots = roots
 
 	secret := os.Getenv("TERALAB_AGENT_SECRET")
 	if secret == "" {
@@ -92,6 +100,38 @@ func Load() (Config, error) {
 	cfg.SocketGID = lookupGroupGID(env("TERALAB_AGENT_SOCKET_GROUP", "www-data"))
 	setVMUser(&cfg)
 	return cfg, nil
+}
+
+// ImageRoots returns the primary image store followed by every approved extra
+// root. Extra roots widen acceptance only; nothing is scanned or enumerated.
+func (c Config) ImageRoots() []string {
+	roots := make([]string, 0, 1+len(c.ImageExtraRoots))
+	roots = append(roots, c.ImagesDir)
+
+	return append(roots, c.ImageExtraRoots...)
+}
+
+// imageExtraRoots parses TERALAB_IMAGE_EXTRA_ROOTS (colon-separated, like PATH).
+// Every configured root must be absolute; relative entries are rejected rather
+// than silently resolved against the process working directory.
+func imageExtraRoots() ([]string, error) {
+	raw := os.Getenv("TERALAB_IMAGE_EXTRA_ROOTS")
+	if raw == "" {
+		return nil, nil
+	}
+	var roots []string
+	for _, entry := range strings.Split(raw, ":") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if !filepath.IsAbs(entry) {
+			return nil, fmt.Errorf("image extra root %q must be an absolute path", entry)
+		}
+		roots = append(roots, filepath.Clean(entry))
+	}
+
+	return roots, nil
 }
 
 func setVMUser(cfg *Config) {
