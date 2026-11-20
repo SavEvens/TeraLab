@@ -1,11 +1,16 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.5.2
+# Upgrading to TeraLab v1.5.3
 
-v1.5.2 keeps `.unl` labs, the v1 API surface, and the `/var/lib/teralab`
-layout. The installer is idempotent and is the supported upgrade path. This is
-a patch release: no database migration and no lab-format change.
+v1.5.3 is a patch release: it adds 12 built-in device templates and keeps
+`.unl` labs, the v1 API surface, and the `/var/lib/teralab` layout unchanged.
+There is no database migration and no lab-format change. The installer is
+idempotent and is the supported upgrade path.
+
+Built-in templates are discovered automatically from `api/templates/builtin`.
+The installer rsyncs that directory into place, so the 12 new templates appear
+after an upgrade with no manual import step.
 
 ## Before upgrading
 
@@ -21,7 +26,7 @@ a patch release: no database migration and no lab-format change.
 
 ```sh
 git fetch --tags
-git checkout v1.5.2
+git checkout v1.5.3
 sudo packaging/teralab/install.sh
 ```
 
