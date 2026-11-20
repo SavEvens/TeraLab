@@ -3,6 +3,61 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.0 release notes
+
+- Release date: 2026-11-20
+- Previous release: v1.4.6
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## IOL interface link state
+
+IOL interfaces now follow the topology. After `no shutdown`:
+
+- an interface with a link drawn reports `up/up`
+- an interface without a link reports `down/down` (line protocol down)
+
+This replaces the limitation documented in v1.4.4, where every IOL interface
+reported `up/up` because the IOL binary's layer-1 keepalive messages were never
+answered. The agent now impersonates the NETMAP peer on IOL's separate
+layer-1 keepalive channel:
+
+- IOL exposes `/tmp/netl1<uid>/L1<instance>` datagram sockets for keepalives,
+  independent of the netio data channel.
+- The agent answers keepalives only for interfaces that have a bridge attached
+  and sends one keepalive per second per linked interface. Unlinked interfaces
+  receive nothing, so IOS takes the line protocol down.
+- The mechanism is enabled only when the image advertises `-l` in its usage
+  output (probed at node start, as the engine user). Images without `-l` keep
+  the previous behaviour.
+- Stale endpoints are removed before start, so a crashed run does not leave a
+  socket that would break the next start.
+
+Interface numbering follows IOL's own encoding (unit/port in the high nibble,
+bay in the low nibble), so `Ethernet0/0` is `0x00`, `Ethernet0/1` `0x10`, and
+so on.
+
+### Behaviour change
+
+Labs that relied on unlinked IOL ports staying `up/up` will now see them go
+`down/down` after `no shutdown`, which is the intended modelling. Loopback
+interfaces are unaffected. An IOS `reload` inside a running node can leave the
+node's layer-1 endpoint stale (the IOL process does not rebind it); restart
+the node to restore link state.
+
+Protocol reference: GNS3 issue #14 and PR #2826 (GPL-3.0 project). Only the
+wire format and socket layout were used; the implementation is independent Go
+code. See `agent/internal/engine/iol_l1.go`.
+
+## Validation
+
+- Go tests cover keepalive encoding, echo filtering (linked vs unlinked),
+  rejected messages, periodic sends, stale socket removal and cleanup.
+- Live on IOL 17.16.1a L3: two linked nodes, `Ethernet0/0` left `up/up`
+  while `Ethernet0/1` (unlinked, `no shutdown`) reported `down/down` after
+  more than a minute; CDP over the link still worked; stop removed both the
+  responder and engine endpoints.
+- PHP 64 tests / 740 assertions; UI 15 tests; release gate and CI green.
+
 # TeraLab v1.4.6 release notes
 
 - Release date: 2026-11-20

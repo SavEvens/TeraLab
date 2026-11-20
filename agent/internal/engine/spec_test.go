@@ -287,18 +287,25 @@ func TestIOLValidationAndArgs(t *testing.T) {
 	if err := spec.Validate(images); err != nil {
 		t.Fatalf("expected iol spec to validate: %v", err)
 	}
-	args, err := BuildIOLArgs(spec, 7)
+	args, err := BuildIOLArgs(spec, 7, false)
 	if err != nil {
 		t.Fatalf("build iol args: %v", err)
 	}
 	if strings.Join(args, " ") != "-e 0 -s 0 -m 512 -n 512 7" {
 		t.Fatalf("unexpected iol args: %v", args)
 	}
+	args, err = BuildIOLArgs(spec, 7, true)
+	if err != nil {
+		t.Fatalf("build iol args with l1: %v", err)
+	}
+	if strings.Join(args, " ") != "-e 0 -s 0 -m 512 -n 512 -l 7" {
+		t.Fatalf("unexpected iol l1 args: %v", args)
+	}
 
 	spec.Ethernet = 2
 	spec.Networks = []string{"br0", "br1"}
 	spec.Normalize()
-	args, err = BuildIOLArgs(spec, 7)
+	args, err = BuildIOLArgs(spec, 7, true)
 	if err != nil {
 		t.Fatalf("build multi-interface iol args: %v", err)
 	}
