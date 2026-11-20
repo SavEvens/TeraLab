@@ -84,6 +84,6 @@ tables; restoring the backup is required for a clean rollback.
 ## v1 compatibility
 
 `html/api.php` loads the Slim 4 application and serves `/api/v2/*` plus the v1
-routes used by the legacy UI: auth, status, folders, labs, and node
+routes used by legacy clients: auth, status, folders, labs, and node
 start/stop/wipe. The v1 paths are deprecated and mapped onto v2 services; they
 do not bypass authentication.

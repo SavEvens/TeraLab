@@ -4,7 +4,7 @@
 #
 # Verify that new TeraLab files carry an SPDX licence header.
 #
-# Legacy UNetLab-derived files (html/, wrappers/, existing scripts/) are
+# Legacy UNetLab-derived files (html/, existing scripts/) are
 # exempt until they are modified. New directories and new top-level scripts
 # must declare AGPL-3.0-or-later.
 set -Eeuo pipefail

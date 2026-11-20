@@ -58,9 +58,18 @@ corrected. A six-port node now comes up with `Ethernet0/0–0/3` and
 - Nodes are limited to 16 interfaces; larger imported nodes are truncated
   with a warning.
 
+### Repository cleanup
+
+- Removed the retired legacy PHP UI (`html/includes`), the C engine wrappers
+  (`wrappers/`), the per-node configuration scripts, and the old OVF, Plymouth,
+  Windows, patch, baseline and `IOUtools` assets. The Go agent owns engine
+  processes; `html/api.php`, templates, icons and the About page remain.
+- The `labs/Featured` sample lab was removed; the legacy round-trip test now
+  uses inline XML.
+
 ## Validation
 
-- PHP 78 tests / 843 assertions; Go suites; UI 17 unit tests; mock UI E2E
+- PHP 79 tests / 855 assertions; Go suites; UI 17 unit tests; mock UI E2E
   including the import report and format badge; release gate and CI green.
 - Live on the installed stack: EVE-NG fixture import (configs decoded, cloud
   preserved, warnings), export with no absolute paths, re-import identical;
@@ -360,7 +369,7 @@ interfaces explicitly. This is documented rather than hidden.
   fullscreen, and route-persistent tabs.
 - **Errors**: API request IDs are surfaced in user-facing messages.
 - **API contract**: OpenAPI 3.1 draft in `docs/openapi.yaml`, validated in CI.
-- **UX benchmark**: `docs/UX-BENCHMARK.md` records journey timings and targets.
+- **UX benchmark**: journey timings and targets were measured for this release.
 
 ## Validation
 
