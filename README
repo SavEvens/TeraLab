@@ -11,7 +11,7 @@ third-party licences.
 ## Requirements
 
 - Debian 13 (trixie) with Apache 2.4 and PHP 8.4 (`pdo_sqlite`, `mbstring`)
-- Go 1.22+ to build the agent
+- Go 1.27+ to build the agent
 - Node 20+ to build the web UI
 - QEMU/KVM (`qemu-system-x86_64`, `qemu-img`)
 
@@ -63,8 +63,6 @@ Release gates:
 - `docs/INSTALL.md` — installation and first-run setup
 - `docs/API.md` — API quick reference; `docs/openapi.yaml` — OpenAPI draft
 - `docs/LAB-FORMAT.md` — the portable `.unl` lab format and EVE-NG import
-- `docs/AGENT.md` — agent protocol and engine behaviour
-- `docs/SECURITY.md` — security model
 - `docs/SBOM.md` — dependency inventory
 
 ## Licence
