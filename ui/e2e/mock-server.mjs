@@ -120,7 +120,7 @@ export function startMockServer(port = 8099) {
       lab.networks = 10
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.4.0' })
+    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.4.1' })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       return send(response, 200, {

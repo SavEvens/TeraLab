@@ -49,6 +49,10 @@ final class ImageController
         $files = $request->getUploadedFiles();
         $file = $files['file'] ?? null;
         if (!$file instanceof \Psr\Http\Message\UploadedFileInterface) {
+            $length = (int) $request->getHeaderLine('Content-Length');
+            if ($length > 0) {
+                throw new HttpException(413, 'The upload was rejected before TeraLab received it. Raise PHP upload_max_filesize and post_max_size (the installer sets 4G).');
+            }
             throw new HttpException(422, 'A multipart "file" field is required.');
         }
 

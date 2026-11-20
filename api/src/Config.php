@@ -122,7 +122,7 @@ final class Config
             agentSocket: $dataDir . '/agent.sock',
             agentSecretFile: $dataDir . '/agent.secret',
             imagesDir: $dataDir . '/images',
-            maxUploadBytes: 33554432,
+            maxUploadBytes: 2147483648,
             templatesDir: $dataDir . '/templates',
         );
     }
@@ -137,7 +137,7 @@ final class Config
             }
         }
 
-        return '1.4.0';
+        return '1.4.1';
     }
 
     /**

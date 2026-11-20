@@ -194,10 +194,10 @@ final class Phase1ApiTest extends TestCase
     {
         $version = $this->request('GET', '/api/v2/version');
         self::assertSame(200, $version->getStatusCode());
-        self::assertSame('1.4.0', $this->json($version)['version']);
+        self::assertSame('1.4.1', $this->json($version)['version']);
         self::assertSame('AGPL-3.0-or-later', $this->json($version)['license']);
         $health = $this->request('GET', '/api/v2/health');
-        self::assertSame('1.4.0', $this->json($health)['version']);
+        self::assertSame('1.4.1', $this->json($health)['version']);
     }
 
     public function testSnapshotsAndBulkNodeActions(): void
@@ -230,6 +230,7 @@ final class Phase1ApiTest extends TestCase
         $settings = $this->request('GET', '/api/v2/system/settings', [], [], $this->adminCookie);
         self::assertSame(200, $settings->getStatusCode());
         self::assertSame(3600, $this->json($settings)['data']['session_ttl']);
+        self::assertSame(2147483648, $this->json($settings)['data']['max_upload_bytes']);
         $updated = $this->request('PUT', '/api/v2/system/settings', ['session_ttl' => 600, 'console_default' => 'vnc'], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(200, $updated->getStatusCode(), (string) $updated->getBody());
         self::assertSame(600, $this->json($updated)['data']['session_ttl']);
@@ -265,6 +266,20 @@ final class Phase1ApiTest extends TestCase
         $backup = $this->request('GET', '/api/v2/system/backup', [], [], $this->adminCookie);
         self::assertSame(200, $backup->getStatusCode());
         self::assertStringStartsWith('PK', (string) $backup->getBody());
+    }
+
+    public function testOversizedMultipartGetsActionableError(): void
+    {
+        $response = $this->request(
+            'POST',
+            '/api/v2/images',
+            [],
+            ['Content-Length' => '244265698'],
+            $this->adminCookie,
+            $this->adminCsrf,
+        );
+        self::assertSame(413, $response->getStatusCode());
+        self::assertStringContainsString('upload_max_filesize', (string) $response->getBody());
     }
 
     public function testPasswordChangeRevokesOtherSessions(): void

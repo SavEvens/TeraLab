@@ -97,6 +97,8 @@ for VNC the generated password.
 - `GET|POST /api/v2/system/tokens` and `DELETE /system/tokens/{id}` manage
   scoped bearer tokens.
 - `GET|POST /api/v2/images`, `GET|DELETE /api/v2/images/{id}`, `PATCH` to rename.
+- Uploads larger than the PHP `post_max_size` return 413 with an actionable
+  message; the installer raises the PHP limits to 4G.
 - `GET /api/v2/templates` lists built-in and custom YAML templates.
 - `GET /api/v2/templates/{id}` returns a template and its YAML.
 - `GET /api/v2/templates/{id}/export` downloads a template YAML.
