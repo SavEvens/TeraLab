@@ -1,13 +1,38 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 TeraLab contributors
 
-import { describe, expect, it } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import AddLinkDialog from '../src/components/AddLinkDialog.vue'
 import Inspector from '../src/components/Inspector.vue'
 import TemplatePicker from '../src/components/TemplatePicker.vue'
 import ToastHost from '../src/components/ToastHost.vue'
+import ImagesView from '../src/views/ImagesView.vue'
+import { api } from '../src/api'
+import { session } from '../src/stores/session'
 import { notify, toasts, dismiss } from '../src/stores/toasts'
+
+vi.mock('../src/api', () => ({
+  api: {
+    images: vi.fn(),
+    templates: vi.fn(),
+    importLegacyImages: vi.fn(),
+    deleteImage: vi.fn(),
+    renameImage: vi.fn(),
+    setImageReference: vi.fn(),
+    mapImageTemplate: vi.fn()
+  },
+  uploadImageWithProgress: vi.fn(),
+  setCsrf: vi.fn(),
+  ApiError: class ApiError extends Error {}
+}))
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  api.images.mockResolvedValue({ data: [] })
+  api.templates.mockResolvedValue({ data: [{ id: 'csr1000v', name: 'CSR1000V', kind: 'qemu' }] })
+  session.user = null
+})
 
 const labNode = (id, name, kind, ports, networks = []) => ({
   id: String(id),
@@ -153,5 +178,92 @@ describe('ToastHost', () => {
     expect(wrapper.text()).toContain('Saved')
     await wrapper.find('button').trigger('click')
     expect(toasts.find((item) => item.id === id)).toBeUndefined()
+  })
+})
+
+describe('ImagesView', () => {
+  it('shows the adopt action only to admins', async () => {
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Adopt images')
+
+    session.user = { username: 'admin', role: 'admin' }
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Adopt images')
+    wrapper.unmount()
+  })
+
+  it('marks linked images and labels their delete action Unlink', async () => {
+    session.user = { username: 'admin', role: 'admin' }
+    api.images.mockResolvedValue({
+      data: [
+        { id: '1', name: 'hda.qcow2', kind: 'qemu', path: '/var/lib/teralab/images/qemu/a/hda.qcow2', external: 1, created_at: 0 },
+        { id: '2', name: 'base.qcow2', kind: 'qemu', path: '/var/lib/teralab/images/qemu/b/base.qcow2', external: 0, created_at: 0 }
+      ]
+    })
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    const rows = wrapper.findAll('tbody tr')
+    const linked = rows[0]
+    expect(linked.find('.badge.linked').exists()).toBe(true)
+    expect(linked.find('.badge.linked').attributes('title')).toBe('linked from the legacy addons tree; no copy in the store')
+    expect(linked.findAll('button').some((button) => button.text() === 'Unlink')).toBe(true)
+    expect(linked.findAll('button').some((button) => button.text() === 'Delete')).toBe(false)
+
+    const internal = rows[1]
+    expect(internal.find('.badge.linked').exists()).toBe(false)
+    expect(internal.findAll('button').some((button) => button.text() === 'Delete')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('scans legacy addons and imports the selected new rows', async () => {
+    session.user = { username: 'admin', role: 'admin' }
+    api.importLegacyImages
+      .mockResolvedValueOnce({
+        data: {
+          root: '/opt/unetlab/addons',
+          dry_run: true,
+          entries: [
+            { path: 'qemu/csr1000vng/hda.qcow2', kind: 'qemu', size: 2048, reference: 'csr1000vng', template: 'csr1000v', template_suggestion: 'csr1000v', status: 'new', warnings: [], error: null },
+            { path: 'qemu/legacy/hda.qcow2', kind: 'qemu', size: 1024, reference: 'legacy', template: null, template_suggestion: '', status: 'existing', warnings: [], error: null }
+          ],
+          warnings: [],
+          summary: { new: 1, existing: 1, duplicate: 0, unreadable: 0, skipped: 0 }
+        }
+      })
+      .mockResolvedValueOnce({
+        data: {
+          root: '/opt/unetlab/addons',
+          dry_run: false,
+          results: [{ path: 'qemu/csr1000vng/hda.qcow2', status: 'imported', image: { id: 'img1' }, error: null }],
+          summary: { imported: 1, duplicate: 0, skipped: 0, failed: 0 }
+        }
+      })
+
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Adopt images')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Scan').trigger('click')
+    await flushPromises()
+
+    expect(api.importLegacyImages).toHaveBeenCalledWith({ root: '/opt/unetlab/addons', dry_run: true })
+    expect(wrapper.findAll('.adopt-table tbody tr')).toHaveLength(2)
+    expect(wrapper.find('input[aria-label="Select all new images"]').element.checked).toBe(true)
+    expect(wrapper.find('input[aria-label="Include qemu/legacy/hda.qcow2"]').element.disabled).toBe(true)
+    expect(wrapper.find('select[aria-label="Template for qemu/csr1000vng/hda.qcow2"]').element.value).toBe('csr1000v')
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Import 1').trigger('click')
+    await flushPromises()
+
+    expect(api.importLegacyImages).toHaveBeenLastCalledWith({
+      root: '/opt/unetlab/addons',
+      dry_run: false,
+      files: ['qemu/csr1000vng/hda.qcow2'],
+      templates: { 'qemu/csr1000vng/hda.qcow2': 'csr1000v' }
+    })
+    expect(wrapper.text()).toContain('1 imported · 0 duplicate · 0 skipped · 0 failed')
+    expect(wrapper.find('.adopt-results .badge.status-imported').exists()).toBe(true)
+    wrapper.unmount()
   })
 })

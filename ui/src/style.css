@@ -418,6 +418,30 @@ label { display: grid; gap: 5px; color: var(--muted); font: 600 10px/1.2 var(--m
 .images-view td small { display: block; color: var(--muted-2); font-size: 10px; word-break: break-all; }
 .images-view code { font-size: 10px; color: var(--muted); }
 .images-view td select { max-width: 140px; }
+.images-view .badge.linked { margin-left: 7px; padding: 1px 6px; font-size: 9px; color: var(--magenta); border-color: rgba(255, 62, 200, 0.45); }
+.adopt-modal { max-width: 1080px; max-height: min(90vh, 880px); overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.adopt-root { display: flex; gap: 10px; align-items: end; }
+.adopt-root label { flex: 1; }
+.adopt-root input { font-family: var(--mono); }
+.adopt-summary { display: flex; gap: 18px; flex-wrap: wrap; margin: 0; }
+.adopt-summary div { display: flex; gap: 6px; align-items: baseline; }
+.adopt-summary dt { color: var(--muted-2); font: 600 10px/1 var(--mono); text-transform: uppercase; letter-spacing: 0.1em; }
+.adopt-summary dd { margin: 0; color: var(--text); font: 600 13px/1 var(--mono); }
+.adopt-warning { margin: 0; color: var(--amber); }
+.adopt-table-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: auto; max-height: 48vh; }
+.adopt-table { border: 0; }
+.adopt-table th, .adopt-table td { padding: 8px 10px; }
+.adopt-table input[type=checkbox] { width: 14px; height: 14px; accent-color: var(--cyan); }
+.adopt-table td select { max-width: 160px; }
+.adopt-table td small { display: block; }
+.adopt-results h3 { margin: 2px 0 4px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; }
+.adopt-results ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; max-height: 26vh; overflow: auto; }
+.adopt-results li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 11px; }
+.adopt-results li .mono { word-break: break-all; }
+.badge.status-new, .badge.status-imported { color: var(--green); border-color: rgba(61, 255, 176, 0.45); }
+.badge.status-existing, .badge.status-skipped { color: var(--muted); }
+.badge.status-duplicate, .badge.status-unreadable { color: var(--amber); border-color: rgba(255, 209, 102, 0.45); }
+.badge.status-failed { color: var(--red); border-color: rgba(255, 93, 122, 0.45); }
 .template-editor { background: var(--bg-panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .template-editor textarea { min-height: 440px; width: 100%; font-family: var(--mono); font-size: 12px; resize: vertical; }
 .template-split { display: grid; grid-template-columns: 1fr 260px; gap: 12px; min-height: 0; flex: 1; }

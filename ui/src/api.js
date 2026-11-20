@@ -136,6 +136,7 @@ export const api = {
   },
   duplicateTemplate: (id) => request(`/templates/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }),
   images: () => request('/images'),
+  importLegacyImages: (payload) => request('/images/import', { method: 'POST', body: payload }),
   uploadImage: (form) => request('/images', { method: 'POST', body: form }),
   deleteImage: (id) => request(`/images/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   renameImage: (id, name) => request(`/images/${encodeURIComponent(id)}`, { method: 'PATCH', body: { name } }),
