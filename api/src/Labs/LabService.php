@@ -428,7 +428,7 @@ final class LabService
                 foreach ($started as $info) {
                     $this->safeStop($this->stringValue($info, 'id'));
                 }
-                $this->safeCleanupLab((string) $lab['id']);
+                $this->cleanupLabIfStopped((string) $lab['id']);
                 if ($userId !== null) {
                     $this->locks->release((string) $lab['id'], $userId, $isAdmin);
                 }
@@ -543,7 +543,8 @@ final class LabService
         try {
             return $this->agent->start($this->spec($lab, $node, $bridges));
         } catch (HttpException $exception) {
-            $this->safeCleanupLab((string) $lab['id']);
+            // A failed single-node start must not touch the lab's links: the node
+            // may still be running and other nodes of the lab may be running too.
             if ($userId !== null) {
                 $this->locks->release((string) $lab['id'], $userId, $isAdmin);
             }
@@ -927,6 +928,30 @@ final class LabService
             $this->agent->cleanupLab($labID);
         } catch (\Throwable) {
         }
+    }
+
+    /**
+     * Remove the lab's links only when nothing of the lab is running.
+     *
+     * A failed start must never tear down bridges or taps that a running node
+     * still uses: the engine keeps running, but its data path is destroyed.
+     */
+    private function cleanupLabIfStopped(string $labID): void
+    {
+        try {
+            $nodes = $this->nodes($labID)['nodes'] ?? [];
+        } catch (\Throwable) {
+            return;
+        }
+        foreach ($nodes as $node) {
+            // Only a definitive "stopped" is safe: an unknown state may hide a
+            // node that is still running, and an agent hiccup must not cost the
+            // links of a live lab.
+            if (!is_array($node) || ($node['state'] ?? '') !== 'stopped') {
+                return;
+            }
+        }
+        $this->safeCleanupLab($labID);
     }
 
     /**

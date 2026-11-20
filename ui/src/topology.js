@@ -190,3 +190,12 @@ export function usedNetworks(nodes) {
 
   return used
 }
+
+// Runtime controls that make sense for a node in the given state. An
+// unknown or absent state keeps every control so the user is never blocked.
+export function nodeControls(state) {
+  if (state === 'running') return { start: false, stop: true, wipe: false }
+  if (state === 'stopped') return { start: true, stop: false, wipe: true }
+
+  return { start: true, stop: true, wipe: true }
+}

@@ -3,6 +3,76 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.2 release notes
+
+- Release date: 2026-11-20
+- Previous release: v1.5.1
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## A failed node start no longer destroys a running lab's network
+
+v1.5.1 called `lab.cleanup` on any per-node start failure. That included the
+harmless "node is already running" error, so starting a node that was up deleted
+every bridge and tap of the lab while its engines kept running. The result was
+confusing: interfaces still reported `up/up` and still answered L1 keepalives,
+but ARP, CDP and ping were dead because the links underneath were gone.
+
+- **Fixed:** a failed per-node start, including "node is already running", no
+  longer cleans up the lab. Only the node that failed is affected.
+- **Fixed:** the full-lab start rollback removes lab links only when no node of
+  the lab is still running. A failed rollback stop no longer costs a live node
+  its links.
+- **Fixed:** the agent's `lab.cleanup` and the reconcile sweep keep the taps
+  **and bridges** of running nodes; links that are actually removed are logged
+  at WARN.
+- **Fixed:** failed node actions (`lab.node.start|stop|wipe`) are written to the
+  audit log with result `error` and the agent's message, so a destructive
+  failure is visible after the fact.
+- **Host firewall:** the installer now enables `teralab-firewall.service`, which
+  allows forwarded IP traffic between TeraLab lab bridges (IPv4, plus IPv6
+  when `ip6tables` is available). On Docker hosts `br_netfilter` and a
+  `FORWARD` policy of `DROP` otherwise drop lab traffic while
+  ARP and CDP still pass, so labs looked connected but could not ping. The
+  single rule is scoped to `tl*` and leaves `docker0` untouched.
+
+### UI
+
+- The editor offers only the controls that are valid for the current node
+  state: a running node offers Stop, a stopped node offers Start/Wipe.
+- Node state is refreshed after every node action and after lab start/stop, so
+  the controls follow reality instead of a stale snapshot.
+- Bulk actions skip nodes that are not eligible for the action.
+
+### Compatibility notes
+
+- No database migration and no lab-format change. `docs/LAB-FORMAT.md` is
+  unchanged and v1.5.1 labs need no conversion.
+- No API shape change; the OpenAPI document only has its version bumped. The
+  only API-visible difference is the additional audit-log entries for failed
+  node actions.
+- A lab that lost connectivity under v1.5.1 needs only a stop and a start to
+  rebuild its bridge and taps. Engine nvram, including configured IP addresses,
+  lives in the run directory and survives the restart. See `docs/UPGRADE.md`.
+- Known limitation carried over from v1.5.1: legacy labs are rewritten as format
+  v2 on their first save, including autosave, and that rewrite is one-way.
+  Back up `/var/lib/teralab` before upgrading if you may need to roll back.
+- Cloud/NAT/OVS networks are still preserved but run as isolated bridges, and
+  Docker/EVE-NG switch nodes still import without starting (unchanged from
+  v1.5.1).
+
+## Validation
+
+- Covered by PHP API and service tests, Go agent tests (including the new
+  cleanup regression test), UI unit tests, and the mock UI E2E run; release gate
+  run at packaging time.
+- Verified live on the release host:
+  - starting an already-running node returns `400` and leaves all 5 lab links
+    in place;
+  - the maintenance reconcile keeps the links of a running lab;
+  - failed node actions appear in the audit log with result `error`;
+  - a lab broken by v1.5.1 recovers with a stop and start;
+  - IOL↔IOL ping succeeds 5/5 once the lab bridge firewall rule is present.
+
 # TeraLab v1.5.1 release notes
 
 - Release date: 2026-11-20

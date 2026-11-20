@@ -29,6 +29,23 @@ final class LabServiceTest extends TestCase
     /** @var list<array{method: string, path: string, payload: array<string, mixed>}> */
     private array $calls = [];
 
+    /** @var array<string, string> Agent node id => node name, for running nodes. */
+    private array $running = [];
+
+    /** @var list<string> Node names whose /v1/node.start must fail. */
+    private array $failingStarts = [];
+
+    /** @var list<string> Node names whose /v1/node.stop must fail. */
+    private array $failingStops = [];
+
+    /**
+     * Agent node id suffixes (`<lab-id>-<node-id>`) whose /v1/node.status must
+     * fail with HTTP 500, so the service reports an `unknown` node state.
+     *
+     * @var list<string>
+     */
+    private array $failingStatuses = [];
+
     protected function setUp(): void
     {
         $this->root = sys_get_temp_dir() . '/teralab-labsvc-' . bin2hex(random_bytes(6));
@@ -134,6 +151,101 @@ final class LabServiceTest extends TestCase
         self::assertSame('vpcs', $starts[1]['payload']['engine']);
         self::assertSame(['tl-test-bridge-0'], $starts[1]['payload']['networks']);
         self::assertStringStartsWith((string) $lab['id'] . '-', (string) $starts[0]['payload']['id']);
+    }
+
+    public function testFailedNodeStartKeepsLabLinks(): void
+    {
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Already Running Lab',
+            'nodes' => [$this->node('1', 'PC1', 'vpcs', '', [])],
+        ]);
+        $labID = (string) $lab['id'];
+        $service->start($labID);
+        $this->calls = [];
+
+        try {
+            $service->startNode($labID, '1');
+            self::fail('starting an already running node must fail');
+        } catch (HttpException $exception) {
+            self::assertSame(400, $exception->status);
+        }
+
+        self::assertSame([], $this->cleanupCalls(), 'a rejected node start must not delete the lab links');
+        self::assertNotSame([], $this->calls);
+    }
+
+    public function testFailedFullStartKeepsLinksWhileANodeStillRuns(): void
+    {
+        $this->failingStarts = ['PC2'];
+        $this->failingStops = ['PC1'];
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Rollback Lab',
+            'nodes' => [
+                $this->node('1', 'PC1', 'vpcs', '', []),
+                $this->node('2', 'PC2', 'vpcs', '', []),
+            ],
+        ]);
+
+        try {
+            $service->start((string) $lab['id']);
+            self::fail('the start must fail when the second node cannot start');
+        } catch (HttpException $exception) {
+            self::assertSame(400, $exception->status);
+        }
+
+        $stops = array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => $call['path'] === '/v1/node.stop',
+        ));
+        self::assertCount(1, $stops, 'the rollback must still try to stop the started node');
+        self::assertSame([], $this->cleanupCalls(), 'a surviving node must keep the lab links');
+    }
+
+    public function testFailedFullStartCleansUpAfterRollback(): void
+    {
+        $this->failingStarts = ['PC2'];
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Rollback Cleanup Lab',
+            'nodes' => [
+                $this->node('1', 'PC1', 'vpcs', '', []),
+                $this->node('2', 'PC2', 'vpcs', '', []),
+            ],
+        ]);
+
+        try {
+            $service->start((string) $lab['id']);
+            self::fail('the start must fail when the second node cannot start');
+        } catch (HttpException $exception) {
+            self::assertSame(400, $exception->status);
+        }
+
+        self::assertCount(1, $this->cleanupCalls(), 'a fully rolled back start must release the lab links');
+    }
+
+    public function testFailedFullStartKeepsLinksWhenNodeStateIsUnknown(): void
+    {
+        $this->failingStarts = ['PC2'];
+        $this->failingStatuses = ['1'];
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Rollback Unknown State Lab',
+            'nodes' => [
+                $this->node('1', 'PC1', 'vpcs', '', []),
+                $this->node('2', 'PC2', 'vpcs', '', []),
+            ],
+        ]);
+
+        try {
+            $service->start((string) $lab['id']);
+            self::fail('the start must fail when the second node cannot start');
+        } catch (HttpException $exception) {
+            self::assertSame(400, $exception->status);
+        }
+
+        self::assertSame([], $this->cleanupCalls(), 'an unknown node state must keep the lab links');
     }
 
     public function testTextObjectsAreSavedButNotStarted(): void
@@ -355,23 +467,54 @@ final class LabServiceTest extends TestCase
     private function service(): LabService
     {
         $this->calls = [];
+        $this->running = [];
         $agent = new AgentClient($this->config, function (string $method, string $path, array $payload): array {
             $this->calls[] = ['method' => $method, 'path' => $path, 'payload' => $payload];
             if ($path === '/v1/lab.ensure') {
                 return [200, '{"ok":true,"result":{"lab_id":"lab","bridges":{"0":"tl-test-bridge-0","1":"tl-test-bridge-1"}}}'];
             }
             if ($path === '/v1/node.start') {
+                $id = (string) ($payload['id'] ?? '');
+                $name = (string) ($payload['name'] ?? '');
+                if (in_array($name, $this->failingStarts, true) || isset($this->running[$id])) {
+                    return [400, '{"ok":false,"error":{"code":"start_failed","message":"node is already running"}}'];
+                }
+                $this->running[$id] = $name;
+
                 return [200, json_encode([
                     'ok' => true,
                     'result' => [
-                        'id' => $payload['id'] ?? '',
-                        'name' => $payload['name'] ?? '',
+                        'id' => $id,
+                        'name' => $name,
                         'engine' => $payload['engine'] ?? '',
                         'state' => 'running',
                     ],
                 ], JSON_THROW_ON_ERROR)];
             }
-            if ($path === '/v1/node.stop' || $path === '/v1/node.wipe') {
+            if ($path === '/v1/node.stop') {
+                $id = (string) ($payload['id'] ?? '');
+                if (in_array($this->running[$id] ?? '', $this->failingStops, true)) {
+                    return [500, '{"ok":false,"error":{"code":"stop_failed","message":"the node cannot be stopped"}}'];
+                }
+                unset($this->running[$id]);
+
+                return [200, '{"ok":true,"result":{"state":"ok"}}'];
+            }
+            if (str_starts_with($path, '/v1/node.status')) {
+                parse_str((string) parse_url($path, PHP_URL_QUERY), $query);
+                $id = (string) ($query['id'] ?? '');
+                foreach ($this->failingStatuses as $suffix) {
+                    if (str_ends_with($id, '-' . $suffix)) {
+                        return [500, '{"ok":false,"error":{"code":"status_failed","message":"agent error"}}'];
+                    }
+                }
+                if (isset($this->running[$id])) {
+                    return [200, '{"ok":true,"result":{"state":"running"}}'];
+                }
+
+                return [404, '{"ok":false,"error":{"code":"not_found","message":"node not found"}}'];
+            }
+            if ($path === '/v1/node.wipe') {
                 return [200, '{"ok":true,"result":{"state":"ok"}}'];
             }
             if ($path === '/v1/cleanup.stale') {
@@ -382,6 +525,17 @@ final class LabServiceTest extends TestCase
         });
 
         return new LabService($this->config, $this->parser, $this->writer, $agent, new LabLocks($this->pdo), new ImageReferences($this->pdo, $this->config));
+    }
+
+    /**
+     * @return list<array{method: string, path: string, payload: array<string, mixed>}>
+     */
+    private function cleanupCalls(): array
+    {
+        return array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => $call['path'] === '/v1/lab.cleanup',
+        ));
     }
 
     private function upload(string $content, string $name): UploadedFile

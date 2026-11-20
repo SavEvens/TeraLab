@@ -357,6 +357,9 @@ try {
   if (!/saved/i.test(savedText)) throw new Error('autosave did not complete')
   if (!canvasMenu.includes('Add node')) throw new Error(`canvas context menu missing Add node: ${canvasMenu}`)
   if (!nodeMenu.includes('Open console')) throw new Error('node context menu missing Open console')
+  if (!nodeMenu.includes('Stop node') || nodeMenu.includes('Start node') || nodeMenu.includes('Wipe node')) {
+    throw new Error(`running node menu offers the wrong controls: ${nodeMenu}`)
+  }
   if (!edgeMenu.includes('Delete link')) throw new Error('link context menu missing Delete link')
   if (linkMenuRecreated !== 1) throw new Error('context-menu link creation failed')
   if (!linkInterfaceOptions.some((option) => option.includes('eth0'))) throw new Error(`link dialog missing interfaces: ${linkInterfaceOptions}`)

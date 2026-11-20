@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 TeraLab contributors
 #
-# Install TeraLab v1.5.1 on a Debian 13 host.
+# Install TeraLab v1.5.2 on a Debian 13 host.
 #
 # The installer never overwrites configuration, the database, labs, or images.
 # It is safe to re-run and is the supported upgrade path from v1.1.
@@ -193,8 +193,14 @@ EOF
 
 if [ "$INSTALL_SYSTEMD" -eq 1 ] && command -v systemctl >/dev/null; then
 	install -m 0644 "$ROOT/agent/systemd/teralab-agent.service" /etc/systemd/system/teralab-agent.service
+	install -m 0644 "$ROOT/packaging/teralab/teralab-firewall.service" /etc/systemd/system/teralab-firewall.service
 	systemctl daemon-reload
 	systemctl enable --now teralab-agent.service
+	# Applies the lab-bridge rule immediately on upgrade. A host without
+	# iptables is valid and the script exits 0; never abort the install if the
+	# rule cannot be applied.
+	systemctl enable --now teralab-firewall.service \
+		|| printf 'warning: the lab bridge firewall rule was not applied; see docs/INSTALL.md\n' >&2
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
@@ -208,4 +214,5 @@ fi
 
 printf 'TeraLab installed at %s\n' "$ROOT"
 printf 'Runtime data: %s\n' "$DATA"
+printf 'Lab bridge firewall rule: %s\n' "$(systemctl is-active teralab-firewall.service 2>/dev/null || echo manual)"
 printf 'Next: complete first-run setup at /api/v2/setup (one time), then log in.\n'

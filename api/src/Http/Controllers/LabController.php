@@ -410,12 +410,24 @@ final class LabController
         $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
         $nodeID = $args['node'] ?? '';
         $isAdmin = $this->access->isAdmin($user);
-        $data = match ($action) {
-            'start' => $this->service->startNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
-            'stop' => $this->service->stopNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
-            'wipe' => $this->service->wipeNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
-            default => [],
-        };
+        try {
+            $data = match ($action) {
+                'start' => $this->service->startNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
+                'stop' => $this->service->stopNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
+                'wipe' => $this->service->wipeNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
+                default => [],
+            };
+        } catch (HttpException $exception) {
+            $this->audit->log(
+                (string) $user['id'],
+                $this->ip($request),
+                'lab.node.' . $action,
+                (string) $lab['id'],
+                'error',
+                ['node' => $nodeID, 'message' => $exception->getMessage()],
+            );
+            throw $exception;
+        }
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.node.' . $action, (string) $lab['id'], 'success', ['node' => $nodeID]);
 
         return Json::response($response, ['status' => 'success', 'data' => $data]);

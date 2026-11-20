@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Installing TeraLab v1.5.1
+# Installing TeraLab v1.5.2
 
 TeraLab targets Debian 13 with PHP 8.4 and QEMU 10. QEMU, Dynamips, IOL, and
 the kernel remain separate components with their own licences.
@@ -40,7 +40,8 @@ The installer:
 5. creates `/var/lib/teralab/{labs,images,run}` and `/run/teralab`;
 6. builds the Vue UI and installs it at `html/ui`;
 7. links `/opt/unetlab -> /opt/teralab` for legacy paths;
-8. writes the Apache configuration and enables the agent unit.
+8. writes the Apache configuration and enables the agent unit and, when
+   systemd is available, the lab bridge firewall unit.
 
 Options: `--root`, `--data`, `--source`, `--agent-binary`, `--no-systemd`.
 
@@ -90,6 +91,40 @@ There are no default accounts, no telemetry, and no `setcap` usage.
   then `sudo dpkg -i dist/teralab-dynamips_*.deb`. A licensed IOS image is
   required and is never bundled.
 
+## Host firewall (Docker hosts)
+
+On hosts that run Docker, the `br_netfilter` module is loaded and
+`net.bridge.bridge-nf-call-iptables=1` is set, so bridged IPv4 frames are
+filtered by iptables. Docker's default `FORWARD` policy is `DROP` with accept
+rules only for `docker0`. As a result, traffic between TeraLab lab bridges is
+dropped even though ARP (0x0806) and CDP (LLC/SNAP) pass because they are not
+IPv4. The symptom is confusing: interfaces stay `up/up`, LIN switches and CDP
+neighbours appear, but ping and other IPv4 traffic between lab nodes fail.
+
+The installer enables `teralab-firewall.service`, which inserts one rule once:
+
+```sh
+iptables -I FORWARD 1 -i tl+ -o tl+ -j ACCEPT
+ip6tables -I FORWARD 1 -i tl+ -o tl+ -j ACCEPT   # when ip6tables is available
+```
+
+The script applies the IPv4 rule always and the IPv6 one when `ip6tables`
+exists, best effort. `tl+` matches only TeraLab lab bridges (their names all
+start with `tl`), so Docker's `docker0` rules are untouched. The rule is
+idempotent and survives service restarts via the systemd unit.
+
+On a host installed with `--no-systemd`, or to re-apply the rule after a
+firewall manager reloads the `FORWARD` chain, run:
+
+```sh
+sudo /opt/teralab/packaging/teralab/teralab-firewall
+sudo systemctl enable --now teralab-firewall.service   # systemd hosts
+```
+
+If you use a firewall manager (for example `ufw`, `firewalld`, or a custom
+iptables restore script) that flushes or overwrites the `FORWARD` chain, make
+sure it preserves this rule, or re-run the script or unit afterwards.
+
 ## Image upload troubleshooting
 
 IOL/Dynamips images are commonly 100–300 MB. If an upload immediately fails with
@@ -120,9 +155,13 @@ See `docs/API.md` for the lab lifecycle endpoints.
 Stop the unit and remove TeraLab-owned paths:
 
 ```sh
-sudo systemctl disable --now teralab-agent
+sudo systemctl disable --now teralab-agent teralab-firewall
 sudo rm -rf /opt/teralab /etc/teralab /var/lib/teralab
-sudo rm -f /etc/apache2/conf-available/teralab.conf /etc/systemd/system/teralab-agent.service
+sudo rm -f /etc/apache2/conf-available/teralab.conf \
+    /etc/systemd/system/teralab-agent.service \
+    /etc/systemd/system/teralab-firewall.service
+sudo iptables -D FORWARD -i tl+ -o tl+ -j ACCEPT 2>/dev/null || true
+sudo ip6tables -D FORWARD -i tl+ -o tl+ -j ACCEPT 2>/dev/null || true
 ```
 
 Never delete `/var/lib/teralab` unless you intend to remove labs and images.

@@ -208,10 +208,11 @@ func (m *Manager) DeleteLink(name string) error {
 	return nil
 }
 
-// CleanupLab removes lab-owned bridges whose names start with the lab tag.
-func (m *Manager) CleanupLab(labID string) ([]string, error) {
+// CleanupLab removes lab-owned links whose names start with the lab tag,
+// sparing every link the caller still needs.
+func (m *Manager) CleanupLab(labID string, keep map[string]bool) ([]string, error) {
 	prefix := "tl" + LabTag(labID)
-	return m.removeLinksByPrefix(prefix, nil)
+	return m.removeLinksByPrefix(prefix, keep)
 }
 
 // CleanupStale removes TeraLab-owned links that are not in the keep set.

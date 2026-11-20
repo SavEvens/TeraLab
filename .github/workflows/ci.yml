@@ -132,6 +132,7 @@ jobs:
             scripts/setup-runtime-paths.sh \
             packaging/dynamips/build.sh \
             packaging/teralab/install.sh \
+            packaging/teralab/teralab-firewall \
             scripts/teralab-project-init.sh
 
   ui:

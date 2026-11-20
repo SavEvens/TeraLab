@@ -415,9 +415,43 @@ func (m *Manager) EnsureLab(labID string, networkIDs []string) (map[string]strin
 	return m.net.EnsureLab(labID, networkIDs)
 }
 
-// CleanupLab removes the bridges owned by one lab.
+// liveLinks returns every tap and bridge that running nodes currently use,
+// restricted to one lab when labID is not empty.
+func (m *Manager) liveLinks(labID string) map[string]bool {
+	keep := map[string]bool{}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, node := range m.nodes {
+		if node.State != "running" {
+			continue
+		}
+		if labID != "" && node.Spec.LabID != labID {
+			continue
+		}
+		for _, tap := range node.Taps {
+			if tap != "" {
+				keep[tap] = true
+			}
+		}
+		for _, bridge := range node.Spec.Networks {
+			if bridge != "" {
+				keep[bridge] = true
+			}
+		}
+	}
+
+	return keep
+}
+
+// CleanupLab removes the bridges and taps owned by one lab, sparing links
+// that running nodes still use, and reports what was removed.
 func (m *Manager) CleanupLab(labID string) ([]string, error) {
-	return m.net.CleanupLab(labID)
+	removed, err := m.net.CleanupLab(labID, m.liveLinks(labID))
+	if len(removed) > 0 {
+		m.logger.Warn("removed lab links", "lab", labID, "links", removed)
+	}
+
+	return removed, err
 }
 
 func (m *Manager) Shutdown() {

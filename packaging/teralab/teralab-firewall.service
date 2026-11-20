@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+
+[Unit]
+Description=TeraLab lab bridge forwarding rule
+Documentation=https://github.com/SavEvens/TeraLab
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/teralab/packaging/teralab/teralab-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
