@@ -37,6 +37,8 @@ export function startMockServer(port = 8099) {
     description: '',
     body: '',
     lock: null,
+    running: false,
+    running_nodes: 0,
     nodes: 2,
     networks: 1,
     network_list: [{ id: '0', name: 'Net-1', type: 'bridge' }],
@@ -49,7 +51,10 @@ export function startMockServer(port = 8099) {
       {
         id: '2', name: 'R2', type: 'qemu', template: 'linux', image: 'base.qcow2',
         console: 'telnet', cpu: 1, ram: 512, uuid: '', platform: '', left: 480, top: 100,
-        interfaces: [{ id: 0, name: 'eth0', type: 'ethernet', network_id: '0' }]
+        interfaces: [
+          { id: 0, name: 'eth0', type: 'ethernet', network_id: '0' },
+          { id: 1, name: 'eth1', type: 'ethernet', network_id: '' }
+        ]
       }
     ]
   }
@@ -120,8 +125,8 @@ export function startMockServer(port = 8099) {
       lab.networks = 10
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.4.4' })
-    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.4.4', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
+    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.4.5' })
+    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.4.5', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       return send(response, 200, {
@@ -198,6 +203,11 @@ export function startMockServer(port = 8099) {
     }
     if (path === '/api/v2/labs/lab1/start' || path === '/api/v2/labs/lab1/stop' || path === '/api/v2/labs/lab1/wipe') {
       const action = path.split('/').pop()
+      lab = {
+        ...lab,
+        running: action === 'start',
+        running_nodes: action === 'start' ? lab.node_list.length : 0
+      }
       return send(response, 202, { status: 'success', job_id: 'job1', data: { lab_id: 'lab1', [action]: [] } })
     }
     if (path === '/api/v2/jobs/job1') {
@@ -207,6 +217,7 @@ export function startMockServer(port = 8099) {
     if (path === '/api/v2/templates') {
       return send(response, 200, { data: [
         { id: 'linux', name: 'Linux', kind: 'qemu', source: 'builtin', defaults: { cpu: 1, ram: 512, ethernet: 4, console: 'telnet' } },
+        { id: 'iol', name: 'Cisco IOL', kind: 'iol', source: 'builtin', icon: 'Router.png', defaults: { ethernet: 2, serial: 2, console: 'telnet' } },
         { id: 'vpcs', name: 'VPCS', kind: 'vpcs', source: 'builtin', defaults: { ethernet: 1, console: 'telnet' } }
       ] })
     }

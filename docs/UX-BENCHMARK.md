@@ -37,7 +37,8 @@ E2E (`ui/e2e/run.mjs`); engine numbers come from the installed agent.
 - Inputs are wrapped by visible labels; tables use `th` headers.
 - Topology has an accessible table fallback (Table button).
 - Keyboard: Ctrl/Cmd+S save, Ctrl/Cmd+Z/Y undo/redo, Ctrl/Cmd+C/V copy/paste,
-  Delete, arrow nudge, Enter/Space on palette rows, Escape exits presentation.
+  Delete, arrow nudge, Enter/Space on template menu rows, Escape exits
+  presentation.
 - Focus-visible outlines are defined globally; contrast uses light text on a
   deep indigo surface with cyan/magenta accents.
 - A formal axe/WCAG audit is not yet automated; scheduled with the v1.4

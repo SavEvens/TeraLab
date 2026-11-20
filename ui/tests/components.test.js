@@ -3,24 +3,99 @@
 
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
-import Palette from '../src/components/Palette.vue'
+import AddLinkDialog from '../src/components/AddLinkDialog.vue'
 import Inspector from '../src/components/Inspector.vue'
+import TemplatePicker from '../src/components/TemplatePicker.vue'
 import ToastHost from '../src/components/ToastHost.vue'
 import { notify, toasts, dismiss } from '../src/stores/toasts'
 
-describe('Palette', () => {
-  it('filters templates and emits add on double click', async () => {
-    const wrapper = mount(Palette, {
-      props: { templates: [
-        { id: 'linux', name: 'Linux', kind: 'qemu' },
-        { id: 'vpcs', name: 'VPCS', kind: 'vpcs' }
-      ] }
-    })
-    expect(wrapper.findAll('li')).toHaveLength(2)
-    await wrapper.find('input').setValue('vpc')
-    expect(wrapper.findAll('li')).toHaveLength(1)
-    await wrapper.find('li').trigger('dblclick')
+const labNode = (id, name, kind, ports, networks = []) => ({
+  id: String(id),
+  type: 'lab',
+  position: { x: 0, y: 0 },
+  data: {
+    id: String(id),
+    name,
+    kind,
+    interfaces: Array.from({ length: ports }, (_, index) => ({
+      id: index,
+      name: kind === 'iol' ? `Ethernet0/${index}` : `eth${index}`,
+      type: 'ethernet',
+      network_id: networks[index] || ''
+    }))
+  }
+})
+
+describe('TemplatePicker', () => {
+  const templates = [
+    { id: 'linux', name: 'Linux', kind: 'qemu' },
+    { id: 'iol', name: 'Cisco IOL', kind: 'iol' },
+    { id: 'vpcs', name: 'VPCS', kind: 'vpcs' }
+  ]
+  const images = [{ id: 'img1', name: 'base.qcow2', template: 'linux' }]
+
+  it('groups templates by image mapping and emits add', async () => {
+    const wrapper = mount(TemplatePicker, { props: { templates, images } })
+    const ready = wrapper.find('[data-group="ready"]')
+    const needsImage = wrapper.find('[data-group="needs-image"]')
+    expect(ready.text()).toContain('Linux')
+    expect(ready.text()).toContain('base.qcow2')
+    expect(ready.text()).not.toContain('VPCS')
+    expect(needsImage.text()).toContain('VPCS')
+    expect(needsImage.text()).toContain('Cisco IOL')
+
+    const vpcs = wrapper.findAll('[data-group="needs-image"] li').find((item) => item.text().includes('VPCS'))
+    await vpcs.find('button').trigger('click')
     expect(wrapper.emitted('add')[0][0].id).toBe('vpcs')
+  })
+
+  it('filters across both groups', async () => {
+    const wrapper = mount(TemplatePicker, { props: { templates, images } })
+    await wrapper.find('input').setValue('vpcs')
+    expect(wrapper.findAll('.template-grid li')).toHaveLength(1)
+    expect(wrapper.find('[data-group="needs-image"]').text()).toContain('VPCS')
+    expect(wrapper.find('[data-group="ready"]').exists()).toBe(false)
+  })
+})
+
+describe('AddLinkDialog', () => {
+  const nodes = [
+    labNode(1, 'R1', 'iol', 4, ['0']),
+    labNode(2, 'R2', 'qemu', 2)
+  ]
+  const networks = [{ id: '0', name: 'Net-1' }]
+
+  it('lists compact interface labels and emits the chosen pair', async () => {
+    const wrapper = mount(AddLinkDialog, { props: { nodes, networks } })
+    const source = wrapper.find('select[aria-label="Interface A"]')
+    expect(source.findAll('option')[0].text()).toBe('e0/0 · Net-1 (0)')
+    expect(source.findAll('option')[1].text()).toBe('e0/1 · free')
+
+    await wrapper.find('select[aria-label="Node B"]').setValue('2')
+    const target = wrapper.find('select[aria-label="Interface B"]')
+    expect(target.findAll('option')[0].text()).toBe('eth0 · free')
+    await target.setValue('1')
+    await wrapper.findAll('button').find((button) => button.text() === 'Create link').trigger('click')
+    expect(wrapper.emitted('create')[0][0]).toEqual({ sourceId: '1', sourceIndex: 1, targetId: '2', targetIndex: 1 })
+  })
+
+  it('keeps the two ends on different nodes', async () => {
+    const wrapper = mount(AddLinkDialog, { props: { nodes, networks } })
+    await wrapper.find('select[aria-label="Node B"]').setValue('1')
+    expect(wrapper.find('select[aria-label="Node A"]').element.value).toBe('2')
+    expect(wrapper.find('select[aria-label="Node B"]').element.value).toBe('1')
+    expect(wrapper.text()).not.toContain('Pick two different nodes.')
+  })
+
+  it('swaps both ends including interfaces', async () => {
+    const wrapper = mount(AddLinkDialog, { props: { nodes, networks } })
+    await wrapper.find('select[aria-label="Interface A"]').setValue('2')
+    await wrapper.find('select[aria-label="Interface B"]').setValue('1')
+    await wrapper.find('button[aria-label="Swap ends"]').trigger('click')
+    expect(wrapper.find('select[aria-label="Node A"]').element.value).toBe('2')
+    expect(wrapper.find('select[aria-label="Interface A"]').element.value).toBe('1')
+    expect(wrapper.find('select[aria-label="Node B"]').element.value).toBe('1')
+    expect(wrapper.find('select[aria-label="Interface B"]').element.value).toBe('2')
   })
 })
 

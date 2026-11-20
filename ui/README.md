@@ -3,31 +3,33 @@
 
 # TeraLab UI
 
-Vue 3 single-page application for TeraLab v1.4.4.
+Vue 3 single-page application for TeraLab v1.4.5.
 
 ## Design
 
 Synthwave tokens: deep indigo background, neon cyan primary, magenta accent,
 monospace uppercase chrome, and a subtle perspective grid. Layout follows a
 compact simulator model: a left section rail for workspace pages and a
-full-bleed editor with floating device palette, inspector, toolbar, and a
-persistent bottom console dock. No external UI kit or web fonts are used.
+full-bleed editor with a floating inspector, toolbar, and a persistent bottom
+console dock. No external UI kit or web fonts are used.
 
 ## Features
 
-- Right-click canvas, node, and link menus: add devices/text/pictures, paste,
-  fit, validate, open consoles, start/stop/wipe, add links, delete/rename
-  links, duplicate, and delete.
-- Icon-first topology nodes with names underneath; node-level link handles
-  instead of per-port dots.
-
-
+- Right-click canvas, node, and link menus: add nodes/links/text/pictures,
+  paste, fit, validate, open consoles, start/stop/wipe, delete/rename links,
+  duplicate, and delete.
+- “+ Add node” opens a template menu grouped into templates that have an image
+  mapped and templates that still need one.
+- “Add link” selects the node and interface (`e0/0`, `e0/1`, `eth1`, …) on
+  each end; drag-to-connect opens the same dialog.
+- Icon-first topology nodes with names underneath; link ends show interface
+  tags and stop at the node body.
 - First-run setup, login, session/CSRF handling.
-- Lab list with create, drag-and-drop/import, export, duplicate, move, delete,
-  and a 30-day trash with restore.
+- Lab list with running status, conditional stop, create, drag-and-drop/import,
+  export, duplicate, move, delete, and a 30-day trash with restore.
 - Template library: YAML import/export, duplicate, custom editing.
-- Vue Flow topology editor: palette, inspector (name, template, image, CPU,
-  RAM, NIC driver, port/serial counts, console), links, undo/redo, copy/paste,
+- Vue Flow topology editor: inspector (name, template, image, CPU, RAM, NIC
+  driver, port/serial counts, console), links, undo/redo, copy/paste,
   duplicate, align, snap-to-grid, grid toggle, fit, minimap, table fallback.
 - Autosave with revision conflict detection and reload/overwrite.
 - Validation surface for duplicate names, missing images, and port limits.

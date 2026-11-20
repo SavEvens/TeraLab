@@ -2,7 +2,7 @@
 // Copyright (C) 2026 TeraLab contributors
 
 import { describe, expect, it } from 'vitest'
-import { buildEdges, firstFreePort, nextNetworkId, nodeFromLab, toPayload, usedNetworks } from '../src/topology'
+import { buildEdges, defaultPortName, firstFreePort, nextNetworkId, nodeFromLab, portLabel, toPayload, usedNetworks } from '../src/topology'
 
 const labNode = (id, network) => ({
   id: String(id),
@@ -94,5 +94,34 @@ describe('topology helpers', () => {
   it('allocates the next numeric network and reports used ids', () => {
     expect(nextNetworkId([{ id: '0' }, { id: '4' }])).toBe('5')
     expect([...usedNetworks([labNode(1, '2')])]).toEqual(['2'])
+  })
+
+  it('labels engine interfaces compactly', () => {
+    const iol = labNode(1, '0')
+    iol.data.kind = 'iol'
+    iol.data.interfaces = [0, 1, 4].map((index) => ({ id: index, name: `Ethernet${Math.floor(index / 4)}/${index % 4}`, network_id: '' }))
+    expect(portLabel(iol, 0)).toBe('e0/0')
+    expect(portLabel(iol, 1)).toBe('e0/1')
+    expect(portLabel(iol, 2)).toBe('e1/0')
+
+    const imported = labNode(2, '')
+    imported.data.interfaces[0].name = 'Ethernet1/2'
+    expect(portLabel(imported, 0)).toBe('e1/2')
+    expect(portLabel(labNode(3, ''), 0)).toBe('eth0')
+
+    expect(defaultPortName('iol', 5)).toBe('Ethernet1/1')
+    expect(defaultPortName('qemu', 5)).toBe('eth5')
+  })
+
+  it('carries interface labels into built edges', () => {
+    const from = labNode(1, '0')
+    from.data.kind = 'iol'
+    from.data.interfaces[0].name = 'Ethernet0/2'
+    const to = labNode(2, '0')
+    to.data.interfaces[0].name = 'eth7'
+    const built = buildEdges([from, to])
+    expect(built.edges[0].type).toBe('link')
+    expect(built.edges[0].data.sourcePort).toBe('e0/2')
+    expect(built.edges[0].data.targetPort).toBe('eth7')
   })
 })

@@ -32,8 +32,16 @@ final class LabController
     public function index(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $user = $this->access->user($request);
+        $labs = $this->access->filterLabs($user, $this->labs->all());
+        $running = $this->service->runningLabs();
+        foreach ($labs as &$lab) {
+            $labID = (string) ($lab['id'] ?? '');
+            $lab['running_nodes'] = $running[$labID] ?? 0;
+            $lab['running'] = $lab['running_nodes'] > 0;
+        }
+        unset($lab);
 
-        return Json::response($response, ['data' => $this->access->filterLabs($user, $this->labs->all())]);
+        return Json::response($response, ['data' => $labs]);
     }
 
     /**
