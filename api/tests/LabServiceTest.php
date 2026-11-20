@@ -255,24 +255,34 @@ final class LabServiceTest extends TestCase
         self::assertSame(3, $starts[0]['payload']['serial']);
     }
 
-    public function testLegacySampleLabParses(): void
+    public function testLegacyLabRoundTrip(): void
     {
-        $fixture = dirname(__DIR__, 2) . '/labs/Featured/Cisco/Basic/STP.unl';
-        if (!is_file($fixture)) {
-            self::markTestSkipped('legacy lab fixture is not present');
+        $nodes = '';
+        $networks = '';
+        for ($index = 1; $index <= 5; $index++) {
+            $networks .= '<network id="' . $index . '" type="bridge" name="Net-' . $index . '"/>';
+            $nodes .= '<node id="' . $index . '" name="R' . $index . '" type="iol" template="iol"'
+                . ' image="/var/lib/teralab/images/iol/' . $index . '/l3.bin" ethernet="1">'
+                . '<interface id="0" name="Ethernet0/0" type="ethernet" network_id="' . $index . '"/>'
+                . '<config>hostname R' . $index . '</config>'
+                . '</node>';
         }
+        $xml = '<?xml version="1.0" encoding="UTF-8"?><lab name="Legacy Round Trip" id="legacy-rt" version="1">'
+            . '<topology><nodes>' . $nodes . '</nodes><networks>' . $networks . '</networks></topology></lab>';
 
-        $lab = $this->parser->parse($fixture);
-        self::assertSame('STP', $lab['name']);
-        self::assertGreaterThanOrEqual(5, count($lab['node_list']));
+        $lab = $this->parser->parseXml($xml);
+        self::assertSame('legacy', $lab['format']);
+        self::assertCount(5, $lab['node_list']);
+        self::assertCount(5, $lab['network_list']);
         self::assertArrayHasKey('interfaces', $lab['node_list'][0]);
-        self::assertNotSame([], $lab['network_list']);
+        self::assertSame('hostname R1', $lab['node_list'][0]['config']);
 
-        $xml = $this->writer->write($lab);
-        $round = $this->parser->parseXml($xml);
-        self::assertSame(count($lab['node_list']), count($round['node_list']));
-        self::assertSame($lab['node_list'][0]['name'], $round['node_list'][0]['name']);
-        self::assertSame($lab['node_list'][0]['interfaces'][0]['network_id'], $round['node_list'][0]['interfaces'][0]['network_id']);
+        $round = $this->parser->parseXml($this->writer->write($lab));
+        self::assertCount(count($lab['node_list']), $round['node_list']);
+        self::assertSame('R1', $round['node_list'][0]['name']);
+        self::assertSame('1', $round['node_list'][0]['interfaces'][0]['network_id']);
+        self::assertSame('hostname R1', $round['node_list'][0]['config']);
+        self::assertStringNotContainsString('/var/lib/teralab', $this->writer->write($lab));
     }
 
     public function testFiftyNodeLabParsesWithinBudget(): void

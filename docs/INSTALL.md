@@ -69,11 +69,11 @@ production.
 
 ## First run
 
-1. Open `http://<host>/` or call `GET /api/v2/health`.
+1. Open `http://<host>/ui/` or call `GET /api/v2/health`.
 2. Create the administrator once with `POST /api/v2/setup`.
 3. Log in with the session cookie and use `/api/v2/labs` to create/start labs.
 
-4. Open the new UI at `http://<host>/ui/` (the legacy jQuery UI remains at `/`).
+4. Open the UI at `http://<host>/ui/`.
 5. Upload qcow2/ISO/IOL/Dynamips files on the Images page, then pick them in
    the node inspector. Custom YAML templates live in `/etc/teralab/templates`.
 

@@ -69,7 +69,7 @@ for file in "${files[@]}"; do
 	case "$file" in
 		docs/*)
 			case "$file" in
-				docs/README.md|docs/INSTALL.md|docs/UPGRADE.md|docs/API.md|docs/AGENT.md|docs/SECURITY.md|docs/UX.md|docs/RELEASE-NOTES.md|docs/CHANGELOG.md|docs/SBOM.md|docs/UX-BENCHMARK.md|docs/LAB-FORMAT.md|docs/openapi.yaml)
+				docs/README.md|docs/INSTALL.md|docs/UPGRADE.md|docs/API.md|docs/AGENT.md|docs/SECURITY.md|docs/UX.md|docs/RELEASE-NOTES.md|docs/CHANGELOG.md|docs/SBOM.md|docs/LAB-FORMAT.md|docs/openapi.yaml)
 					;;
 				*)
 					printf 'unapproved documentation path: %s\n' "$file" >&2
@@ -83,9 +83,9 @@ for file in "${files[@]}"; do
 	# Everything must live under a known product/tooling directory or be a
 	# known root file.
 	case "$file" in
-		html/*|wrappers/*|scripts/*|debian/*|etc/*|ovf/*|patch/*|plymouth/*|windows/*|labs/*|IOUtools/*|baseline/*|LICENSES/*|api/*|ui/*|agent/*|packaging/*|tests/*|docs/*|.github/*)
+		html/*|scripts/*|etc/*|LICENSES/*|api/*|ui/*|agent/*|packaging/*|tests/*|docs/*|.github/*)
 			;;
-		LICENSE|NOTICE|PROVENANCE.md|README|README-BASELINE.md|VERSION|TERALAB_VERSION|.gitignore)
+		LICENSE|NOTICE|PROVENANCE.md|README|VERSION|TERALAB_VERSION|.gitignore)
 			;;
 		*)
 			printf 'unexpected repository path: %s\n' "$file" >&2

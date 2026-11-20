@@ -1,50 +1,74 @@
-UNetLab is a new generation software for networking lab. It can be considered the next major version of iou-web, but the software has been rewritten from scratch. The major advantage over GNS3 and iou-web itself is about multi-hypervisor support within a single entity. UNetLab allows to design labs using IOU, Dynamips and QEMU nodes without dealing with multi virtual machines: everything run inside a UNetLab host, and a lab is a single file including all information needed.
+# TeraLab
 
-LICENSE
+TeraLab is a self-hosted network lab platform. It designs, runs and saves
+topologies built from QEMU, Cisco IOL, Dynamips and VPCS nodes, with a Vue
+web UI, a PHP API and a Go agent that owns the engine processes.
 
-- UNetLab is licensed under the GNU GPLv3 until 1.0.2-1 (https://github.com/dainok/unetlab).
-- UNetLab is licensed under the BSD-new license from 1.0.2-2 (https://github.com/dainok/unetlab).
-- Dynamips is licensed under the GNU GPLv2 (https://github.com/GNS3/dynamips/blob/v0.2.10/README).
-- IOUTools is licensed under the GNU GPLv2 (https://github.com/ehlers/IOUtools/blob/master/LICENSE).
-- Linux is licensed under the GNU GPLv2 (https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/tree/COPYING?id=refs/tags/v4.0).
-- QEMU is licensed under the GNU GPLv2 (http://wiki.qemu.org/License).
-- Slim Framework is provided "AS IS" (https://github.com/slimphp/Slim/blob/master/LICENSE).
-- EJS - JavaScript Templates is licensed under the MIT License "AS IS" (https://code.google.com/archive/p/embeddedjavascript/ and https://opensource.org/licenses/mit-license.php)
+TeraLab is derived from UNetLab 1.0.2-2 and is licensed AGPL-3.0-or-later.
+See `PROVENANCE.md`, `NOTICE` and `LICENSES/` for the lineage and the
+third-party licences.
 
-UNetLab includes QEMU 2.4.0 (default), 2.0.2 (for nsvpx and win templates) and QEMU 1.3.1 (for IPS) configured and compiled with the following line:
-./configure --prefix=/opt/qemu --target-list="i386-softmmu x86_64-softmmu" --enable-sdl --enable-vnc --disable-xen --enable-curses --enable-kvm --enable-uuid --audio-drv-list="alsa oss"
+## Requirements
 
-For QEMU 0.13, must:
-- manually add to Makefile and Makefile.target: 
-    LIBS+=-lz -lrt -lm
-- add to qemu-common.h the following lines:
-    #define BIT(n) (1 << (n))
-    #define BITS(n, m) (((0xffffffffU << (31 - n)) >> (31 - n + m)) << m)
+- Debian 13 (trixie) with Apache 2.4 and PHP 8.4 (`pdo_sqlite`, `mbstring`)
+- Go 1.22+ to build the agent
+- Node 20+ to build the web UI
+- QEMU/KVM (`qemu-system-x86_64`, `qemu-img`)
 
-QEMU for ESXi has been modified. See the patch for more information.
+Cisco IOL and Dynamips are separate programs: TeraLab never redistributes
+vendor images, IOS files or IOU/`iourc` credentials. Users supply those.
 
-Kernel has been patched and recompiled to allow LLDP and LACP frames been forwarded by linux bridges. Patch has been provided by Bernhard Thaler (http://lists.linuxfoundation.org/pipermail/bridge/2015-January/009291.html).
-Here the commands:
+## Install
 
-# apt-get upgrade linux-generic-lts-utopic linux-headers-generic-lts-utopic linux-image-generic-lts-utopic
-# apt-get build-dep linux-image-$(uname -r) fakeroot libncurses5-dev
-# apt-get source linux-image-$(uname -r)
-# cd /usr/src/linux-lts-utopic-3.16.0
-# patch -p0 < /usr/src/unetlab/patch/linux-lts-utopic-3.16.0.patch
+```sh
+sudo packaging/teralab/install.sh
+```
 
-# cp -a /usr/share/kernel-package/examples/etc/kernel/postinst.d/force-build-link /etc/kernel/postinst.d/
-# cp -a /usr/share/kernel-package/examples/etc/kernel/postrm.d/force-build-link /etc/kernel/postrm.d/
-# make-kpkg clean
-# fakeroot make-kpkg -j4 --initrd --append-to-version=-unetlab kernel-image kernel-headers
+The installer is idempotent, keeps `/etc/teralab` and `/var/lib/teralab`,
+and is the supported upgrade path. See `docs/INSTALL.md` and
+`docs/UPGRADE.md`.
 
+## Layout
 
-# chmod a+x debian/scripts/*
-# chmod a+x debian/scripts/misc/*
-# fakeroot debian/rules clean
-# fakeroot debian/rules editconfigs
-# fakeroot debian/rules binary-headers binary-generic
+| Path | Purpose |
+|---|---|
+| `api/` | PHP 8.4 Slim API (v2 plus the v1 compatibility adapter) |
+| `agent/` | Go agent: engines, port mapping, console gateway |
+| `ui/` | Vue 3 + Vite web UI |
+| `html/` | Document root: Vue build, templates, icons and the About page |
+| `packaging/` | Installer and the separate Dynamips package build |
+| `scripts/` | CI, release and development gates |
+| `tests/` | Shared CI configuration |
+| `docs/` | Published user documentation |
 
-nsenter is compiled from util-linux-2.27-rc1.tar.gz:
-./configure --enable-static
-make
+## Tests
 
+```sh
+cd api && composer test && composer stan
+cd agent && go test ./...
+cd ui && npm test && npm run build
+```
+
+Release gates:
+
+```sh
+./scripts/teralab-project-init.sh --check
+./scripts/check-artifact-policy.sh
+./scripts/check-licence-headers.sh
+./scripts/check-secrets.sh
+```
+
+## Documentation
+
+- `docs/INSTALL.md` — installation and first-run setup
+- `docs/API.md` — API quick reference; `docs/openapi.yaml` — OpenAPI draft
+- `docs/LAB-FORMAT.md` — the portable `.unl` lab format and EVE-NG import
+- `docs/AGENT.md` — agent protocol and engine behaviour
+- `docs/SECURITY.md` — security model
+- `docs/SBOM.md` — dependency inventory
+
+## Licence
+
+TeraLab code is AGPL-3.0-or-later. Files derived from UNetLab 1.0.2-2 remain
+BSD-3-Clause with their original notices. QEMU, Dynamips, IOUtools and the
+Linux kernel are separate GPLv2 components and are not linked into this work.

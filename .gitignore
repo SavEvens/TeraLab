@@ -49,8 +49,6 @@ crashlytics-build.properties
 # Created by .ignore support plugin (hsz.mobi)
 
 # TeraLab local/runtime artifacts
-/baseline/*.log
-/baseline/bootstrap.log
 /vendor/
 /node_modules/
 /.env
