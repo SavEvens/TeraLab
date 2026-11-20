@@ -46,14 +46,11 @@ func (m *Manager) Reconcile() (ReconcileResult, error) {
 		}
 	}
 
-	liveTaps := map[string]bool{}
+	keep := m.liveLinks("")
 	liveNodes := map[string]bool{}
 	m.mu.Lock()
 	for _, node := range m.nodes {
 		liveNodes[node.Spec.ID] = true
-		for _, tap := range node.Taps {
-			liveTaps[tap] = true
-		}
 	}
 	m.mu.Unlock()
 
@@ -132,7 +129,7 @@ func (m *Manager) Reconcile() (ReconcileResult, error) {
 		}
 	}
 
-	stale, cleanupErr := m.net.CleanupStale(liveTaps)
+	stale, cleanupErr := m.net.CleanupStale(keep)
 	if cleanupErr != nil {
 		note(cleanupErr)
 	}

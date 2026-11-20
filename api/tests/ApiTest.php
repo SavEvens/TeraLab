@@ -174,7 +174,7 @@ final class ApiTest extends TestCase
 
         $status = $this->request('GET', '/api/status', [], [], $legacyCookie);
         self::assertSame(200, $status->getStatusCode());
-        self::assertSame('1.5.1', $this->json($status)['data']['version']);
+        self::assertSame('1.5.2', $this->json($status)['data']['version']);
 
         $folders = $this->request('GET', '/api/folders', [], [], $legacyCookie);
         self::assertSame(200, $folders->getStatusCode());

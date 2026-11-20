@@ -49,6 +49,10 @@ final class Phase1ApiTest extends TestCase
                 return [200, '{"ok":true,"result":{"bridges":{"0":"tl-test-bridge-0"}}}'];
             }
             if ($path === '/v1/node.start') {
+                if (str_ends_with((string) ($payload['id'] ?? ''), '-boom')) {
+                    return [400, '{"ok":false,"error":{"code":"start_failed","message":"node is already running"}}'];
+                }
+
                 return [200, json_encode([
                     'ok' => true,
                     'result' => ['id' => $payload['id'] ?? '', 'state' => 'running'],
@@ -194,10 +198,10 @@ final class Phase1ApiTest extends TestCase
     {
         $version = $this->request('GET', '/api/v2/version');
         self::assertSame(200, $version->getStatusCode());
-        self::assertSame('1.5.1', $this->json($version)['version']);
+        self::assertSame('1.5.2', $this->json($version)['version']);
         self::assertSame('AGPL-3.0-or-later', $this->json($version)['license']);
         $health = $this->request('GET', '/api/v2/health');
-        self::assertSame('1.5.1', $this->json($health)['version']);
+        self::assertSame('1.5.2', $this->json($health)['version']);
     }
 
     public function testSnapshotsAndBulkNodeActions(): void
@@ -358,6 +362,29 @@ final class Phase1ApiTest extends TestCase
         foreach (['lab.create', 'lab.start', 'lab.stop'] as $expected) {
             self::assertContains($expected, $actions);
         }
+    }
+
+    public function testFailedNodeActionIsAudited(): void
+    {
+        $create = $this->request('POST', '/api/v2/labs', [
+            'name' => 'Node Audit Lab',
+            'nodes' => [['id' => 'boom', 'name' => 'PC1', 'type' => 'vpcs', 'interfaces' => []]],
+        ], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(201, $create->getStatusCode(), (string) $create->getBody());
+        $lab = $this->json($create)['data'];
+
+        $start = $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/boom/start', [], [], $this->adminCookie, $this->adminCsrf);
+        self::assertSame(400, $start->getStatusCode(), (string) $start->getBody());
+
+        $statement = $this->pdo->prepare('SELECT result, details_json FROM audit_log WHERE action = :action AND target = :target');
+        $statement->execute([':action' => 'lab.node.start', ':target' => $lab['id']]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        self::assertIsArray($row);
+        self::assertSame('error', $row['result']);
+        $details = json_decode((string) $row['details_json'], true);
+        self::assertIsArray($details);
+        self::assertSame('boom', $details['node']);
+        self::assertStringContainsString('already running', (string) $details['message']);
     }
 
     /**

@@ -1,0 +1,41 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# Allow forwarded IP traffic between TeraLab lab bridges.
+#
+# On a Docker host the br_netfilter module is loaded and
+# net.bridge.bridge-nf-call-iptables=1, so bridged IPv4 frames are handed to
+# iptables. Docker's default FORWARD policy is DROP with accept rules only for
+# docker0, which silently drops traffic between TeraLab lab bridges. ARP and
+# CDP are not IPv4 and pass, so interfaces stay up/up and CDP works while ping
+# fails.
+#
+# TeraLab names every lab bridge with a "tl" prefix, so one rule scoped to
+# "tl+" (tl followed by one or more characters) covers the labs and leaves the
+# docker0 rules untouched. The rule is inserted once and is idempotent.
+set -eu
+
+if ! command -v iptables >/dev/null 2>&1; then
+	# Hosts without iptables (or without br_netfilter) need no rule.
+	exit 0
+fi
+
+add_rule() {
+	family="$1"
+	if "$family" -C FORWARD -i tl+ -o tl+ -j ACCEPT 2>/dev/null; then
+		return 0
+	fi
+	if "$family" -I FORWARD 1 -i tl+ -o tl+ -j ACCEPT; then
+		printf 'teralab-firewall: allowed forwarded IP traffic between tl* lab bridges (%s)\n' "$family"
+	else
+		printf 'teralab-firewall: could not add the %s FORWARD rule\n' "$family" >&2
+		return 1
+	fi
+}
+
+add_rule iptables
+# IPv6 is best effort: a host may ship ip6tables without using IPv6 at all.
+if command -v ip6tables >/dev/null 2>&1; then
+	add_rule ip6tables || true
+fi

@@ -41,7 +41,8 @@ if command -v shellcheck >/dev/null 2>&1; then
 		scripts/dev-vm.sh \
 		scripts/setup-runtime-paths.sh \
 		packaging/dynamips/build.sh \
-		packaging/teralab/install.sh
+		packaging/teralab/install.sh \
+		packaging/teralab/teralab-firewall
 fi
 
 if [ "$MODE" = "--full" ]; then

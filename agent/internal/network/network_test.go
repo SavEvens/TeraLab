@@ -142,7 +142,7 @@ func TestCleanupLabOnlyTouchesThatLab(t *testing.T) {
 		}
 	}
 
-	removed, err := manager.CleanupLab("lab-1")
+	removed, err := manager.CleanupLab("lab-1", nil)
 	if err != nil {
 		t.Fatalf("cleanup lab: %v", err)
 	}
@@ -151,6 +151,36 @@ func TestCleanupLabOnlyTouchesThatLab(t *testing.T) {
 	}
 	if hasCall(*calls, "ip", "link", "delete", second) {
 		t.Fatal("another lab's bridge must not be removed")
+	}
+}
+
+func TestCleanupLabKeepsRequestedLinks(t *testing.T) {
+	manager, calls := testManager(t)
+	bridge := BridgeName("lab-1", "0")
+	tap := TapName("lab-1", "node-1", 0)
+	stale := BridgeName("lab-1", "1")
+	other := BridgeName("lab-2", "0")
+	for _, name := range []string{bridge, tap, stale, other} {
+		if err := os.MkdirAll(filepath.Join(manager.SysClassNet, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	keep := map[string]bool{bridge: true, tap: true}
+	removed, err := manager.CleanupLab("lab-1", keep)
+	if err != nil {
+		t.Fatalf("cleanup lab: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != stale {
+		t.Fatalf("unexpected removed links: %v", removed)
+	}
+	for _, name := range []string{bridge, tap, other} {
+		if hasCall(*calls, "ip", "link", "delete", name) {
+			t.Fatalf("link %s must not be removed: %+v", name, *calls)
+		}
+	}
+	if !hasCall(*calls, "ip", "link", "delete", stale) {
+		t.Fatalf("unkept lab link was not removed: %+v", *calls)
 	}
 }
 

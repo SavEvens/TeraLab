@@ -2,7 +2,7 @@
 // Copyright (C) 2026 TeraLab contributors
 
 import { describe, expect, it } from 'vitest'
-import { buildEdges, defaultPortName, firstFreePort, nextNetworkId, nodeFromLab, portLabel, toPayload, usedNetworks } from '../src/topology'
+import { buildEdges, defaultPortName, firstFreePort, nextNetworkId, nodeControls, nodeFromLab, portLabel, toPayload, usedNetworks } from '../src/topology'
 
 const labNode = (id, network) => ({
   id: String(id),
@@ -124,5 +124,18 @@ describe('topology helpers', () => {
     expect(built.edges[0].type).toBe('link')
     expect(built.edges[0].data.sourcePort).toBe('e0/2')
     expect(built.edges[0].data.targetPort).toBe('eth7')
+  })
+
+  it('offers only stop for a running node', () => {
+    expect(nodeControls('running')).toEqual({ start: false, stop: true, wipe: false })
+  })
+
+  it('offers start and wipe for a stopped node', () => {
+    expect(nodeControls('stopped')).toEqual({ start: true, stop: false, wipe: true })
+  })
+
+  it('keeps every control when the node state is unknown', () => {
+    expect(nodeControls('unknown')).toEqual({ start: true, stop: true, wipe: true })
+    expect(nodeControls(undefined)).toEqual({ start: true, stop: true, wipe: true })
   })
 })

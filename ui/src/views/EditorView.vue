@@ -200,7 +200,7 @@ import PictureNode from '../components/PictureNode.vue'
 import { api } from '../api'
 import { notify, progress, dismiss } from '../stores/toasts'
 import { openConsole, consoleState } from '../stores/consoles'
-import { buildEdges, defaultPortName } from '../topology'
+import { buildEdges, defaultPortName, nodeControls } from '../topology'
 import { session } from '../stores/session'
 
 const props = defineProps({ id: { type: String, required: true } })
@@ -242,6 +242,7 @@ const showSnapshots = ref(false)
 const snapshots = ref([])
 const snapshotName = ref('')
 const bulkAction = ref('start')
+const nodeStates = ref({})
 const contextMenu = ref(null)
 const zoom = computed(() => Math.round(((viewport.value?.zoom ?? 1)) * 100))
 const consoleOpen = computed(() => consoleState.tabs.length > 0)
@@ -341,6 +342,18 @@ function rebuildEdges() {
   for (const [id, networkId] of built.networks) edgeNetworks.set(id, networkId)
 }
 
+async function loadNodeStates() {
+  try {
+    const response = await api.labNodes(props.id)
+    const entries = (response?.data?.nodes || []).map((node) => [String(node.node_id), node.state])
+    nodeStates.value = Object.fromEntries(entries)
+  } catch {
+    // Node state is advisory. Forget what we had so the menus fall back to
+    // offering every control instead of trusting a stale snapshot.
+    nodeStates.value = {}
+  }
+}
+
 async function load() {
   loading.value = true
   suppressWatch = true
@@ -354,6 +367,7 @@ async function load() {
     rebuildEdges()
     templates.value = (await api.templates()).data
     images.value = (await api.images()).data
+    await loadNodeStates()
     savedAt.value = new Date()
     dirty.value = false
   } catch (exception) {
@@ -660,19 +674,28 @@ async function deleteSnapshot(snapshot) {
 }
 
 async function runBulk() {
-  const nodesToRun = getSelectedNodes.value.length ? getSelectedNodes.value : (selected.value ? [selected.value] : [])
-  if (!nodesToRun.length) return
-  for (const node of nodesToRun) {
-    try {
-      if (bulkAction.value === 'start') await api.labNodeStart(props.id, node.data.id)
-      if (bulkAction.value === 'stop') await api.labNodeStop(props.id, node.data.id)
-      if (bulkAction.value === 'wipe') await api.labNodeWipe(props.id, node.data.id)
-    } catch (exception) {
-      notify('error', `${node.data.name}: ${exception.message}`)
-      return
-    }
+  const candidates = getSelectedNodes.value.length ? getSelectedNodes.value : (selected.value ? [selected.value] : [])
+  if (!candidates.length) return
+  const nodesToRun = candidates.filter((node) => nodeControls(nodeStates.value[String(node.data.id)])[bulkAction.value])
+  if (!nodesToRun.length) {
+    notify('info', 'No matching nodes to ' + bulkAction.value)
+    return
   }
-  notify('success', `${bulkAction.value} requested for ${nodesToRun.length} node(s)`)
+  try {
+    for (const node of nodesToRun) {
+      try {
+        if (bulkAction.value === 'start') await api.labNodeStart(props.id, node.data.id)
+        if (bulkAction.value === 'stop') await api.labNodeStop(props.id, node.data.id)
+        if (bulkAction.value === 'wipe') await api.labNodeWipe(props.id, node.data.id)
+      } catch (exception) {
+        notify('error', `${node.data.name}: ${exception.message}`)
+        return
+      }
+    }
+    notify('success', `${bulkAction.value} requested for ${nodesToRun.length} node(s)`)
+  } finally {
+    await loadNodeStates()
+  }
 }
 
 function menuPosition(event) {
@@ -709,7 +732,13 @@ async function nodeControl(action, node) {
     if (action === 'wipe') await api.labNodeWipe(props.id, node.data.id)
     notify('success', `${action} requested for ${node.data.name}`)
   } catch (exception) {
-    notify('error', exception.message)
+    if (/already running/i.test(exception.message || '')) {
+      notify('error', `${node.data.name} is already running`)
+    } else {
+      notify('error', exception.message)
+    }
+  } finally {
+    await loadNodeStates()
   }
 }
 
@@ -735,10 +764,11 @@ function openNodeMenu(payload) {
   const engine = node.type === 'lab'
   const items = []
   if (engine) {
+    const controls = nodeControls(nodeStates.value[String(node.data.id)])
     items.push({ label: 'Open console', action: () => openNodeConsole(node) })
-    items.push({ label: 'Start node', action: () => nodeControl('start', node) })
-    items.push({ label: 'Stop node', action: () => nodeControl('stop', node) })
-    items.push({ label: 'Wipe node', action: () => nodeControl('wipe', node) })
+    if (controls.start) items.push({ label: 'Start node', action: () => nodeControl('start', node) })
+    if (controls.stop) items.push({ label: 'Stop node', action: () => nodeControl('stop', node) })
+    if (controls.wipe) items.push({ label: 'Wipe node', action: () => nodeControl('wipe', node) })
     items.push({ label: 'Add link…', action: () => openLinkDialog(node.id), disabled: linkNodes.value.length < 2 })
     items.push({ separator: true })
   }
@@ -881,6 +911,7 @@ async function run(action) {
             window.clearInterval(poll)
             dismiss(id)
             notify(job.state === 'succeeded' ? 'success' : 'error', `${action} ${job.state}`)
+            loadNodeStates()
           }
         } catch {
           window.clearInterval(poll)
@@ -889,6 +920,7 @@ async function run(action) {
       }, 500)
     } else {
       notify('success', `${action} requested`)
+      loadNodeStates()
     }
   } catch (exception) {
     notify('error', exception.message)

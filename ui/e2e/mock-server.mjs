@@ -27,6 +27,9 @@ export function startMockServer(port = 8099) {
   let images = []
   let snapshots = []
   let tokens = []
+  // Per-node runtime state exposed by GET /labs/{id}/nodes. lab1 has one node
+  // already running (Start is hidden) and one stopped (Start and Wipe shown).
+  const nodeStates = { lab1: { 1: 'running', 2: 'stopped' } }
   let settings = { timezone: 'UTC', session_ttl: 3600, max_upload_bytes: 33554432, console_default: 'telnet' }
   let lab = {
     id: 'lab1',
@@ -102,6 +105,7 @@ export function startMockServer(port = 8099) {
       lab.network_list = Array.from({ length: 10 }, (_, index) => ({ id: String(index), name: `Net-${index}`, type: 'bridge' }))
       lab.nodes = 50
       lab.networks = 10
+      nodeStates.lab1 = {}
       return send(response, 200, { ok: true })
     }
     if (request.method === 'POST' && path === '/__large') {
@@ -124,10 +128,11 @@ export function startMockServer(port = 8099) {
       lab.network_list = Array.from({ length: 10 }, (_, index) => ({ id: String(index), name: `Net-${index}`, type: 'bridge' }))
       lab.nodes = 100
       lab.networks = 10
+      nodeStates.lab1 = {}
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.1' })
-    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.1', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
+    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.2' })
+    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.2', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       return send(response, 200, {
@@ -186,6 +191,25 @@ export function startMockServer(port = 8099) {
     if (path === '/api/v2/labs/lab1' && request.method === 'GET') {
       return send(response, 200, { data: lab })
     }
+    const nodesMatch = /^\/api\/v2\/labs\/([^/]+)\/nodes$/.exec(path)
+    if (request.method === 'GET' && nodesMatch) {
+      const labId = decodeURIComponent(nodesMatch[1])
+      const states = nodeStates[labId] || {}
+      const nodeList = labId === 'lab1' ? lab.node_list : []
+      return send(response, 200, {
+        status: 'success',
+        data: {
+          lab_id: labId,
+          nodes: nodeList.map((node) => ({
+            node_id: String(node.id),
+            agent_id: `agent-${labId}`,
+            name: node.name || String(node.id),
+            type: node.type || 'qemu',
+            state: states[String(node.id)] || (lab.running ? 'running' : 'stopped')
+          }))
+        }
+      })
+    }
     if (path === '/api/v2/labs/lab1' && request.method === 'PUT') {
       const input = await body(request)
       if (conflict) {
@@ -213,6 +237,9 @@ export function startMockServer(port = 8099) {
         running: action === 'start',
         running_nodes: action === 'start' ? lab.node_list.length : 0
       }
+      for (const node of lab.node_list) {
+        nodeStates.lab1[String(node.id)] = action === 'start' ? 'running' : 'stopped'
+      }
       return send(response, 202, { status: 'success', job_id: 'job1', data: { lab_id: 'lab1', [action]: [] } })
     }
     if (path === '/api/v2/jobs/job1') {
@@ -238,7 +265,11 @@ export function startMockServer(port = 8099) {
       snapshots = []
       return send(response, 200, { status: 'success' })
     }
-    if (path === '/api/v2/labs/lab1/nodes/1/start' || path === '/api/v2/labs/lab1/nodes/1/stop' || path === '/api/v2/labs/lab1/nodes/1/wipe') {
+    const nodeControlMatch = /^\/api\/v2\/labs\/([^/]+)\/nodes\/([^/]+)\/(start|stop|wipe)$/.exec(path)
+    if (request.method === 'POST' && nodeControlMatch) {
+      const [, labId, nodeId, action] = nodeControlMatch
+      const states = nodeStates[labId] || (nodeStates[labId] = {})
+      states[decodeURIComponent(nodeId)] = action === 'start' ? 'running' : 'stopped'
       return send(response, 200, { status: 'success', data: { state: 'ok' } })
     }
     if (path === '/api/v2/system/host') {
