@@ -78,6 +78,7 @@ privileged Go agent. The web tier never launches QEMU itself.
 | `GET` | `/api/v2/engines` | Engine availability |
 | `GET` | `/api/v2/images` | List images |
 | `POST` | `/api/v2/images` | Upload an image (multipart `file`) |
+| `POST` | `/api/v2/images/import` | Admin: scan/adopt a legacy addons tree (`/opt/unetlab/addons`) |
 | `GET` | `/api/v2/images/{id}` | Image metadata |
 | `DELETE` | `/api/v2/images/{id}` | Delete an unused image |
 
@@ -92,6 +93,18 @@ agent's `qemu-img`, hashed with SHA-256, and moved into
 `/var/lib/teralab/images/<kind>/<id>/` with a `meta.json`. Identical content is
 idempotent. Invalid uploads never create a database row, and deleting an image
 that a running node uses is refused.
+
+`POST /api/v2/images/import` (administrator only) adopts images that already
+exist on the host. With `dry_run: true` it scans `root` (default
+`/opt/unetlab/addons`, layout `qemu/<folder>/`, `iol/bin/*.bin`,
+`dynamips/*.image|*.bin`) and reports references, template suggestions, and
+unreadable or duplicate files. A real import creates a symlink inside
+`/var/lib/teralab/images/<kind>/<id>/` that points at the existing file,
+registers the row with `external = 1`, and never copies or moves the addon.
+`iourc` and licence files are never registered. The same workflow is
+available offline as root with
+`packaging/teralab/import-legacy.php --legacy-addons[=/opt/unetlab/addons]`
+(`--legacy-db` becomes optional when `--legacy-addons` is used).
 
 `nodes/console` returns `kind` (`telnet` or `vnc`) and `ws_path`. For VNC it
 also returns the generated VNC `password` for the browser client.

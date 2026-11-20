@@ -211,6 +211,91 @@ final class ImageStoreTest extends TestCase
         self::assertDirectoryDoesNotExist(dirname((string) $image['path']));
     }
 
+    public function testQuotaExcludesLinkedImages(): void
+    {
+        $config = new Config(
+            root: $this->root,
+            dataDir: $this->root . '/data',
+            dbPath: $this->root . '/data/database.sdb',
+            labsDir: $this->root . '/labs',
+            cookieSecure: false,
+            sessionTtl: 3600,
+            environment: 'test',
+            agentSocket: $this->root . '/data/agent.sock',
+            agentSecretFile: $this->root . '/data/agent.secret',
+            imagesDir: $this->root . '/data/images',
+            maxUploadBytes: 1048576,
+            imageQuotaBytes: 100,
+        );
+        $this->insertImageRow('qemu-linked', $config->imagesDir . '/qemu/qemu-linked/hda.qcow2', 1000000, 1, str_repeat('a', 64), 'linked');
+        $store = new ImageStore($config, $this->pdo, static fn (string $path): array => [
+            'format' => 'qcow2',
+            'virtual_size' => 1024,
+            'backing_file' => '',
+        ]);
+
+        $image = $store->store($this->upload("QFI\xfb" . str_repeat('b', 64), 'small.qcow2'), 'qemu', null, null);
+
+        self::assertSame(0, $image['external']);
+        self::assertCount(2, $store->all());
+    }
+
+    public function testDeleteLinkedImageRemovesRowAndLinkButKeepsTarget(): void
+    {
+        $target = $this->root . '/addons/hda.qcow2';
+        if (!is_dir(dirname($target))) {
+            mkdir(dirname($target), 0770, true);
+        }
+        file_put_contents($target, 'legacy image');
+
+        $id = 'qemu-linked';
+        $directory = $this->config->imagesDir . '/qemu/' . $id;
+        mkdir($directory, 0750, true);
+        $link = $directory . '/hda.qcow2';
+        symlink($target, $link);
+        $this->insertImageRow($id, $link, 12, 1, str_repeat('c', 64), 'csr1000vng');
+
+        $image = $this->store->find($id);
+        self::assertIsArray($image);
+        self::assertSame(1, $image['external']);
+
+        $this->store->delete($id);
+
+        self::assertNull($this->store->find($id));
+        self::assertFalse(is_link($link));
+        self::assertDirectoryDoesNotExist($directory);
+        self::assertFileExists($target);
+        self::assertSame('legacy image', file_get_contents($target));
+    }
+
+    private function insertImageRow(
+        string $id,
+        string $path,
+        int $size,
+        int $external,
+        string $sha256,
+        string $reference,
+    ): void {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO images '
+            . '(id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, created_at, external) '
+            . 'VALUES (:id, :kind, :name, :reference, :path, :sha256, :size, :virtual_size, :format, NULL, NULL, :created_at, :external)'
+        );
+        $statement->execute([
+            ':id' => $id,
+            ':kind' => 'qemu',
+            ':name' => $reference,
+            ':reference' => $reference,
+            ':path' => $path,
+            ':sha256' => $sha256,
+            ':size' => $size,
+            ':virtual_size' => $size,
+            ':format' => 'qcow2',
+            ':created_at' => time(),
+            ':external' => $external,
+        ]);
+    }
+
     private function upload(string $content, string $name): UploadedFile
     {
         $stream = (new StreamFactory())->createStream($content);

@@ -3,7 +3,7 @@
 openapi: 3.1.0
 info:
   title: TeraLab API
-  version: 1.5.3
+  version: 1.5.4
   description: |
     JSON API for TeraLab lab orchestration. State-changing requests require a
     session cookie and the `X-CSRF-Token` header returned by setup/login/me.
@@ -71,6 +71,26 @@ components:
               type: { type: string }
               network_id: { type: string }
               attributes: { type: object, additionalProperties: { type: string } }
+    Image:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [qemu, iso, iol, dynamips] }
+        name: { type: string }
+        reference: { type: string, description: "Portable image reference used by lab files" }
+        path: { type: string, description: "Absolute path inside the image store" }
+        sha256: { type: string }
+        size: { type: integer }
+        virtual_size: { type: integer }
+        format: { type: string }
+        backing_file: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        template: { type: string, nullable: true }
+        external:
+          type: integer
+          enum: [0, 1]
+          description: "1 when the store entry is a symlink to a file that stays outside the store (adopted legacy addon)"
+        created_at: { type: integer }
     Lab:
       type: object
       required: [id, name, revision]
@@ -464,7 +484,16 @@ paths:
       tags: [images]
       summary: List stored images
       responses:
-        '200': { description: Images }
+        '200':
+          description: Images
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Image' }
     post:
       tags: [images]
       summary: Upload an image with kind and optional name
@@ -482,6 +511,45 @@ paths:
       responses:
         '201': { description: Stored }
         '422': { description: Validation error }
+  /api/v2/images/import:
+    post:
+      tags: [images]
+      summary: Adopt images from a legacy addons tree (dry run or import)
+      description: |
+        Administrator only. A dry run reports every recognised image under
+        `root` (default `/opt/unetlab/addons`). An import creates a symlink
+        inside the image store for each selected file and registers it with
+        `external = 1`; nothing is copied and the source tree is never
+        modified. Licence files (`iourc`, `licence`, `license`) are never
+        registered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                root:
+                  type: string
+                  default: /opt/unetlab/addons
+                  description: Absolute path of the addons tree to scan.
+                dry_run:
+                  type: boolean
+                  default: true
+                  description: When false, `files` is required and symlinks are created.
+                files:
+                  type: array
+                  description: Relative paths under `root`; required when `dry_run` is false.
+                  items: { type: string }
+                templates:
+                  type: object
+                  description: Optional template ids keyed by relative path.
+                  additionalProperties: { type: string }
+      responses:
+        '200': { description: Dry-run entries or import results }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '422': { description: Invalid root or request body }
   /api/v2/images/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -489,7 +557,14 @@ paths:
       tags: [images]
       summary: Image metadata
       responses:
-        '200': { description: Image }
+        '200':
+          description: Image
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Image' }
     patch:
       tags: [images]
       summary: Rename an image (name and/or portable reference)

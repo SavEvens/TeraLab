@@ -30,6 +30,7 @@ final class OpenApiTest extends TestCase
         self::assertSame('TeraLab API', $this->spec['info']['title']);
         self::assertArrayHasKey('cookieAuth', $this->spec['components']['securitySchemes']);
         self::assertSame('teralab_session', $this->spec['components']['securitySchemes']['cookieAuth']['name']);
+        self::assertArrayHasKey('external', $this->spec['components']['schemas']['Image']['properties']);
     }
 
     public function testCorePathsAreDocumented(): void
@@ -50,6 +51,7 @@ final class OpenApiTest extends TestCase
             '/api/v2/nodes/console',
             '/api/v2/templates',
             '/api/v2/images',
+            '/api/v2/images/import',
             '/api/v2/jobs',
             '/api/v2/system/host',
         ] as $path) {

@@ -52,7 +52,7 @@ final class BackupService
         $this->addTree($zip, $this->config->labsDir, 'labs', '.unl');
         $this->addTree($zip, $this->config->templatesDir, 'templates', '.yaml');
         $zip->addFromString('settings.json', json_encode($this->settings->all(), JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
-        $images = $this->pdo->query('SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, template, created_at FROM images');
+        $images = $this->pdo->query('SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, template, external, created_at FROM images');
         $zip->addFromString('images.json', json_encode($images !== false ? $images->fetchAll() : [], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
         $zip->close();
         @unlink($database);
@@ -84,7 +84,7 @@ final class BackupService
             throw new HttpException(422, 'The backup archive is not a valid zip file.');
         }
 
-        $restored = ['labs' => 0, 'templates' => 0, 'images' => 0, 'settings' => false, 'database' => false];
+        $restored = ['labs' => 0, 'templates' => 0, 'images' => 0, 'images_skipped' => 0, 'settings' => false, 'database' => false];
         for ($index = 0; $index < $zip->numFiles; $index++) {
             $name = (string) $zip->getNameIndex($index);
             if (!$this->safeEntry($name)) {
@@ -105,7 +105,9 @@ final class BackupService
             if ($name === 'images.json') {
                 $images = json_decode($contents, true);
                 if (is_array($images)) {
-                    $restored['images'] = $this->restoreImages($images);
+                    $result = $this->restoreImages($images);
+                    $restored['images'] = $result['restored'];
+                    $restored['images_skipped'] = $result['skipped'];
                 }
                 continue;
             }
@@ -191,17 +193,29 @@ final class BackupService
     }
 
     /**
+     * Linked rows whose target is missing or dangling on the new host are
+     * skipped (and counted) instead of restoring a broken symlink.
+     *
      * @param list<mixed> $images
+     * @return array{restored: int, skipped: int}
      */
-    private function restoreImages(array $images): int
+    private function restoreImages(array $images): array
     {
         $count = 0;
+        $skipped = 0;
         $statement = $this->pdo->prepare(
-            'INSERT OR IGNORE INTO images (id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at) '
-            . 'VALUES (:id, :kind, :name, :path, :sha256, :size, :virtual_size, :format, :backing_file, :notes, :template, :created_at)'
+            'INSERT OR IGNORE INTO images (id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at, external) '
+            . 'VALUES (:id, :kind, :name, :path, :sha256, :size, :virtual_size, :format, :backing_file, :notes, :template, :created_at, :external)'
         );
         foreach ($images as $image) {
-            if (!is_array($image) || !isset($image['path']) || !is_string($image['path']) || !is_file($image['path'])) {
+            if (!is_array($image) || !isset($image['path']) || !is_string($image['path'])) {
+                continue;
+            }
+            $external = (int) ($image['external'] ?? 0) === 1;
+            if (!is_file($image['path'])) {
+                if ($external) {
+                    $skipped++;
+                }
                 continue;
             }
             $statement->execute([
@@ -217,10 +231,11 @@ final class BackupService
                 ':notes' => $image['notes'] ?? null,
                 ':template' => $image['template'] ?? null,
                 ':created_at' => (int) ($image['created_at'] ?? time()),
+                ':external' => $external ? 1 : 0,
             ]);
             $count++;
         }
 
-        return $count;
+        return ['restored' => $count, 'skipped' => $skipped];
     }
 }

@@ -14,6 +14,7 @@ use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
 use TeraLab\Api\Image\ImageStore;
+use TeraLab\Api\Image\LegacyAddonsImporter;
 use TeraLab\Api\Labs\LabRepository;
 
 final class ImageController
@@ -24,6 +25,7 @@ final class ImageController
         private readonly AuditLogger $audit,
         private readonly AccessService $access,
         private readonly LabRepository $labs,
+        private readonly LegacyAddonsImporter $importer,
     ) {
     }
 
@@ -43,6 +45,67 @@ final class ImageController
         }
 
         return Json::response($response, ['data' => $image]);
+    }
+
+    /**
+     * Adopt images from an existing addons tree (dry run or import).
+     */
+    public function importLegacy(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $this->access->requireRole($this->access->user($request), 'admin');
+        $body = Json::body($request);
+
+        $root = $body['root'] ?? LegacyAddonsImporter::DEFAULT_ROOT;
+        if (!is_string($root) || trim($root) === '') {
+            throw new HttpException(422, 'root must be a non-empty absolute path.');
+        }
+
+        $dryRun = $body['dry_run'] ?? true;
+        if (!is_bool($dryRun)) {
+            throw new HttpException(422, 'dry_run must be a boolean.');
+        }
+
+        $user = $request->getAttribute('user');
+        $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
+
+        if ($dryRun) {
+            return Json::response($response, [
+                'status' => 'success',
+                'data' => $this->importer->scan($root),
+            ]);
+        }
+
+        $files = $body['files'] ?? null;
+        if (!is_array($files) || $files === []) {
+            throw new HttpException(422, 'files is required when dry_run is false.');
+        }
+        $requested = [];
+        foreach ($files as $file) {
+            if (!is_string($file) || $file === '') {
+                throw new HttpException(422, 'files must be a list of relative paths.');
+            }
+            $requested[] = $file;
+        }
+
+        $templates = $body['templates'] ?? [];
+        if (!is_array($templates)) {
+            throw new HttpException(422, 'templates must be an object keyed by relative path.');
+        }
+        $overrides = [];
+        foreach ($templates as $path => $template) {
+            if (!is_string($path) || !is_string($template) || $template === '') {
+                throw new HttpException(422, 'templates must map relative paths to template ids.');
+            }
+            $overrides[$path] = $template;
+        }
+
+        $data = $this->importer->import($root, $requested, $overrides, $userId);
+        $this->audit->log($userId, $this->ip($request), 'image.import', (string) $data['root'], 'success', [
+            'root' => $data['root'],
+            'summary' => $data['summary'],
+        ]);
+
+        return Json::response($response, ['status' => 'success', 'data' => $data]);
     }
 
     public function upload(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
@@ -85,7 +148,13 @@ final class ImageController
         try {
             $status = $this->agent->status();
             foreach (($status['nodes'] ?? []) as $node) {
-                if (is_array($node) && isset($node['image']) && is_string($node['image'])) {
+                // The agent keeps stopped nodes in its map, still carrying the
+                // spec image. Only a running node holds the on-disk image, so a
+                // stopped node must not pin an otherwise unused image.
+                if (!is_array($node) || ($node['state'] ?? '') !== 'running') {
+                    continue;
+                }
+                if (isset($node['image']) && is_string($node['image'])) {
                     $nodeImages[] = $node['image'];
                 }
             }
