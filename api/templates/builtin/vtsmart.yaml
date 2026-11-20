@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# TeraLab-authored device template. Not derived from any UNetLab, EVE-NG or
+# vendor template file. Parameters follow public vendor documentation.
+schema: 1
+id: vtsmart
+name: vSmart (Viptela)
+kind: qemu
+license: AGPL-3.0-or-later
+icon: Server.png
+defaults:
+  cpu: 4
+  ram: 8192
+  ethernet: 2
+  console: telnet
+options:
+  description: 'Legacy Viptela vSmart id. Cisco small-scale controller sizing: 4 vCPU, 8 GiB RAM.'
+  qemu_arch: x86_64
+  qemu_nic: virtio-net-pci
+  qemu_options: '-machine type=pc,accel=kvm -cpu host -serial mon:stdio -nographic -no-user-config -nodefaults -rtc base=utc'
