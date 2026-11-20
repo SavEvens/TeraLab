@@ -19,6 +19,7 @@ Environment=TERALAB_AGENT_ALLOWED_UIDS=33
 Environment=TERALAB_AGENT_SOCKET_GROUP=www-data
 Environment=TERALAB_RUN_DIR=/var/lib/teralab/run
 Environment=TERALAB_IMAGES_DIR=/var/lib/teralab/images
+Environment=TERALAB_IMAGE_EXTRA_ROOTS=/opt/unetlab/addons
 Environment=TERALAB_QEMU=/usr/bin/qemu-system-x86_64
 Environment=TERALAB_QEMU_IMG=/usr/bin/qemu-img
 Environment=TERALAB_VM_USER=teralab-vm

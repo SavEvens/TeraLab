@@ -26,7 +26,8 @@ go test ./...
 | `TERALAB_AGENT_ALLOWED_UIDS` | `33` | Allowed peer UIDs, comma-separated |
 | `TERALAB_AGENT_SOCKET_GROUP` | `www-data` | Socket group |
 | `TERALAB_RUN_DIR` | `/var/lib/teralab/run` | Per-node run directories |
-| `TERALAB_IMAGES_DIR` | `/var/lib/teralab/images` | Allowed image/ISO/kernel root |
+| `TERALAB_IMAGES_DIR` | `/var/lib/teralab/images` | Primary image/ISO/kernel root |
+| `TERALAB_IMAGE_EXTRA_ROOTS` | — | Additional allowed image roots, colon-separated absolute paths (e.g. `/opt/unetlab/addons`) |
 | `TERALAB_CGROUP_ROOT` | `/sys/fs/cgroup/teralab.slice` | Per-node cgroup parent |
 | `TERALAB_DISABLE_CGROUPS` | `0` | Disable cgroup limits (dev only) |
 | `TERALAB_QEMU` | `/usr/bin/qemu-system-x86_64` | QEMU binary |
@@ -112,7 +113,13 @@ web tier exposes `/ws/vnc` as a same-origin WebSocket proxy.
 
 ## Safety
 
-- Image paths must resolve under `TERALAB_IMAGES_DIR`.
+- Image paths must resolve under `TERALAB_IMAGES_DIR` or one of
+  `TERALAB_IMAGE_EXTRA_ROOTS`. Extra roots only widen acceptance to the
+  directories an administrator configured; nothing is scanned or served from
+  them automatically. Paths are canonicalized with `EvalSymlinks` (all symlinks
+  resolved), and the resolved target must land under the primary store or an
+  allowed extra root. A symlink inside the store that aims anywhere else is
+  rejected; uploads continue to target the primary store only.
 - QEMU runs as `teralab-vm`, not root.
 - Tap names are generated from the node ID and are always `tl`-prefixed.
 - QEMU is launched with an argv array; there is no shell.

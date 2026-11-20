@@ -96,7 +96,7 @@ func (s *Spec) Normalize() {
 	}
 }
 
-func (s Spec) Validate(imagesDir string) error {
+func (s Spec) Validate(imageRoots []string) error {
 	if !idPattern.MatchString(s.ID) {
 		return errors.New("invalid node id")
 	}
@@ -135,19 +135,19 @@ func (s Spec) Validate(imagesDir string) error {
 
 	switch s.Engine {
 	case "qemu", "":
-		return s.validateQEMU(imagesDir)
+		return s.validateQEMU(imageRoots)
 	case "vpcs":
 		return s.validateVPCS()
 	case "dynamips":
-		return s.validateDynamips(imagesDir)
+		return s.validateDynamips(imageRoots)
 	case "iol":
-		return s.validateIOL(imagesDir)
+		return s.validateIOL(imageRoots)
 	default:
 		return fmt.Errorf("unsupported engine %q", s.Engine)
 	}
 }
 
-func (s Spec) validateQEMU(imagesDir string) error {
+func (s Spec) validateQEMU(imageRoots []string) error {
 	if !nicPattern.MatchString(s.NIC) {
 		return errors.New("invalid nic driver")
 	}
@@ -155,22 +155,22 @@ func (s Spec) validateQEMU(imagesDir string) error {
 		return errors.New("invalid machine type")
 	}
 	if s.Image != "" {
-		if err := validateImagePath(s.Image, imagesDir, ".qcow2"); err != nil {
+		if err := validateImagePath(s.Image, imageRoots, ".qcow2"); err != nil {
 			return err
 		}
 	}
 	if s.ISO != "" {
-		if err := validateImagePath(s.ISO, imagesDir, ".iso"); err != nil {
+		if err := validateImagePath(s.ISO, imageRoots, ".iso"); err != nil {
 			return err
 		}
 	}
 	if s.Kernel != "" {
-		if err := validateFilePath(s.Kernel, imagesDir); err != nil {
+		if err := validateFilePath(s.Kernel, imageRoots); err != nil {
 			return err
 		}
 	}
 	if s.Initrd != "" {
-		if err := validateFilePath(s.Initrd, imagesDir); err != nil {
+		if err := validateFilePath(s.Initrd, imageRoots); err != nil {
 			return err
 		}
 	}
@@ -198,7 +198,7 @@ func (s Spec) validateVPCS() error {
 	return nil
 }
 
-func (s Spec) validateDynamips(imagesDir string) error {
+func (s Spec) validateDynamips(imageRoots []string) error {
 	if !platformPattern.MatchString(s.Platform) {
 		return errors.New("invalid dynamips platform")
 	}
@@ -208,7 +208,7 @@ func (s Spec) validateDynamips(imagesDir string) error {
 	if s.Image == "" {
 		return errors.New("dynamips requires an IOS image")
 	}
-	if err := validateImagePath(s.Image, imagesDir, ".bin"); err != nil {
+	if err := validateImagePath(s.Image, imageRoots, ".bin"); err != nil {
 		return err
 	}
 	if s.RAM < 64 || s.RAM > 8192 {
@@ -226,18 +226,18 @@ func (s Spec) validateDynamips(imagesDir string) error {
 	return nil
 }
 
-func (s Spec) validateIOL(imagesDir string) error {
+func (s Spec) validateIOL(imageRoots []string) error {
 	if s.Console != "telnet" {
 		return errors.New("iol supports only a telnet console")
 	}
 	if s.Image == "" {
 		return errors.New("iol requires an image")
 	}
-	if err := validateImagePath(s.Image, imagesDir, ".bin"); err != nil {
+	if err := validateImagePath(s.Image, imageRoots, ".bin"); err != nil {
 		return err
 	}
 	if s.Iourc != "" {
-		if err := validateFilePath(s.Iourc, imagesDir); err != nil {
+		if err := validateFilePath(s.Iourc, imageRoots); err != nil {
 			return err
 		}
 	}
@@ -258,8 +258,8 @@ func (s Spec) MAC(index int) string {
 	return fmt.Sprintf("52:54:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3])
 }
 
-func validateImagePath(path, root, extension string) error {
-	resolved, err := resolveFile(path, root)
+func validateImagePath(path string, roots []string, extension string) error {
+	resolved, err := resolveFile(path, roots)
 	if err != nil {
 		return err
 	}
@@ -270,13 +270,17 @@ func validateImagePath(path, root, extension string) error {
 	return nil
 }
 
-func validateFilePath(path, root string) error {
-	_, err := resolveFile(path, root)
+func validateFilePath(path string, roots []string) error {
+	_, err := resolveFile(path, roots)
 
 	return err
 }
 
-func resolveFile(path, root string) (string, error) {
+// resolveFile canonicalizes path and accepts it only when its resolved target
+// lands under one of the approved roots. Roots that do not exist are inert, as
+// long as at least one root resolves; prefix lookalikes never match because the
+// comparison is relative to the resolved root.
+func resolveFile(path string, roots []string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", errors.New("invalid file path")
@@ -285,19 +289,45 @@ func resolveFile(path, root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("file does not exist: %w", err)
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", fmt.Errorf("image root does not exist: %w", err)
+	var rootErr error
+	resolvedRoots := 0
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			if rootErr == nil {
+				rootErr = fmt.Errorf("image root does not exist: %w", err)
+			}
+			continue
+		}
+		resolvedRoots++
+		if pathWithinRoot(resolvedRoot, resolved) {
+			info, statErr := os.Stat(resolved)
+			if statErr != nil || info.IsDir() {
+				return "", errors.New("file path is not a regular file")
+			}
+
+			return resolved, nil
+		}
 	}
-	if resolved != resolvedRoot && !strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator)) {
-		return "", errors.New("file path is outside the image root")
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || info.IsDir() {
-		return "", errors.New("file path is not a regular file")
+	if resolvedRoots == 0 && rootErr != nil {
+		return "", rootErr
 	}
 
-	return resolved, nil
+	return "", errors.New("file path is outside the image root")
+}
+
+// pathWithinRoot reports whether target is root itself or a descendant of root.
+// Both arguments must already be absolute and symlink-resolved.
+func pathWithinRoot(root, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
 }
 
 func randomUUID() string {

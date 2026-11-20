@@ -98,7 +98,7 @@ func NewManager(cfg config.Config, logger *slog.Logger) *Manager {
 // Start validates a node spec and launches the matching engine.
 func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	spec.Normalize()
-	if err := spec.Validate(m.cfg.ImagesDir); err != nil {
+	if err := spec.Validate(m.cfg.ImageRoots()); err != nil {
 		return NodeInfo{}, err
 	}
 	if m.cfg.VMUID == 0 && !m.cfg.AllowRootVM {

@@ -123,3 +123,96 @@ func TestResolveUnderRejectsEscape(t *testing.T) {
 		t.Fatal("outside path accepted")
 	}
 }
+
+func TestResolveUnderAny(t *testing.T) {
+	base := t.TempDir()
+	store := filepath.Join(base, "images")
+	extra := filepath.Join(base, "addons")
+	outside := filepath.Join(base, "elsewhere")
+	for _, dir := range []string{store, extra, outside} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeImage := func(dir, name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("qcow2"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		return path
+	}
+	storeDisk := writeImage(store, "disk.qcow2")
+	extraDisk := writeImage(extra, "hda.qcow2")
+	outsideDisk := writeImage(outside, "hda.qcow2")
+	if err := os.Symlink(extraDisk, filepath.Join(store, "adopted.qcow2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDisk, filepath.Join(store, "escape.qcow2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDisk, filepath.Join(extra, "escape.qcow2")); err != nil {
+		t.Fatal(err)
+	}
+
+	approved := []string{store, extra}
+	cases := []struct {
+		name string
+		path string
+		want string
+		err  bool
+	}{
+		{name: "primary store", path: storeDisk, want: storeDisk},
+		{name: "extra root", path: extraDisk, want: extraDisk},
+		{name: "store link to extra root", path: filepath.Join(store, "adopted.qcow2"), want: extraDisk},
+		{name: "outside all roots", path: outsideDisk, err: true},
+		{name: "store link escaping all roots", path: filepath.Join(store, "escape.qcow2"), err: true},
+		{name: "extra root link escaping all roots", path: filepath.Join(extra, "escape.qcow2"), err: true},
+		{name: "missing target", path: filepath.Join(store, "absent.qcow2"), err: true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			resolved, err := ResolveUnderAny(testCase.path, approved)
+			if testCase.err {
+				if err == nil {
+					t.Fatalf("expected %q to be rejected", testCase.path)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolve failed: %v", err)
+			}
+			if resolved != testCase.want {
+				t.Fatalf("want %q, got %q", testCase.want, resolved)
+			}
+		})
+	}
+}
+
+func TestResolveUnderStaysSingleRoot(t *testing.T) {
+	base := t.TempDir()
+	store := filepath.Join(base, "images")
+	extra := filepath.Join(base, "addons")
+	for _, dir := range []string{store, extra} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	extraDisk := filepath.Join(extra, "hda.qcow2")
+	if err := os.WriteFile(extraDisk, []byte("qcow2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(store, "adopted.qcow2")
+	if err := os.Symlink(extraDisk, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ResolveUnder(link, store); err == nil {
+		t.Fatal("ResolveUnder must keep rejecting targets outside its single root")
+	}
+	if resolved, err := ResolveUnder(link, extra); err != nil || resolved != extraDisk {
+		t.Fatalf("ResolveUnder(extra) failed: %q %v", resolved, err)
+	}
+}

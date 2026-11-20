@@ -33,7 +33,7 @@ func testSpec(t *testing.T) (Spec, string) {
 
 func TestSpecNormalizeAndValidate(t *testing.T) {
 	spec, images := testSpec(t)
-	if err := spec.Validate(images); err != nil {
+	if err := spec.Validate([]string{images}); err != nil {
 		t.Fatalf("validation failed: %v", err)
 	}
 	if spec.Console != "telnet" {
@@ -64,7 +64,7 @@ func TestSpecRejectsImageOutsideRoot(t *testing.T) {
 	}
 	spec.Normalize()
 
-	if err := spec.Validate(images); err == nil {
+	if err := spec.Validate([]string{images}); err == nil {
 		t.Fatal("expected image outside root to be rejected")
 	}
 }
@@ -72,19 +72,19 @@ func TestSpecRejectsImageOutsideRoot(t *testing.T) {
 func TestSpecRejectsInvalidBridgeAndConsole(t *testing.T) {
 	spec, images := testSpec(t)
 	spec.Networks[0] = "this-bridge-name-is-too-long"
-	if err := spec.Validate(images); err == nil {
+	if err := spec.Validate([]string{images}); err == nil {
 		t.Fatal("expected invalid bridge to be rejected")
 	}
 
 	spec, images = testSpec(t)
 	spec.Console = "spice"
-	if err := spec.Validate(images); err == nil {
+	if err := spec.Validate([]string{images}); err == nil {
 		t.Fatal("expected unsupported console to be rejected")
 	}
 
 	spec, images = testSpec(t)
 	spec.Console = "vnc"
-	if err := spec.Validate(images); err != nil {
+	if err := spec.Validate([]string{images}); err != nil {
 		t.Fatalf("expected vnc console to be accepted: %v", err)
 	}
 }
@@ -134,7 +134,7 @@ func TestBuildQEMUArgsUsesISO(t *testing.T) {
 	}
 	spec := Spec{ID: "node-iso", Name: "ISO", ISO: iso}
 	spec.Normalize()
-	if err := spec.Validate(images); err != nil {
+	if err := spec.Validate([]string{images}); err != nil {
 		t.Fatalf("validation failed: %v", err)
 	}
 
@@ -208,19 +208,19 @@ func TestFreeVNCDisplayIsUnique(t *testing.T) {
 func TestVPCSValidation(t *testing.T) {
 	spec := Spec{ID: "pc-1", Name: "PC1", Engine: "vpcs", Ethernet: 1, Networks: []string{"br0"}}
 	spec.Normalize()
-	if err := spec.Validate(t.TempDir()); err != nil {
+	if err := spec.Validate([]string{t.TempDir()}); err != nil {
 		t.Fatalf("expected vpcs spec to validate: %v", err)
 	}
 
 	spec.Console = "vnc"
-	if err := spec.Validate(t.TempDir()); err == nil {
+	if err := spec.Validate([]string{t.TempDir()}); err == nil {
 		t.Fatal("expected vpcs vnc console to be rejected")
 	}
 
 	spec.Console = "telnet"
 	spec.Ethernet = 2
 	spec.Networks = []string{"br0", "br1"}
-	if err := spec.Validate(t.TempDir()); err == nil {
+	if err := spec.Validate([]string{t.TempDir()}); err == nil {
 		t.Fatal("expected multi-nic vpcs to be rejected")
 	}
 }
@@ -243,7 +243,7 @@ func TestDynamipsValidationAndArgs(t *testing.T) {
 		Networks: []string{"br0", "br1"},
 	}
 	spec.Normalize()
-	if err := spec.Validate(images); err != nil {
+	if err := spec.Validate([]string{images}); err != nil {
 		t.Fatalf("expected dynamips spec to validate: %v", err)
 	}
 	if len(spec.Slots) != 2 {
@@ -270,7 +270,7 @@ func TestDynamipsValidationAndArgs(t *testing.T) {
 	}
 
 	spec.Platform = "not-a-platform"
-	if err := spec.Validate(images); err == nil {
+	if err := spec.Validate([]string{images}); err == nil {
 		t.Fatal("expected invalid platform to be rejected")
 	}
 }
@@ -284,7 +284,7 @@ func TestIOLValidationAndArgs(t *testing.T) {
 
 	spec := Spec{ID: "iol1", Name: "IOL1", Engine: "iol", Image: image}
 	spec.Normalize()
-	if err := spec.Validate(images); err != nil {
+	if err := spec.Validate([]string{images}); err != nil {
 		t.Fatalf("expected iol spec to validate: %v", err)
 	}
 	args, err := BuildIOLArgs(spec, 7, false)
@@ -326,5 +326,99 @@ func TestIOLValidationAndArgs(t *testing.T) {
 	netmap := buildNETMAP([][2]int{{10001, 20001}, {10002, 20002}})
 	if netmap != "10001:127.0.0.1:20001\n10002:127.0.0.1:20002\n" {
 		t.Fatalf("unexpected netmap: %q", netmap)
+	}
+}
+
+func TestSpecImageRoots(t *testing.T) {
+	base := t.TempDir()
+	store := filepath.Join(base, "images")
+	extra := filepath.Join(base, "addons")
+	outside := filepath.Join(base, "elsewhere")
+	lookalike := store + "-evil"
+	missing := filepath.Join(base, "missing-addons")
+	for _, dir := range []string{store, extra, outside, lookalike} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeImage := func(dir, name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("qcow2"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		return path
+	}
+	storeDisk := writeImage(store, "disk.qcow2")
+	extraDisk := writeImage(extra, "hda.qcow2")
+	outsideDisk := writeImage(outside, "hda.qcow2")
+	lookalikeDisk := writeImage(lookalike, "hda.qcow2")
+	makeLink := func(target, dir, name string) string {
+		t.Helper()
+		link := filepath.Join(dir, name)
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+
+		return link
+	}
+	storeLinkToExtra := makeLink(extraDisk, store, "adopted.qcow2")
+	storeEscape := makeLink(outsideDisk, store, "escape.qcow2")
+	extraEscape := makeLink(outsideDisk, extra, "escape.qcow2")
+
+	approved := []string{store, extra}
+	cases := []struct {
+		name    string
+		image   string
+		roots   []string
+		wantErr string
+	}{
+		{name: "primary store image", image: storeDisk, roots: approved},
+		{name: "extra root image", image: extraDisk, roots: approved},
+		{name: "store link to extra root", image: storeLinkToExtra, roots: approved},
+		{name: "missing extra root is inert", image: storeDisk, roots: []string{store, missing}},
+		{name: "extra root not approved", image: extraDisk, roots: []string{store}, wantErr: "outside the image root"},
+		{name: "outside all roots", image: outsideDisk, roots: approved, wantErr: "outside the image root"},
+		{name: "prefix lookalike", image: lookalikeDisk, roots: []string{store}, wantErr: "outside the image root"},
+		{name: "store link escaping all roots", image: storeEscape, roots: approved, wantErr: "outside the image root"},
+		{name: "extra root link escaping all roots", image: extraEscape, roots: approved, wantErr: "outside the image root"},
+		{name: "missing image", image: filepath.Join(store, "absent.qcow2"), roots: approved, wantErr: "file does not exist"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			spec := Spec{ID: "node-1", Name: "R1", Image: testCase.image}
+			spec.Normalize()
+			err := spec.Validate(testCase.roots)
+			if testCase.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validation failed: %v", err)
+				}
+
+				return
+			}
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", testCase.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestSpecImageRootsRequiresPrimaryRoot(t *testing.T) {
+	image := filepath.Join(t.TempDir(), "disk.qcow2")
+	if err := os.WriteFile(image, []byte("qcow2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := Spec{ID: "node-1", Name: "R1", Image: image}
+	spec.Normalize()
+	if err := spec.Validate(nil); err == nil {
+		t.Fatal("expected image to be rejected without an approved root")
+	}
+	if err := spec.Validate([]string{filepath.Join(t.TempDir(), "absent")}); err == nil {
+		t.Fatal("expected missing image root to be reported")
 	}
 }
