@@ -6,7 +6,7 @@ declare(strict_types=1);
 
 $version = trim((string) @file_get_contents(dirname(__DIR__) . '/TERALAB_VERSION'));
 if ($version === '') {
-    $version = '1.5.3';
+    $version = '1.5.4';
 }
 ?><!DOCTYPE html>
 <html lang="en">
