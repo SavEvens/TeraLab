@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/config"
@@ -292,12 +293,21 @@ func readJSON(request *http.Request, destination any) error {
 }
 
 func writeJSON(writer http.ResponseWriter, status int, payload apiResponse) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		// The payload types are plain structs; this only triggers on a bug.
+		body = []byte(`{"ok":false,"error":{"code":"encode_failed","message":"cannot encode response"}}`)
+		status = http.StatusInternalServerError
+	}
+	body = append(body, '\n')
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
+	// Set the length explicitly: writing the header before the body makes the
+	// Go server use chunked encoding for large payloads, which the Unix-socket
+	// PHP client does not decode.
+	writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	writer.WriteHeader(status)
-	if err := json.NewEncoder(writer).Encode(payload); err != nil {
-		return
-	}
+	_, _ = writer.Write(body)
 }
 
 func writeError(writer http.ResponseWriter, status int, code, message string) {
