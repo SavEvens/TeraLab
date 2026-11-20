@@ -26,7 +26,6 @@
         <span>Components</span>
         <ul class="engine-list">
           <li v-for="component in info.components || []" :key="component.name">
-            <span class="dot" :class="{ ok: !component.separate }"></span>
             <strong>{{ component.name }}</strong>
             <small>{{ component.license }}</small>
           </li>
