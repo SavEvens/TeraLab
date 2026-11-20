@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 TeraLab contributors
 #
-# Install TeraLab v1.4.0 on a Debian 13 host.
+# Install TeraLab v1.4.1 on a Debian 13 host.
 #
 # The installer never overwrites configuration, the database, labs, or images.
 # It is safe to re-run and is the supported upgrade path from v1.1.
@@ -56,6 +56,21 @@ command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 is requir
 command -v qemu-img >/dev/null || { echo "qemu-img is required" >&2; exit 1; }
 php -r 'exit(PHP_VERSION_ID >= 80400 ? 0 : 1);' || { echo "PHP 8.4+ is required" >&2; exit 1; }
 php -m | grep -qx sqlite3 || { echo "php sqlite3 is required" >&2; exit 1; }
+
+# Image uploads (IOL/Dynamips/ISO/qcow2) need limits above the 2M PHP default.
+for sapi in apache2 fpm cli; do
+	php_conf="/etc/php/8.4/$sapi/conf.d"
+	if [ -d "$php_conf" ]; then
+		cat > "$php_conf/99-teralab-uploads.ini" <<'PHPINI'
+; TeraLab image uploads
+upload_max_filesize = 4G
+post_max_size = 4G
+memory_limit = 512M
+max_execution_time = 300
+max_input_time = 300
+PHPINI
+	fi
+done
 
 if [ ! -d "$SOURCE/api" ]; then
 	printf 'source tree not found: %s\n' "$SOURCE" >&2
@@ -162,6 +177,15 @@ if [ "$INSTALL_SYSTEMD" -eq 1 ] && command -v systemctl >/dev/null; then
 	install -m 0644 "$ROOT/agent/systemd/teralab-agent.service" /etc/systemd/system/teralab-agent.service
 	systemctl daemon-reload
 	systemctl enable --now teralab-agent.service
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+	if systemctl is-active --quiet apache2 2>/dev/null; then
+		systemctl reload apache2 || true
+	fi
+	if systemctl is-active --quiet php8.4-fpm 2>/dev/null; then
+		systemctl reload php8.4-fpm || true
+	fi
 fi
 
 printf 'TeraLab installed at %s\n' "$ROOT"

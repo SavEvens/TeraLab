@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Installing TeraLab v1.4.0
+# Installing TeraLab v1.4.1
 
 TeraLab targets Debian 13 with PHP 8.4 and QEMU 10. QEMU, Dynamips, IOL, and
 the kernel remain separate components with their own licences.
@@ -16,6 +16,11 @@ the kernel remain separate components with their own licences.
 - Node 20+ and npm (to build the Vue UI; prebuilt `ui/dist` is used when present)
 - Apache 2.4 with `mod_proxy`, `mod_proxy_wstunnel`, and `mod_rewrite`
 - Optional: `openvswitch-switch` for LACP forwarding
+
+PHP upload limits must exceed your largest image. The installer writes
+`/etc/php/8.4/{apache2,fpm,cli}/conf.d/99-teralab-uploads.ini` with
+`upload_max_filesize = 4G` and `post_max_size = 4G`. Without this, PHP silently
+drops the multipart body and the API reports that no file was received.
 - Optional: `teralab-dynamips` for the Dynamips engine
 
 ## Install
@@ -84,6 +89,21 @@ There are no default accounts, no telemetry, and no `setcap` usage.
   `sudo apt-get install cmake libelf-dev libpcap-dev && packaging/dynamips/build.sh`
   then `sudo dpkg -i dist/teralab-dynamips_*.deb`. A licensed IOS image is
   required and is never bundled.
+
+## Image upload troubleshooting
+
+IOL/Dynamips images are commonly 100–300 MB. If an upload immediately fails with
+“A multipart file field is required”, check the effective PHP limits:
+
+```sh
+php -i | grep -E 'upload_max_filesize|post_max_size'          # CLI
+curl -s http://127.0.0.1/api/v2/system/settings | jq .data    # app limit
+```
+
+The installer sets 4G for Apache mod_php, PHP-FPM, and CLI. Re-run
+`packaging/teralab/install.sh` after upgrading, or edit the
+`99-teralab-uploads.ini` files and restart Apache/PHP-FPM. The app-level limit
+is configurable in System → Settings (`max_upload_bytes`, default 2 GiB).
 
 ## Smoke test
 

@@ -3,6 +3,31 @@
 
 # TeraLab release notes
 
+# TeraLab v1.4.1 release notes
+
+- Release date: 2026-11-19
+- Previous release: v1.4.0
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Fixes
+
+- **Large image uploads**: the installer now writes
+  `upload_max_filesize = 4G`, `post_max_size = 4G`, and related limits for
+  Apache mod_php, PHP-FPM, and CLI. Previously PHP discarded uploads above the
+  2 MB/8 MB defaults before TeraLab saw them.
+- **App upload default**: `max_upload_bytes` now defaults to 2 GiB instead of
+  32 MiB, configurable in System → Settings.
+- **Actionable errors**: when a multipart body is dropped by PHP, image,
+  template, and lab uploads return 413 explaining which PHP limits to raise
+  instead of “A multipart file field is required”.
+
+## Validation
+
+- A real 244 MB IOL image uploaded through `/api/v2/images` with HTTP 201 in
+  6.4 s, was listed with its SHA-256, and was deleted cleanly.
+- PHP: 62 tests / 728 assertions; PHPStan level 6.
+- Release gate and CI green.
+
 # TeraLab v1.4.0 release notes
 
 - Release date: 2026-11-19

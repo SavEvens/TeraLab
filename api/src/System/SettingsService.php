@@ -15,7 +15,7 @@ final class SettingsService
     public const DEFAULTS = [
         'timezone' => 'UTC',
         'session_ttl' => 3600,
-        'max_upload_bytes' => 33554432,
+        'max_upload_bytes' => 2147483648,
         'console_default' => 'telnet',
     ];
 
