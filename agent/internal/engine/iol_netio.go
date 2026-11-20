@@ -35,9 +35,12 @@ func packIOUAppID(id int) uint16 {
 	return uint16(id & 0x7ff)
 }
 
+// iolPortByte encodes an interface index the way Cisco IOL numbers ports:
+// four ports per adapter, the port in the high nibble and the adapter in the
+// low nibble (Ethernet0/0 = 0x00, Ethernet0/1 = 0x10, Ethernet1/0 = 0x01).
 func iolPortByte(index int) byte {
-	bay := index / 16
-	unit := index % 16
+	bay := index / 4
+	unit := index % 4
 
 	return byte(bay | unit<<4)
 }
@@ -46,7 +49,7 @@ func iolInterfaceIndex(port byte) int {
 	bay := int(port & 0x0f)
 	unit := int(port >> 4)
 
-	return bay*16 + unit
+	return bay*4 + unit
 }
 
 func buildIOUHeader(dstID, dstPort, srcID, srcPort int) []byte {
@@ -179,12 +182,14 @@ func (r *iolNetioRelay) Close() error {
 
 var _ io.Closer = (*iolNetioRelay)(nil)
 
-// iolNetmapLine renders one NETMAP segment pairing the IOL node with the relay.
+// iolNetmapLine renders one NETMAP segment pairing the IOL node with the
+// relay. IOL addresses ports as adapter/port with four ports per adapter.
 func iolNetmapLine(appID, peerID, index int) string {
-	bay := index / 16
-	unit := index % 16
+	bay := index / 4
+	unit := index % 4
+	port := strconv.Itoa(bay) + "/" + strconv.Itoa(unit)
 
-	return strconv.Itoa(appID) + ":0/" + strconv.Itoa(unit) +
-		"   " + strconv.Itoa(peerID) + ":0/" + strconv.Itoa(unit) +
-		"  /* " + strconv.Itoa(bay) + "/" + strconv.Itoa(unit) + " */"
+	return strconv.Itoa(appID) + ":" + port +
+		"   " + strconv.Itoa(peerID) + ":" + port +
+		"  /* " + port + " */"
 }

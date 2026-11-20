@@ -43,14 +43,17 @@
         <label>Serial ports
           <input type="number" min="0" max="8" :value="node.data.serial || 0" @input="update('serial', Number($event.target.value))" />
         </label>
+        <label v-if="node.data.kind === 'iol'">NVRAM (KiB)
+          <input type="number" min="64" max="4096" :value="node.data.nvram || 512" @input="update('nvram', Number($event.target.value))" />
+        </label>
       </div>
       <label>Image
         <select :value="node.data.image" @change="update('image', $event.target.value)">
           <option value="">—</option>
-          <option v-if="node.data.image && !imagesFor(node.data.kind).some((image) => image.path === node.data.image)" :value="node.data.image">
-            {{ node.data.image }}
+          <option v-if="node.data.image && !hasReference(node.data.image, node.data.kind)" :value="node.data.image">
+            ⚠ {{ node.data.image }} (unmapped)
           </option>
-          <option v-for="image in imagesFor(node.data.kind)" :key="image.id" :value="image.path">
+          <option v-for="image in imagesFor(node.data.kind)" :key="image.id" :value="image.reference">
             {{ image.name }} ({{ image.format || image.kind }})
           </option>
         </select>
@@ -58,10 +61,10 @@
       <label v-if="node.data.kind === 'qemu'">ISO
         <select :value="node.data.iso" @change="update('iso', $event.target.value)">
           <option value="">—</option>
-          <option v-if="node.data.iso && !imagesFor('iso').some((image) => image.path === node.data.iso)" :value="node.data.iso">
-            {{ node.data.iso }}
+          <option v-if="node.data.iso && !hasReference(node.data.iso, 'iso')" :value="node.data.iso">
+            ⚠ {{ node.data.iso }} (unmapped)
           </option>
-          <option v-for="image in imagesFor('iso')" :key="image.id" :value="image.path">
+          <option v-for="image in imagesFor('iso')" :key="image.id" :value="image.reference">
             {{ image.name }} ({{ image.format || image.kind }})
           </option>
         </select>
@@ -89,6 +92,10 @@ const emit = defineEmits(['update', 'delete', 'console', 'config', 'ports', 'tem
 
 function imagesFor(kind) {
   return props.images.filter((image) => image.kind === kind)
+}
+
+function hasReference(value, kind) {
+  return imagesFor(kind).some((image) => image.reference === value)
 }
 
 function update(key, value) {

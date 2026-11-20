@@ -16,8 +16,11 @@ func TestIOLPortEncoding(t *testing.T) {
 			t.Fatalf("port round-trip failed for %d: %d", index, got)
 		}
 	}
-	if iolPortByte(0) != 0x00 || iolPortByte(1) != 0x10 || iolPortByte(16) != 0x01 {
-		t.Fatalf("unexpected port bytes: %x %x %x", iolPortByte(0), iolPortByte(1), iolPortByte(16))
+	if iolPortByte(0) != 0x00 || iolPortByte(1) != 0x10 || iolPortByte(3) != 0x30 {
+		t.Fatalf("unexpected port bytes: %x %x %x", iolPortByte(0), iolPortByte(1), iolPortByte(3))
+	}
+	if iolPortByte(4) != 0x01 || iolPortByte(5) != 0x11 || iolPortByte(15) != 0x33 {
+		t.Fatalf("unexpected adapter mapping: %x %x %x", iolPortByte(4), iolPortByte(5), iolPortByte(15))
 	}
 }
 
@@ -59,5 +62,9 @@ func TestIOLNetmapLine(t *testing.T) {
 	line := iolNetmapLine(846, 134, 3)
 	if !strings.HasPrefix(line, "846:0/3") || !strings.Contains(line, "134:0/3") {
 		t.Fatalf("unexpected netmap line: %s", line)
+	}
+	line = iolNetmapLine(846, 134, 4)
+	if !strings.HasPrefix(line, "846:1/0") || !strings.Contains(line, "134:1/0") {
+		t.Fatalf("unexpected second-adapter netmap line: %s", line)
 	}
 }

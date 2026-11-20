@@ -15,6 +15,7 @@ use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Labs\LabLocks;
 use TeraLab\Api\Labs\LabService;
 use TeraLab\Api\Labs\UnlParser;
+use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Labs\UnlWriter;
 
 final class LabServiceTest extends TestCase
@@ -108,6 +109,7 @@ final class LabServiceTest extends TestCase
 
     public function testStartMapsNetworksAndNodes(): void
     {
+        $this->registerImage('base.qcow2');
         $service = $this->service();
         $lab = $service->create([
             'name' => 'Start Lab',
@@ -165,9 +167,49 @@ final class LabServiceTest extends TestCase
         $export = $service->export((string) $lab['id']);
         self::assertStringContainsString('type="text"', $export['xml']);
         self::assertStringContainsString('name="Notes"', $export['xml']);
-        self::assertStringContainsString('<config>hostname PC1', $export['xml']);
+        self::assertStringContainsString(base64_encode("hostname PC1\n"), $export['xml']);
+        self::assertStringNotContainsString('<node id="2"', $export['xml']);
         $parsed = $this->parser->parseXml($export['xml']);
-        self::assertSame("hostname PC1\n", $parsed['node_list'][1]['config']);
+        $engine = null;
+        foreach ($parsed['node_list'] as $parsedNode) {
+            if (($parsedNode['type'] ?? '') !== 'text') {
+                $engine = $parsedNode;
+            }
+        }
+        self::assertIsArray($engine);
+        self::assertSame("hostname PC1\n", $engine['config']);
+    }
+
+    public function testImportNormalisesLegacyPathsAndWritesPortableFormat(): void
+    {
+        $service = $this->service();
+        $xml = (string) file_get_contents(__DIR__ . '/fixtures/legacy-lab.unl');
+        $lab = $service->import($this->upload($xml, 'legacy.unl'), 'tester');
+
+        self::assertSame('teralab-2', $lab['format']);
+        $export = $service->export((string) $lab['id'])['xml'];
+        self::assertStringNotContainsString('/var/lib/teralab', $export);
+        self::assertStringContainsString('image="x86_64.bin"', $export);
+        self::assertStringContainsString(base64_encode("hostname R1\n!"), $export);
+        self::assertStringContainsString('<config id="1">', $export);
+    }
+
+    public function testImportEveNgReportsWarningsAndPreservesObjects(): void
+    {
+        $service = $this->service();
+        $xml = (string) file_get_contents(__DIR__ . '/fixtures/eve-ng-lab.unl');
+        $lab = $service->import($this->upload($xml, 'eve.unl'), 'tester');
+
+        self::assertSame('teralab-2', $lab['format']);
+        $types = array_column($lab['warnings'], 'type');
+        self::assertContains('image_unmapped', $types);
+        self::assertContains('network_unsupported', $types);
+        self::assertContains('interface_gap', $types);
+
+        $export = $service->export((string) $lab['id'])['xml'];
+        self::assertStringContainsString('<configsets>', $export);
+        self::assertStringContainsString('type="pnet0"', $export);
+        self::assertDoesNotMatchRegularExpression('/<node[^>]*type="text"/', $export);
     }
 
     public function testDeleteMovesToTrashAndRestore(): void
@@ -196,6 +238,7 @@ final class LabServiceTest extends TestCase
         $node['nic'] = 'virtio-net-pci';
         $node['serial'] = 3;
         $node['template'] = 'linux';
+        $this->registerImage('router.qcow2');
         $service = $this->service();
         $lab = $service->create(['name' => 'NIC Lab', 'networks' => [['id' => '0']], 'nodes' => [$node]]);
 
@@ -249,6 +292,26 @@ final class LabServiceTest extends TestCase
 
         self::assertCount(50, $parsed['node_list']);
         self::assertLessThan(1.5, $elapsed, '50-node lab parse must stay under 1.5s');
+    }
+
+    private function registerImage(string $reference): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO images (id, kind, name, reference, path, sha256, size, virtual_size, format, created_at) '
+            . 'VALUES (:id, :kind, :name, :reference, :path, :sha256, :size, :virtual_size, :format, :created_at)'
+        );
+        $statement->execute([
+            ':id' => 'img-' . substr(hash('sha256', $reference), 0, 16),
+            ':kind' => 'qemu',
+            ':name' => $reference,
+            ':reference' => $reference,
+            ':path' => $this->config->imagesDir . '/qemu/' . $reference,
+            ':sha256' => hash('sha256', $reference),
+            ':size' => 1,
+            ':virtual_size' => 1,
+            ':format' => 'qcow2',
+            ':created_at' => time(),
+        ]);
     }
 
     /**
@@ -308,7 +371,7 @@ final class LabServiceTest extends TestCase
             return [200, '{"ok":true,"result":{}}'];
         });
 
-        return new LabService($this->config, $this->parser, $this->writer, $agent, new LabLocks($this->pdo));
+        return new LabService($this->config, $this->parser, $this->writer, $agent, new LabLocks($this->pdo), new ImageReferences($this->pdo, $this->config));
     }
 
     private function upload(string $content, string $name): UploadedFile

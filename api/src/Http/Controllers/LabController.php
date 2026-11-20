@@ -51,6 +51,7 @@ final class LabController
     {
         $user = $this->access->user($request);
         $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->service->present($lab);
         $lab['lock'] = $this->locks->current((string) $lab['id']);
 
         return Json::response($response, ['data' => $lab]);
@@ -105,7 +106,11 @@ final class LabController
         $lab = $this->service->import($file, $this->author($request), (string) $user['id']);
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.import', (string) $lab['id'], 'success');
 
-        return Json::response($response, ['status' => 'success', 'data' => $lab], 201);
+        return Json::response($response, [
+            'status' => 'success',
+            'data' => $lab,
+            'meta' => ['warnings' => $lab['warnings'] ?? []],
+        ], 201);
     }
 
     /**

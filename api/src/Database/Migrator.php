@@ -25,9 +25,11 @@ final class Migrator
             . 'version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)'
         );
 
-        $files = glob($this->directory . '/*.sql');
-        if ($files === false) {
-            throw new RuntimeException('Cannot read the migrations directory.');
+        $files = [];
+        foreach (['*.sql', '*.php'] as $pattern) {
+            foreach (glob($this->directory . '/' . $pattern) ?: [] as $file) {
+                $files[] = $file;
+            }
         }
         sort($files);
 
@@ -38,14 +40,23 @@ final class Migrator
                 continue;
             }
 
-            $sql = file_get_contents($file);
-            if ($sql === false) {
-                throw new RuntimeException('Cannot read migration ' . $version . '.');
-            }
-
             $this->pdo->beginTransaction();
             try {
-                $this->pdo->exec($sql);
+                if (str_ends_with($version, '.php')) {
+                    // PHP migrations return a callable(PDO): void so data
+                    // backfills can use the application's helpers.
+                    $migration = require $file;
+                    if (!is_callable($migration)) {
+                        throw new RuntimeException('Migration ' . $version . ' did not return a callable.');
+                    }
+                    $migration($this->pdo);
+                } else {
+                    $sql = file_get_contents($file);
+                    if ($sql === false) {
+                        throw new RuntimeException('Cannot read migration ' . $version . '.');
+                    }
+                    $this->pdo->exec($sql);
+                }
                 $statement = $this->pdo->prepare(
                     'INSERT INTO schema_migrations (version, applied_at) VALUES (:version, :applied_at)'
                 );

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- EVE-NG-shaped fixture written for the parser tests (no lab content copied). -->
+<lab name="EVE Lab" id="eve-lab" version="1" scripttimeout="300" countdown="0" linkwidth="2" lock="0" grid="1" sat="-1" author="Lab Author">
+  <description>EVE-NG fixture with base64 configs and encoded interfaces.</description>
+  <body>Notes body.</body>
+  <topology>
+    <nodes>
+      <node id="1" name="R1" type="iol" template="iol" image="x86_64_crb_linux-adventerprisek9-ms.bin" ethernet="1" nvram="1024" ram="1024" serial="0" icon="Router.png" keepalive="0" config="1" left="100" top="120">
+        <interface id="0" name="e0/0" type="ethernet" network_id="1" vid="1"/>
+        <interface id="16" name="e0/1" type="ethernet" network_id="0" vid="1"/>
+      </node>
+      <node id="2" name="PC1" type="vpcs" template="vpcs" image="" ethernet="1" config="0" left="360" top="120">
+        <interface id="0" name="eth0" type="ethernet" network_id="1"/>
+      </node>
+    </nodes>
+    <networks>
+      <network id="1" type="bridge" name="Net-1" left="220" top="120" visibility="0" icon="lan.png"/>
+      <network id="2" type="pnet0" name="Cloud" left="480" top="120" visibility="1" icon="cloud.png"/>
+    </networks>
+  </topology>
+  <objects>
+    <configs>
+      <config id="1">aG9zdG5hbWUgUjEKIQo=</config>
+    </configs>
+    <textobjects>
+      <textobject id="1" name="Note" type="text">
+        <data>PGRpdiBzdHlsZT0icG9zaXRpb246YWJzb2x1dGU7bGVmdDo2NDBweDt0b3A6NDgwcHg7Ij48cD5oZWxsbyBub3RlPC9wPjwvZGl2Pg==</data>
+      </textobject>
+    </textobjects>
+    <configsets>
+      <configset id="1" name="Extra set">
+        <config id="1">aG9zdG5hbWUgUjEKIQo=</config>
+      </configset>
+    </configsets>
+  </objects>
+</lab>

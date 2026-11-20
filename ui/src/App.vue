@@ -60,7 +60,7 @@ import ToastHost from './components/ToastHost.vue'
 
 const router = useRouter()
 const route = useRoute()
-const version = ref('1.5.0')
+const version = ref('1.5.1')
 const bare = computed(() => ['login', 'setup', 'editor'].includes(String(route.name)))
 
 async function doLogout() {

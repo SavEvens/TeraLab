@@ -15,6 +15,7 @@ use Slim\Psr7\UploadedFile;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
+use TeraLab\Api\Database\Database;
 
 final class LabApiTest extends TestCase
 {
@@ -25,6 +26,7 @@ final class LabApiTest extends TestCase
     private SlimApp $app;
     private string $cookie = '';
     private string $csrf = '';
+    private \PDO $pdo;
 
     /** @var list<array{path: string, payload: array<string, mixed>}> */
     private array $calls = [];
@@ -65,7 +67,9 @@ final class LabApiTest extends TestCase
             return [200, '{"ok":true,"result":{}}'];
         });
 
+        $this->pdo = (new Database($config))->pdo();
         $this->app = (new App($config, $agent))->create();
+        $this->registerImage('base.qcow2');
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
@@ -197,6 +201,26 @@ final class LabApiTest extends TestCase
             }
         }
         self::fail('lab not found in listing: ' . $id);
+    }
+
+    private function registerImage(string $reference): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO images (id, kind, name, reference, path, sha256, size, virtual_size, format, created_at) '
+            . 'VALUES (:id, :kind, :name, :reference, :path, :sha256, :size, :virtual_size, :format, :created_at)'
+        );
+        $statement->execute([
+            ':id' => 'img-' . substr(hash('sha256', $reference), 0, 16),
+            ':kind' => 'qemu',
+            ':name' => $reference,
+            ':reference' => $reference,
+            ':path' => $this->root . '/data/images/' . $reference,
+            ':sha256' => hash('sha256', $reference),
+            ':size' => 1,
+            ':virtual_size' => 1,
+            ':format' => 'qcow2',
+            ':created_at' => time(),
+        ]);
     }
 
     /**

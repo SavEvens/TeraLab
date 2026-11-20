@@ -3,7 +3,7 @@
 openapi: 3.1.0
 info:
   title: TeraLab API
-  version: 1.5.0
+  version: 1.5.1
   description: |
     JSON API for TeraLab lab orchestration. State-changing requests require a
     session cookie and the `X-CSRF-Token` header returned by setup/login/me.
@@ -46,16 +46,21 @@ components:
         name: { type: string }
         type: { type: string, enum: [qemu, vpcs, iol, dynamips, text, picture] }
         template: { type: string }
-        image: { type: string }
-        iso: { type: string }
+        image: { type: string, description: "Portable image reference (never a path)" }
+        iso: { type: string, description: "Portable image reference (never a path)" }
         console: { type: string, enum: [telnet, vnc] }
         cpu: { type: integer, minimum: 1 }
         ram: { type: integer, minimum: 64 }
         serial: { type: integer, minimum: 0, maximum: 8 }
+        nvram: { type: integer, minimum: 0, maximum: 4096 }
+        delay: { type: integer, minimum: 0 }
+        sat: { type: integer }
         nic: { type: string }
         config: { type: string }
         left: { type: integer }
         top: { type: integer }
+        attributes: { type: object, additionalProperties: { type: string } }
+        extra_xml: { type: array, items: { type: string } }
         interfaces:
           type: array
           items:
@@ -65,6 +70,7 @@ components:
               name: { type: string }
               type: { type: string }
               network_id: { type: string }
+              attributes: { type: object, additionalProperties: { type: string } }
     Lab:
       type: object
       required: [id, name, revision]
@@ -84,6 +90,17 @@ components:
         lock: { type: object, nullable: true }
         running: { type: boolean }
         running_nodes: { type: integer }
+        format: { type: string, enum: [legacy, eve-ng, teralab-2] }
+        warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              message: { type: string }
+              node: { type: string }
+              network: { type: string }
+              value: { type: string }
 paths:
   /api/v2/health:
     get:
@@ -217,7 +234,21 @@ paths:
               properties:
                 file: { type: string, format: binary }
       responses:
-        '201': { description: Imported }
+        '201':
+          description: Imported (legacy TeraLab, UNetLab, EVE-NG or TeraLab v2)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  data: { $ref: '#/components/schemas/Lab' }
+                  meta:
+                    type: object
+                    properties:
+                      warnings:
+                        type: array
+                        items: { type: object }
   /api/v2/labs/trash:
     get:
       tags: [labs]
@@ -461,9 +492,10 @@ paths:
         '200': { description: Image }
     patch:
       tags: [images]
-      summary: Rename an image
+      summary: Rename an image (name and/or portable reference)
       responses:
         '200': { description: Renamed }
+        '409': { description: Reference already in use }
     delete:
       tags: [images]
       summary: Delete an unreferenced image

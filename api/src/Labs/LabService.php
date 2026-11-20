@@ -11,6 +11,7 @@ use RuntimeException;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Snapshots\SnapshotRepository;
 
 final class LabService
@@ -23,6 +24,7 @@ final class LabService
         private readonly UnlWriter $writer,
         private readonly AgentClient $agent,
         private readonly LabLocks $locks,
+        private readonly ImageReferences $images,
         private readonly ?SnapshotRepository $snapshots = null,
     ) {
     }
@@ -54,7 +56,7 @@ final class LabService
         ];
 
         $path = $this->targetPath($name, null);
-        $this->write($path, $lab);
+        $lab = $this->write($path, $lab);
 
         return $this->metadata($lab, $path);
     }
@@ -95,7 +97,7 @@ final class LabService
                 $lab['attributes']['tags'] = $tags;
             }
         }
-        $this->write($path, $lab);
+        $lab = $this->write($path, $lab);
 
         return $this->metadata($lab, $path);
     }
@@ -126,7 +128,7 @@ final class LabService
         $lab['attributes']['updated_at'] = gmdate('c');
 
         $path = $this->targetPath($this->labName($lab['name']), null);
-        $this->write($path, $lab);
+        $lab = $this->write($path, $lab);
 
         return $this->metadata($lab, $path);
     }
@@ -170,7 +172,7 @@ final class LabService
             (string) $lab['id'],
             $name,
             (int) $lab['revision'],
-            $this->writer->write($lab),
+            $this->writer->write($this->normaliseReferences($lab)),
             $userId,
         );
     }
@@ -192,7 +194,7 @@ final class LabService
         $restored['id'] = $lab['id'];
         $restored['revision'] = (int) $lab['revision'] + 1;
         $restored['attributes']['updated_at'] = gmdate('c');
-        $this->write($path, $restored);
+        $restored = $this->write($path, $restored);
 
         return $this->metadata($restored, $path);
     }
@@ -228,7 +230,7 @@ final class LabService
         $lab['attributes']['updated_at'] = gmdate('c');
 
         $path = $this->targetPath($this->slug((string) $lab['name']), null);
-        $this->write($path, $lab);
+        $lab = $this->write($path, $lab);
 
         return $this->metadata($lab, $path);
     }
@@ -255,7 +257,7 @@ final class LabService
         if ($ownerId !== null && !isset($lab['attributes']['owner'])) {
             $lab['attributes']['owner'] = $ownerId;
         }
-        $this->write($path, $lab);
+        $lab = $this->write($path, $lab);
         if ($oldPath !== $path) {
             @unlink($oldPath);
         }
@@ -651,7 +653,7 @@ final class LabService
                 continue;
             }
             if ((string) $lab['id'] === $id || basename($path, '.unl') === $id) {
-                return [$lab, $path];
+                return [$this->normaliseReferences($lab), $path];
             }
         }
 
@@ -771,11 +773,21 @@ final class LabService
             $spec['machine'] = (string) $node['machine'];
         }
         $spec['serial'] = (int) ($node['serial'] ?? 0);
+        if ((int) ($node['nvram'] ?? 0) > 0) {
+            $spec['nvram'] = (int) $node['nvram'];
+        }
         if (($node['config'] ?? '') !== '') {
             $spec['config'] = (string) $node['config'];
         }
         foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {
-            $path = $this->imagePath((string) ($node[$key] ?? ''));
+            $value = (string) ($node[$key] ?? '');
+            $path = $this->imagePath($value);
+            if ($path === '' && trim($value) !== '') {
+                throw new HttpException(
+                    422,
+                    $key . ' "' . $value . '" is not available in the image store.',
+                );
+            }
             if ($path !== '') {
                 $spec[$key] = $path;
             }
@@ -787,20 +799,80 @@ final class LabService
         return $spec;
     }
 
+    /**
+     * Import/runtime warnings: unsupported engines, unmapped images and
+     * networks TeraLab cannot realise (clouds, NAT, OVS).
+     *
+     * @param array<string, mixed> $lab
+     * @return list<array<string, string>>
+     */
+    private function warningsFor(array $lab): array
+    {
+        $warnings = is_array($lab['warnings'] ?? null) ? $lab['warnings'] : [];
+        foreach ((array) ($lab['node_list'] ?? []) as $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+            $type = (string) ($node['type'] ?? 'qemu');
+            if (in_array($type, ['text', 'picture'], true)) {
+                continue;
+            }
+            if (!in_array($type, ['qemu', 'vpcs', 'iol', 'dynamips'], true)) {
+                $warnings[] = [
+                    'type' => 'node_unsupported',
+                    'node' => (string) ($node['name'] ?? $node['id'] ?? ''),
+                    'message' => 'Node type "' . $type . '" is not supported by the engine and will not start.',
+                ];
+            }
+            foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {
+                $value = (string) ($node[$key] ?? '');
+                if ($value === '' || $this->images->resolve($value) !== null) {
+                    continue;
+                }
+                $warnings[] = [
+                    'type' => 'image_unmapped',
+                    'node' => (string) ($node['name'] ?? $node['id'] ?? ''),
+                    'value' => $value,
+                    'message' => $key . ' "' . $value . '" is not mapped to a stored image.',
+                ];
+            }
+        }
+        foreach ((array) ($lab['network_list'] ?? []) as $network) {
+            if (!is_array($network)) {
+                continue;
+            }
+            $type = (string) ($network['type'] ?? 'bridge');
+            if ($type === 'bridge' || $type === '') {
+                continue;
+            }
+            $warnings[] = [
+                'type' => 'network_unsupported',
+                'network' => (string) ($network['id'] ?? ''),
+                'value' => $type,
+                'message' => 'Network "' . (string) ($network['name'] ?? $network['id'] ?? '')
+                    . '" uses type "' . $type . '"; it will run as an isolated bridge.',
+            ];
+        }
+
+        $unique = [];
+        foreach ($warnings as $warning) {
+            if (!is_array($warning)) {
+                continue;
+            }
+            $key = json_encode($warning, JSON_THROW_ON_ERROR);
+            $unique[$key] = array_map(static fn (mixed $value): string => (string) $value, $warning);
+        }
+
+        return array_values($unique);
+    }
+
     private function imagePath(string $image): string
     {
         if ($image === '') {
             return '';
         }
-        if (str_starts_with($image, '/')) {
-            return $image;
-        }
-        $candidate = $this->config->imagesDir . '/' . $image;
-        if (is_file($candidate)) {
-            return $candidate;
-        }
 
-        return $image;
+        return $this->images->resolve($image) ?? '';
     }
 
     private function agentNodeID(string $labID, string $nodeID): string
@@ -873,7 +945,25 @@ final class LabService
         $lab['tags'] = is_string($tags) && $tags !== '' ? array_values(array_filter(explode(',', $tags))) : [];
         $lab['created_at'] = $lab['attributes']['created_at'] ?? null;
         $lab['updated_at'] = $lab['attributes']['updated_at'] ?? null;
-        unset($lab['attributes'], $lab['extra_xml']);
+        $lab['format'] = (string) ($lab['format'] ?? 'legacy');
+        $lab['warnings'] = $this->warningsFor($lab);
+        unset($lab['attributes'], $lab['extra_xml'], $lab['objects_extra'], $lab['extensions']);
+
+        return $lab;
+    }
+
+    /**
+     * Client-facing view of a stored lab: portable image references, the file
+     * format and import/runtime warnings.
+     *
+     * @param array<string, mixed> $lab
+     * @return array<string, mixed>
+     */
+    public function present(array $lab): array
+    {
+        $lab = $this->normaliseReferences($lab);
+        $lab['format'] = (string) ($lab['format'] ?? 'legacy');
+        $lab['warnings'] = $this->warningsFor($lab);
 
         return $lab;
     }
@@ -881,8 +971,10 @@ final class LabService
     /**
      * @param array<string, mixed> $lab
      */
-    private function write(string $path, array $lab): void
+    private function write(string $path, array $lab): array
     {
+        $lab = $this->normaliseReferences($lab);
+        $lab['format'] = 'teralab-2';
         $directory = dirname($path);
         if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
             throw new RuntimeException('Cannot create the lab directory.');
@@ -901,6 +993,37 @@ final class LabService
             @unlink($temporary);
             throw new RuntimeException('Cannot move the lab file into place.');
         }
+
+        return $lab;
+    }
+
+    /**
+     * Lab files never contain absolute paths. Convert image/iso/kernel/initrd
+     * values to portable references, resolving known store paths.
+     *
+     * @param array<string, mixed> $lab
+     * @return array<string, mixed>
+     */
+    private function normaliseReferences(array $lab): array
+    {
+        if (!is_array($lab['node_list'] ?? null)) {
+            return $lab;
+        }
+        foreach ($lab['node_list'] as $index => $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+            foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {
+                $value = $node[$key] ?? '';
+                if (!is_string($value) || trim($value) === '') {
+                    continue;
+                }
+                $node[$key] = $this->images->portableValue($value);
+            }
+            $lab['node_list'][$index] = $node;
+        }
+
+        return $lab;
     }
 
     private function targetPath(string $name, ?string $directory): string
@@ -990,6 +1113,7 @@ final class LabService
                     'name' => (string) ($interface['name'] ?? ''),
                     'type' => (string) ($interface['type'] ?? 'ethernet'),
                     'network_id' => (string) ($interface['network_id'] ?? ''),
+                    'attributes' => $this->normalizeAttributes($interface['attributes'] ?? [], ['id', 'name', 'type', 'network_id']),
                 ];
             }
             $nodes[] = [
@@ -1012,11 +1136,19 @@ final class LabService
                 'platform' => (string) ($raw['platform'] ?? ''),
                 'nic' => (string) ($raw['nic'] ?? ''),
                 'machine' => (string) ($raw['machine'] ?? ''),
+                'nvram' => max(0, min(4096, (int) ($raw['nvram'] ?? 0))),
+                'delay' => max(0, min(3600, (int) ($raw['delay'] ?? 0))),
+                'sat' => max(-1, min(1024, (int) ($raw['sat'] ?? -1))),
                 'config' => (string) ($raw['config'] ?? ''),
                 'left' => max(0, (int) ($raw['left'] ?? 0)),
                 'top' => max(0, (int) ($raw['top'] ?? 0)),
                 'interfaces' => $interfaces,
-                'attributes' => [],
+                'extra_xml' => $this->normalizeFragments($raw['extra_xml'] ?? []),
+                'attributes' => $this->normalizeAttributes($raw['attributes'] ?? [], [
+                    'id', 'name', 'type', 'template', 'icon', 'image', 'iso', 'kernel', 'initrd', 'append',
+                    'console', 'cpu', 'ram', 'ethernet', 'nvram', 'serial', 'uuid', 'platform', 'nic',
+                    'machine', 'delay', 'sat', 'config', 'left', 'top',
+                ]),
             ];
         }
 
@@ -1044,11 +1176,70 @@ final class LabService
                 'id' => $id,
                 'name' => (string) ($raw['name'] ?? ('Net-' . $id)),
                 'type' => (string) ($raw['type'] ?? 'bridge'),
-                'attributes' => [],
+                'left' => max(0, (int) ($raw['left'] ?? 0)),
+                'top' => max(0, (int) ($raw['top'] ?? 0)),
+                'attributes' => $this->normalizeAttributes($raw['attributes'] ?? [], ['id', 'name', 'type', 'left', 'top']),
             ];
         }
 
         return $networks;
+    }
+
+    /**
+     * Preserve EVE-NG attributes the editor does not model (link styling,
+     * keepalive, qemu options, …).
+     *
+     * @param mixed $input
+     * @param list<string> $managed
+     * @return array<string, string>
+     */
+    private function normalizeAttributes(mixed $input, array $managed): array
+    {
+        if (!is_array($input)) {
+            return [];
+        }
+        $attributes = [];
+        foreach ($input as $name => $value) {
+            if (!is_string($name)
+                || preg_match('/^[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/', $name) !== 1
+                || in_array($name, $managed, true)
+                || !is_scalar($value)
+            ) {
+                continue;
+            }
+            $text = (string) $value;
+            if (strlen($text) <= 255) {
+                $attributes[$name] = $text;
+            }
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * @param mixed $input
+     * @return list<string>
+     */
+    private function normalizeFragments(mixed $input): array
+    {
+        if (!is_array($input)) {
+            return [];
+        }
+        $fragments = [];
+        foreach ($input as $xml) {
+            if (!is_string($xml) || trim($xml) === '' || strlen($xml) > 65536) {
+                continue;
+            }
+            if (stripos($xml, '<!DOCTYPE') !== false || stripos($xml, '<!ENTITY') !== false) {
+                continue;
+            }
+            $fragments[] = $xml;
+            if (count($fragments) >= 64) {
+                break;
+            }
+        }
+
+        return $fragments;
     }
 
     private function stringValue(mixed $value, string $key): string
