@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/config"
+	"github.com/creack/pty"
 )
 
 func testConsoleManager(t *testing.T) *Manager {
@@ -169,5 +170,54 @@ func TestEnsureExecutableRepairsMode(t *testing.T) {
 	}
 	if info.Mode()&0o111 == 0 {
 		t.Fatal("expected executable bit after repair")
+	}
+}
+
+func TestPTYSessionResizeSetsWindowSize(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("pty unavailable: %v", err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+
+	manager := testConsoleManager(t)
+	node := &Node{
+		Spec:        Spec{ID: "node1", Name: "R1", Engine: "qemu"},
+		PTY:         ptmx,
+		State:       "running",
+		consoleDone: make(chan struct{}),
+		subscribers: map[chan []byte]struct{}{},
+	}
+	manager.nodes["node1"] = node
+
+	session, ok := manager.AttachPTY("node1")
+	if !ok {
+		t.Fatal("attach failed")
+	}
+	defer session.Close()
+
+	if err := session.Resize(132, 43); err != nil {
+		t.Fatalf("resize: %v", err)
+	}
+
+	rows, cols, err := pty.Getsize(ptmx)
+	if err != nil {
+		t.Fatalf("get size: %v", err)
+	}
+	if cols != 132 || rows != 43 {
+		t.Fatalf("unexpected window size %dx%d, want 132x43", cols, rows)
+	}
+
+	if err := session.Resize(0, 24); err == nil {
+		t.Fatal("expected an error for an invalid size")
+	}
+}
+
+func TestPTYSessionResizeWithoutPTYIsNoOp(t *testing.T) {
+	session := &PTYSession{node: &Node{}}
+
+	if err := session.Resize(80, 24); err != nil {
+		t.Fatalf("resize without pty: %v", err)
 	}
 }

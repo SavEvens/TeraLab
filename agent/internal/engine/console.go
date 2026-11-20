@@ -4,11 +4,19 @@
 package engine
 
 import (
+	"fmt"
 	"io"
 	"sync"
+
+	"github.com/creack/pty"
 )
 
-const consoleHistoryBytes = 65536
+const (
+	consoleHistoryBytes = 65536
+
+	// pty.Winsize carries the dimensions as uint16 fields.
+	maxConsoleDimension = 65535
+)
 
 // PTYSession is a viewer attached to a node's console stream.
 type PTYSession struct {
@@ -50,6 +58,24 @@ func (s *PTYSession) Read(buffer []byte) (int, error) {
 
 func (s *PTYSession) Write(buffer []byte) (int, error) {
 	return s.writeTo.Write(buffer)
+}
+
+// Resize applies a terminal window size to the node's console pty. It is a
+// no-op when the node has no pty. Dimensions are validated before they are
+// narrowed to the uint16 fields of pty.Winsize.
+func (s *PTYSession) Resize(cols, rows int) error {
+	if cols < 1 || rows < 1 || cols > maxConsoleDimension || rows > maxConsoleDimension {
+		return fmt.Errorf("invalid console size %dx%d", cols, rows)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.node == nil || s.node.PTY == nil {
+		return nil
+	}
+
+	return pty.Setsize(s.node.PTY, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 }
 
 func (s *PTYSession) Close() error {

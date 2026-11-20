@@ -6,6 +6,7 @@ package system
 import (
 	"context"
 	"io/fs"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ type Status struct {
 	OS          string            `json:"os"`
 	Arch        string            `json:"arch"`
 	CPUs        int               `json:"cpus"`
+	CPUUsage    float64           `json:"cpu_usage_percent"`
 	Running     int               `json:"running"`
 	Nodes       []engine.NodeInfo `json:"nodes"`
 	Engines     []EngineStatus    `json:"engines"`
@@ -41,6 +43,7 @@ type Status struct {
 func Collect(ctx context.Context, cfg config.Config, manager *engine.Manager) Status {
 	hostname, _ := os.Hostname()
 
+	usage := cpuUsage(ctx, procStatPath)
 	load1, load5, load15 := loadAverage()
 	free, total := diskUsage(cfg.ImagesDir)
 
@@ -51,6 +54,7 @@ func Collect(ctx context.Context, cfg config.Config, manager *engine.Manager) St
 		OS:          runtime.GOOS,
 		Arch:        runtime.GOARCH,
 		CPUs:        runtime.NumCPU(),
+		CPUUsage:    usage,
 		Running:     manager.Count(),
 		Nodes:       manager.List(),
 		Engines:     Engines(ctx, cfg, manager),
@@ -133,6 +137,106 @@ func hasExecutableImage(root string) bool {
 	})
 
 	return found
+}
+
+const (
+	procStatPath      = "/proc/stat"
+	cpuSampleInterval = 250 * time.Millisecond
+)
+
+// cpuTimes is the aggregate CPU time from /proc/stat, in clock ticks.
+type cpuTimes struct {
+	idle  uint64
+	total uint64
+}
+
+// parseProcStat extracts the aggregate "cpu" line from /proc/stat contents.
+// The first eight value columns (user through steal) make up the total, while
+// idle and iowait make up the idle time; guest and guest_nice are already
+// counted in user and nice, so they are ignored.
+func parseProcStat(data []byte) (cpuTimes, bool) {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "cpu" {
+			continue
+		}
+		if len(fields) < 5 {
+			return cpuTimes{}, false
+		}
+		values := fields[1:]
+		if len(values) > 8 {
+			values = values[:8]
+		}
+		var times cpuTimes
+		for index, value := range values {
+			parsed, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				return cpuTimes{}, false
+			}
+			times.total += parsed
+			if index == 3 || index == 4 { // idle, iowait
+				times.idle += parsed
+			}
+		}
+		return times, true
+	}
+
+	return cpuTimes{}, false
+}
+
+// cpuUsageFromSamples returns the busy share of two /proc/stat samples as a
+// percentage rounded to one decimal place. Inconsistent samples yield 0.
+func cpuUsageFromSamples(first, second cpuTimes) float64 {
+	if second.total <= first.total || second.idle < first.idle {
+		return 0
+	}
+	totalDelta := second.total - first.total
+	idleDelta := second.idle - first.idle
+	if idleDelta > totalDelta {
+		idleDelta = totalDelta
+	}
+	usage := float64(totalDelta-idleDelta) / float64(totalDelta) * 100
+	if usage > 100 {
+		usage = 100
+	}
+
+	return math.Round(usage*10) / 10
+}
+
+func readCPUTimes(path string) (cpuTimes, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cpuTimes{}, false
+	}
+
+	return parseProcStat(data)
+}
+
+// cpuUsage samples the CPU counters twice, cpuSampleInterval apart, and
+// reports the measured busy percentage. The wait is bounded by ctx: when the
+// deadline arrives first the measurement is abandoned and 0 is returned, as it
+// is when /proc/stat is absent (non-Linux) or unreadable.
+func cpuUsage(ctx context.Context, path string) float64 {
+	first, ok := readCPUTimes(path)
+	if !ok {
+		return 0
+	}
+
+	timer := time.NewTimer(cpuSampleInterval)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return 0
+	case <-timer.C:
+	}
+
+	second, ok := readCPUTimes(path)
+	if !ok {
+		return 0
+	}
+
+	return cpuUsageFromSamples(first, second)
 }
 
 func loadAverage() (float64, float64, float64) {
