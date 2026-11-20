@@ -3,7 +3,7 @@
 openapi: 3.1.0
 info:
   title: TeraLab API
-  version: 1.4.2
+  version: 1.4.3
   description: |
     JSON API for TeraLab lab orchestration. State-changing requests require a
     session cookie and the `X-CSRF-Token` header returned by setup/login/me.

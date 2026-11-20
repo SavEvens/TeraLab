@@ -13,14 +13,18 @@
         :snap-grid="[20, 20]"
         :selection-on-drag="true"
         :pan-on-drag="[1, 2]"
+        :edges-updatable="false"
         fit-view-on-init
         @connect="connect"
+        @pane-context-menu="openPaneMenu"
+        @node-context-menu="openNodeMenu"
+        @edge-context-menu="openEdgeMenu"
         @node-click="selectNode"
         @pane-click="selected = null"
         @edges-change="edgesChanged"
         @move-end="saveViewport"
       >
-        <Background v-if="showGrid" pattern-color="#22346a" :gap="26" />
+        <Background v-if="showGrid" variant="lines" pattern-color="#22346a" :gap="26" />
         <Controls position="bottom-left" />
         <MiniMap v-if="showMinimap" position="bottom-right" :pannable="true" :zoomable="true" />
       </VueFlow>
@@ -137,6 +141,14 @@
       </div>
     </div>
 
+    <ContextMenu
+      v-if="contextMenu"
+      :x="contextMenu.x"
+      :y="contextMenu.y"
+      :items="contextMenu.items"
+      @close="contextMenu = null"
+    />
+
     <div v-if="conflict" class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true">
         <h2>Save conflict</h2>
@@ -161,11 +173,13 @@ import { MiniMap } from '@vue-flow/minimap'
 import Palette from '../components/Palette.vue'
 import Inspector from '../components/Inspector.vue'
 import LabNode from '../components/LabNode.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import TextNode from '../components/TextNode.vue'
 import PictureNode from '../components/PictureNode.vue'
 import { api } from '../api'
 import { notify, progress, dismiss } from '../stores/toasts'
 import { openConsole, consoleState } from '../stores/consoles'
+import { firstFreePort } from '../topology'
 import { session } from '../stores/session'
 
 const props = defineProps({ id: { type: String, required: true } })
@@ -204,6 +218,7 @@ const showSnapshots = ref(false)
 const snapshots = ref([])
 const snapshotName = ref('')
 const bulkAction = ref('start')
+const contextMenu = ref(null)
 const zoom = computed(() => Math.round(((getViewport.value?.zoom ?? 1)) * 100))
 const consoleOpen = computed(() => consoleState.tabs.length > 0)
 const selectionCount = computed(() => getSelectedNodes.value.length || (selected.value ? 1 : 0))
@@ -309,9 +324,10 @@ function rebuildEdges() {
         id,
         source: from.node.id,
         target: to.node.id,
-        sourceHandle: `s-${from.index}`,
-        targetHandle: `t-${to.index}`,
+        sourceHandle: 'node-s',
+        targetHandle: 'node-t',
         data: { networkId },
+        type: 'straight',
         animated: false,
         style: { stroke: '#5b8cff', strokeWidth: 2 }
       })
@@ -413,17 +429,30 @@ function dropTemplate(event) {
   addTemplate(template, position)
 }
 
-function connect(params) {
-  const source = nodes.value.find((node) => node.id === params.source)
-  const target = nodes.value.find((node) => node.id === params.target)
-  if (!source || !target) return
-  const sourceIndex = Number(String(params.sourceHandle || '').replace('s-', ''))
-  const targetIndex = Number(String(params.targetHandle || '').replace('t-', ''))
-  const sourcePort = source.data.interfaces[sourceIndex]
-  const targetPort = target.data.interfaces[targetIndex]
-  if (!sourcePort || !targetPort) return
-  record()
-  let networkId = targetPort.network_id || sourcePort.network_id
+function portFromHandle(node, handle, prefix) {
+  const value = String(handle || '')
+  if (value.startsWith(prefix)) {
+    const index = Number(value.slice(2))
+    const port = node.data.interfaces[index]
+    if (port) return port
+  }
+
+  return null
+}
+
+function addLinkBetween(source, target, preferredNetwork = '') {
+  if (!source || !target || source.id === target.id) return false
+  const sourcePort = portFromHandle(source, 'node-s', 's-') || firstFreePort(source)
+  const targetPort = portFromHandle(target, 'node-t', 't-') || firstFreePort(target, sourcePort?.network_id || preferredNetwork)
+  if (!sourcePort) {
+    notify('error', `${source.data.name}: no free port`)
+    return false
+  }
+  if (!targetPort) {
+    notify('error', `${target.data.name}: no free port`)
+    return false
+  }
+  let networkId = targetPort.network_id || sourcePort.network_id || preferredNetwork
   if (!networkId) {
     networkId = nextNetworkId()
     networks.value.push({ id: networkId, name: `Net-${networkId}`, type: 'bridge' })
@@ -432,6 +461,34 @@ function connect(params) {
   targetPort.network_id = networkId
   rebuildEdges()
   dirty.value = true
+
+  return true
+}
+
+function connect(params) {
+  const source = nodes.value.find((node) => node.id === params.source)
+  const target = nodes.value.find((node) => node.id === params.target)
+  if (!source || !target) return
+  addLinkBetween(source, target)
+}
+
+function clearNetwork(networkId) {
+  if (!networkId) return
+  for (const node of nodes.value) {
+    for (const iface of node.data.interfaces) {
+      if (iface.network_id === networkId) iface.network_id = ''
+    }
+  }
+  cleanupNetworks()
+  rebuildEdges()
+  dirty.value = true
+}
+
+function removeEdge(edge) {
+  const networkId = edge?.data?.networkId || edgeNetworks.get(edge?.id)
+  if (!networkId) return
+  record()
+  clearNetwork(networkId)
 }
 
 function edgesChanged(changes) {
@@ -440,16 +497,8 @@ function edgesChanged(changes) {
   record()
   for (const change of removed) {
     const networkId = edgeNetworks.get(change.id)
-    if (!networkId) continue
-    for (const node of nodes.value) {
-      for (const iface of node.data.interfaces) {
-        if (iface.network_id === networkId) iface.network_id = ''
-      }
-    }
+    if (networkId) clearNetwork(networkId)
   }
-  cleanupNetworks()
-  rebuildEdges()
-  dirty.value = true
 }
 
 function cleanupNetworks() {
@@ -591,6 +640,122 @@ async function runBulk() {
     }
   }
   notify('success', `${bulkAction.value} requested for ${nodesToRun.length} node(s)`)
+}
+
+function menuPosition(event) {
+  const width = 250
+  const height = 420
+  return {
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - width)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - height))
+  }
+}
+
+function deviceItems(flowPosition) {
+  if (!templates.value.length) return [{ label: 'Loading…', disabled: true }]
+  return templates.value.map((template) => ({
+    label: template.name || template.id,
+    hint: template.kind,
+    action: () => addTemplate(template, flowPosition)
+  }))
+}
+
+function openPaneMenu(payload) {
+  const event = payload?.event || payload
+  event?.preventDefault?.()
+  const flowPosition = screenToFlowCoordinate({ x: event.clientX, y: event.clientY })
+  const items = [
+    { label: 'Add node', children: deviceItems(flowPosition) },
+    { label: 'Add text', action: () => addTemplate({ id: '__text', name: 'Text', kind: 'text' }, flowPosition) },
+    { label: 'Add picture', action: () => addTemplate({ id: '__picture', name: 'Picture', kind: 'picture' }, flowPosition) },
+    { separator: true },
+    { label: 'Paste', disabled: !clipboard.value?.length, action: pasteSelection },
+    { label: 'Fit view', action: fit },
+    { label: 'Validate', action: validate },
+    { label: 'Presentation mode', action: () => { presentation.value = true } }
+  ]
+  contextMenu.value = { ...menuPosition(event), items }
+}
+
+function linkTargetItems(node) {
+  return nodes.value
+    .filter((candidate) => candidate.id !== node.id && candidate.type === 'lab')
+    .map((candidate) => ({
+      label: candidate.data.name,
+      hint: candidate.data.kind,
+      action: () => addLinkBetween(node, candidate)
+    }))
+}
+
+async function nodeControl(action, node) {
+  try {
+    if (action === 'start') await api.labNodeStart(props.id, node.data.id)
+    if (action === 'stop') await api.labNodeStop(props.id, node.data.id)
+    if (action === 'wipe') await api.labNodeWipe(props.id, node.data.id)
+    notify('success', `${action} requested for ${node.data.name}`)
+  } catch (exception) {
+    notify('error', exception.message)
+  }
+}
+
+function duplicateNode(node) {
+  record()
+  const next = nodes.value.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) + 1
+  const copy = JSON.parse(JSON.stringify(node))
+  copy.id = String(next)
+  copy.data.id = String(next)
+  copy.data.name = `${node.data.name}-copy`
+  copy.data.interfaces = copy.data.interfaces.map((iface) => ({ ...iface, network_id: '' }))
+  copy.position = { x: node.position.x + 32, y: node.position.y + 32 }
+  nodes.value.push(copy)
+  dirty.value = true
+}
+
+function openNodeMenu(payload) {
+  const event = payload?.event || payload
+  const node = payload?.node || selected.value
+  if (!event || !node) return
+  event.preventDefault?.()
+  selected.value = node
+  const engine = node.type === 'lab'
+  const items = []
+  if (engine) {
+    items.push({ label: 'Open console', action: () => openNodeConsole(node) })
+    items.push({ label: 'Start node', action: () => nodeControl('start', node) })
+    items.push({ label: 'Stop node', action: () => nodeControl('stop', node) })
+    items.push({ label: 'Wipe node', action: () => nodeControl('wipe', node) })
+    items.push({ label: 'Add link to', children: linkTargetItems(node), disabled: linkTargetItems(node).length === 0 })
+    items.push({ separator: true })
+  }
+  items.push({ label: 'Configure', action: () => { selected.value = node; inspectorOpen.value = true } })
+  items.push({ label: 'Duplicate', action: () => duplicateNode(node) })
+  items.push({ label: 'Delete', danger: true, action: () => deleteNode(node) })
+  contextMenu.value = { ...menuPosition(event), items }
+}
+
+function openEdgeMenu(payload) {
+  const event = payload?.event || payload
+  const edge = payload?.edge
+  if (!event || !edge) return
+  event.preventDefault?.()
+  const networkId = edge?.data?.networkId || edgeNetworks.get(edge?.id)
+  const items = [
+    { label: 'Delete link', danger: true, action: () => removeEdge(edge) },
+    { label: 'Rename network', action: () => {
+      const network = networks.value.find((item) => String(item.id) === String(networkId))
+      if (!network) return
+      const name = window.prompt('Network name', network.name)
+      if (name === null || !name.trim()) return
+      network.name = name.trim()
+      rebuildEdges()
+      dirty.value = true
+    } }
+  ]
+  contextMenu.value = { ...menuPosition(event), items }
+}
+
+function closeContextMenu() {
+  contextMenu.value = null
 }
 
 async function openNodeConsole(node) {
@@ -798,6 +963,10 @@ function restoreViewport() {
 function keydown(event) {
   const target = event.target
   if (target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+  if (event.key === 'Escape' && contextMenu.value) {
+    contextMenu.value = null
+    return
+  }
   if (event.key === 'Escape' && presentation.value) {
     presentation.value = false
     return
@@ -847,9 +1016,13 @@ watch(
 onMounted(() => {
   load()
   window.addEventListener('keydown', keydown)
+  window.addEventListener('click', closeContextMenu)
+  window.addEventListener('blur', closeContextMenu)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', keydown)
+  window.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('blur', closeContextMenu)
   window.clearTimeout(autosaveTimer)
 })
 </script>

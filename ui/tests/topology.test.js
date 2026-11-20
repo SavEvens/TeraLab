@@ -2,7 +2,7 @@
 // Copyright (C) 2026 TeraLab contributors
 
 import { describe, expect, it } from 'vitest'
-import { buildEdges, nextNetworkId, nodeFromLab, toPayload, usedNetworks } from '../src/topology'
+import { buildEdges, firstFreePort, nextNetworkId, nodeFromLab, toPayload, usedNetworks } from '../src/topology'
 
 const labNode = (id, network) => ({
   id: String(id),
@@ -54,7 +54,7 @@ describe('topology helpers', () => {
     const nodes = [labNode(1, '0'), labNode(2, '0'), labNode(3, '0')]
     const built = buildEdges(nodes)
     expect(built.edges).toHaveLength(2)
-    expect(built.edges[0].sourceHandle).toBe('s-0')
+    expect(built.edges[0].sourceHandle).toBe('node-s')
     expect(built.networks.get(built.edges[0].id)).toBe('0')
   })
 
@@ -81,6 +81,14 @@ describe('topology helpers', () => {
     const elapsed = performance.now() - start
     expect(payload.nodes).toHaveLength(200)
     expect(elapsed).toBeLessThan(250)
+  })
+
+  it('finds a free node port for node-level links', () => {
+    const node = labNode(1, '0')
+    expect(firstFreePort(node)).toBeNull()
+    node.data.interfaces.push({ id: 1, name: 'eth1', type: 'ethernet', network_id: '' })
+    expect(firstFreePort(node)).toEqual(node.data.interfaces[1])
+    expect(firstFreePort(node, '0')).toEqual(node.data.interfaces[1])
   })
 
   it('allocates the next numeric network and reports used ids', () => {

@@ -3,7 +3,7 @@
 
 # TeraLab UI
 
-Vue 3 single-page application for TeraLab v1.4.2.
+Vue 3 single-page application for TeraLab v1.4.3.
 
 ## Design
 
@@ -14,6 +14,13 @@ full-bleed editor with floating device palette, inspector, toolbar, and a
 persistent bottom console dock. No external UI kit or web fonts are used.
 
 ## Features
+
+- Right-click canvas, node, and link menus: add devices/text/pictures, paste,
+  fit, validate, open consoles, start/stop/wipe, add links, delete/rename
+  links, duplicate, and delete.
+- Icon-first topology nodes with names underneath; node-level link handles
+  instead of per-port dots.
+
 
 - First-run setup, login, session/CSRF handling.
 - Lab list with create, drag-and-drop/import, export, duplicate, move, delete,
