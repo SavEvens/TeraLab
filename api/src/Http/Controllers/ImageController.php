@@ -14,6 +14,7 @@ use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
 use TeraLab\Api\Image\ImageStore;
+use TeraLab\Api\Labs\LabRepository;
 
 final class ImageController
 {
@@ -22,6 +23,7 @@ final class ImageController
         private readonly AgentClient $agent,
         private readonly AuditLogger $audit,
         private readonly AccessService $access,
+        private readonly LabRepository $labs,
     ) {
     }
 
@@ -91,6 +93,33 @@ final class ImageController
             $nodeImages = [];
         }
 
+        // Lab files reference images by name; deleting a referenced image
+        // would leave those labs unstartable.
+        $image = $this->store->find($args['id'] ?? '');
+        $reference = is_array($image) && is_string($image['reference'] ?? null) ? $image['reference'] : '';
+        $imagePath = is_array($image) && is_string($image['path'] ?? null) ? (string) $image['path'] : '';
+        foreach ($this->labs->all() as $lab) {
+            foreach ((array) ($lab['node_list'] ?? []) as $node) {
+                if (!is_array($node)) {
+                    continue;
+                }
+                foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {
+                    $value = (string) ($node[$key] ?? '');
+                    if ($value === '') {
+                        continue;
+                    }
+                    if (($reference !== '' && $value === $reference)
+                        || $this->store->resolveReference($value) === $imagePath
+                    ) {
+                        throw new HttpException(
+                            409,
+                            'The image is referenced by lab "' . (string) ($lab['name'] ?? '') . '".',
+                        );
+                    }
+                }
+            }
+        }
+
         $user = $request->getAttribute('user');
         $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
         $this->store->delete($args['id'] ?? '', $nodeImages);
@@ -107,10 +136,15 @@ final class ImageController
         $this->access->requireRole($this->access->user($request), 'editor');
         $body = Json::body($request);
         $name = $body['name'] ?? null;
-        if (!is_string($name)) {
-            throw new HttpException(422, 'name is required.');
+        $reference = $body['reference'] ?? null;
+        if (!is_string($name) && !is_string($reference)) {
+            throw new HttpException(422, 'name or reference is required.');
         }
-        $image = $this->store->rename($args['id'] ?? '', $name);
+        if (!is_string($name)) {
+            $existing = $this->store->find($args['id'] ?? '');
+            $name = is_array($existing) ? (string) ($existing['name'] ?? '') : '';
+        }
+        $image = $this->store->rename($args['id'] ?? '', $name, is_string($reference) ? $reference : null);
         $user = $request->getAttribute('user');
         $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
         $this->audit->log($userId, $this->ip($request), 'image.rename', (string) $image['id'], 'success', ['name' => $name]);

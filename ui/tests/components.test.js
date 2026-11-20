@@ -100,6 +100,29 @@ describe('AddLinkDialog', () => {
 })
 
 describe('Inspector', () => {
+  it('uses portable image references', async () => {
+    const node = { id: '1', position: { x: 0, y: 0 }, data: { name: 'R1', template: 'linux', kind: 'qemu', image: 'base.qcow2', console: 'telnet', cpu: 1, ram: 512, serial: 0, interfaces: [{ id: 0 }] } }
+    const wrapper = mount(Inspector, {
+      props: {
+        node,
+        templates: [],
+        images: [{ id: 'img1', kind: 'qemu', name: 'Base', reference: 'base.qcow2', format: 'qcow2', path: '/var/lib/teralab/images/qemu/base.qcow2' }]
+      }
+    })
+    const select = wrapper.findAll('select').find((candidate) => candidate.findAll('option').some((option) => option.text().includes('Base')))
+    expect(select.findAll('option').map((option) => option.element.value)).toContain('base.qcow2')
+    expect(wrapper.text()).not.toContain('unmapped')
+  })
+
+  it('marks an unmapped image and emits nvram', async () => {
+    const node = { id: '1', position: { x: 0, y: 0 }, data: { name: 'R1', template: 'iol', kind: 'iol', image: 'missing.bin', console: 'telnet', cpu: 1, ram: 512, serial: 0, nvram: 0, interfaces: [{ id: 0 }] } }
+    const wrapper = mount(Inspector, { props: { node, templates: [], images: [] } })
+    expect(wrapper.text()).toContain('missing.bin (unmapped)')
+    const nvram = wrapper.findAll('label').find((label) => label.text().includes('NVRAM')).find('input')
+    await nvram.setValue('1024')
+    expect(wrapper.emitted('update').some((entry) => entry[0].key === 'nvram' && entry[0].value === 1024)).toBe(true)
+  })
+
   it('emits updates and actions', async () => {
     const node = { id: '1', position: { x: 0, y: 0 }, data: { name: 'R1', template: 'linux', kind: 'qemu', image: '', console: 'telnet', cpu: 1, ram: 512, serial: 0, interfaces: [{ id: 0 }] } }
     const wrapper = mount(Inspector, {

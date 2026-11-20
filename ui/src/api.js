@@ -139,6 +139,7 @@ export const api = {
   uploadImage: (form) => request('/images', { method: 'POST', body: form }),
   deleteImage: (id) => request(`/images/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   renameImage: (id, name) => request(`/images/${encodeURIComponent(id)}`, { method: 'PATCH', body: { name } }),
+  setImageReference: (id, reference) => request(`/images/${encodeURIComponent(id)}`, { method: 'PATCH', body: { reference } }),
   mapImageTemplate: (id, template) => request(`/images/${encodeURIComponent(id)}/template`, { method: 'PUT', body: { template } }),
   engines: () => request('/engines'),
   job: (id) => request(`/jobs/${encodeURIComponent(id)}`),

@@ -309,8 +309,18 @@ func TestIOLValidationAndArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build multi-interface iol args: %v", err)
 	}
+	if args[0] != "-e" || args[1] != "1" {
+		t.Fatalf("expected one iol ethernet adapter for two ports: %v", args)
+	}
+	spec.Ethernet = 5
+	spec.Networks = []string{"br0", "br1", "br2", "br3", "br4"}
+	spec.Normalize()
+	args, err = BuildIOLArgs(spec, 7, true)
+	if err != nil {
+		t.Fatalf("build five-port iol args: %v", err)
+	}
 	if args[0] != "-e" || args[1] != "2" {
-		t.Fatalf("expected two iol ethernet interfaces: %v", args)
+		t.Fatalf("expected two iol ethernet adapters for five ports: %v", args)
 	}
 
 	netmap := buildNETMAP([][2]int{{10001, 20001}, {10002, 20002}})

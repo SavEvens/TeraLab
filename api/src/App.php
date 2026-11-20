@@ -40,6 +40,7 @@ use TeraLab\Api\Http\Middleware\RequestIdMiddleware;
 use TeraLab\Api\Http\Middleware\RoleMiddleware;
 use TeraLab\Api\Http\Middleware\SecurityHeadersMiddleware;
 use TeraLab\Api\Http\Middleware\V1AuthMiddleware;
+use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Image\ImageStore;
 use TeraLab\Api\Jobs\JobService;
 use TeraLab\Api\Labs\LabLocks;
@@ -91,8 +92,9 @@ final class App
                 UnlWriter $writer,
                 AgentClient $agent,
                 LabLocks $locks,
+                ImageReferences $images,
                 SnapshotRepository $snapshots,
-            ): LabService => new LabService($config, $parser, $writer, $agent, $locks, $snapshots)
+            ): LabService => new LabService($config, $parser, $writer, $agent, $locks, $images, $snapshots)
         );
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
         $container->set(RateLimiter::class, static fn (PDO $pdo): RateLimiter => new RateLimiter($pdo));

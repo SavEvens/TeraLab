@@ -288,7 +288,7 @@ function redo() {
 }
 
 function nextNetworkId() {
-  let max = -1
+  let max = 0
   for (const network of networks.value) {
     const numeric = Number(network.id)
     if (Number.isInteger(numeric)) max = Math.max(max, numeric)
@@ -317,12 +317,18 @@ function buildNode(raw, index) {
       platform: raw.platform || '',
       nic: raw.nic || '',
       serial: raw.serial || 0,
+      nvram: Number(raw.nvram || 0),
+      delay: Number(raw.delay || 0),
+      sat: Number.isInteger(raw.sat) ? raw.sat : -1,
       config: raw.config || '',
+      extraXml: Array.isArray(raw.extra_xml) ? raw.extra_xml : [],
+      attributes: raw.attributes && typeof raw.attributes === 'object' ? raw.attributes : {},
       interfaces: interfaces.map((iface, port) => ({
         id: Number(iface.id ?? port),
         name: iface.name || defaultPortName(raw.type || 'qemu', port),
         type: iface.type || 'ethernet',
-        network_id: String(iface.network_id || '')
+        network_id: String(iface.network_id || ''),
+        attributes: iface.attributes && typeof iface.attributes === 'object' ? iface.attributes : {}
       }))
     }
   }
@@ -378,6 +384,11 @@ function addTemplate(template, position = null) {
         ram: 64,
         uuid: '',
         platform: '',
+        nvram: 0,
+        delay: 0,
+        sat: -1,
+        extraXml: [],
+        attributes: {},
         interfaces: []
       }
     })
@@ -390,7 +401,8 @@ function addTemplate(template, position = null) {
     id: index,
     name: defaultPortName(template.kind, index),
     type: 'ethernet',
-    network_id: ''
+    network_id: '',
+    attributes: {}
   }))
   const node = {
     id,
@@ -575,7 +587,7 @@ function updatePorts(count) {
     }
   }
   while (interfaces.length < count) {
-    interfaces.push({ id: interfaces.length, name: defaultPortName(selected.value.data.kind, interfaces.length), type: 'ethernet', network_id: '' })
+    interfaces.push({ id: interfaces.length, name: defaultPortName(selected.value.data.kind, interfaces.length), type: 'ethernet', network_id: '', attributes: {} })
   }
   cleanupNetworks()
   rebuildEdges()
@@ -788,17 +800,23 @@ function payload() {
       platform: node.data.platform,
       nic: node.data.nic || '',
       serial: node.data.serial || 0,
+      nvram: node.data.nvram || 0,
+      delay: node.data.delay || 0,
+      sat: Number.isInteger(node.data.sat) ? node.data.sat : -1,
       config: node.data.config || '',
+      extra_xml: node.data.extraXml || [],
+      attributes: node.data.attributes || {},
       left: Math.round(node.position.x),
       top: Math.round(node.position.y),
       interfaces: node.data.interfaces.map((iface) => ({
         id: iface.id,
         name: iface.name,
         type: iface.type,
-        network_id: iface.network_id
+        network_id: iface.network_id,
+        attributes: iface.attributes || {}
       }))
     })),
-    networks: networks.value.map((network) => ({ id: network.id, name: network.name, type: network.type || 'bridge' }))
+    networks: networks.value.map((network) => ({ id: network.id, name: network.name, type: network.type || 'bridge', left: network.left || 0, top: network.top || 0, attributes: network.attributes || {} }))
   }
 }
 
@@ -880,6 +898,7 @@ async function run(action) {
 function validate() {
   problems.value = []
   const names = new Map()
+  const references = new Set(images.value.map((image) => image.reference).filter(Boolean))
   for (const node of nodes.value) {
     const name = node.data.name?.trim()
     if (!name) problems.value.push('A node has no name')
@@ -887,6 +906,9 @@ function validate() {
     names.set(name, true)
     if (['qemu', 'iol', 'dynamips'].includes(node.data.kind) && !node.data.image && !node.data.iso) {
       problems.value.push(`${name || node.data.id} has no image`)
+    }
+    if (node.data.image && !references.has(node.data.image)) {
+      problems.value.push(`${name || node.data.id}: image "${node.data.image}" is not mapped`)
     }
     if (node.data.interfaces.length > 16) problems.value.push(`${name || node.data.id} has too many ports`)
   }

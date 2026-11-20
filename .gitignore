@@ -88,6 +88,8 @@ api/var/
 
 # Product test fixture (intentionally committed)
 !api/tests/fixtures/sample.unl
+!api/tests/fixtures/legacy-lab.unl
+!api/tests/fixtures/eve-ng-lab.unl
 
 # Go agent build artifacts
 agent/teralab-agent

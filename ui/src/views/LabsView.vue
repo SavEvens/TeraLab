@@ -39,6 +39,7 @@
         <tr v-for="lab in filteredLabs" :key="lab.id">
           <td>
             <router-link :to="`/labs/${lab.id}`">{{ lab.name }}</router-link>
+            <span class="badge format" :title="`Lab file format: ${lab.format || 'unknown'}`">{{ formatLabel(lab.format) }}</span>
             <small>{{ lab.path }}</small>
           </td>
           <td>{{ lab.owner || '—' }}</td>
@@ -71,6 +72,20 @@
     </table>
     <p v-if="!labs.length" class="empty">No labs yet. Create one, drop a `.unl` file, or import one.</p>
     <p v-else-if="!filteredLabs.length" class="empty">No labs match “{{ search }}”.</p>
+
+    <div v-if="importReport.length" class="modal-backdrop" @click.self="importReport = []">
+      <div class="modal import-report" role="dialog" aria-modal="true" aria-label="Import report">
+        <h2>Import report</h2>
+        <p class="hint">The lab was imported. Review these items before starting it.</p>
+        <ul>
+          <li v-for="(warning, index) in importReport" :key="index">
+            <strong>{{ warning.type }}</strong>
+            <span>{{ warning.message }}</span>
+          </li>
+        </ul>
+        <div class="row"><button @click="importReport = []">Close</button></div>
+      </div>
+    </div>
 
     <section v-if="showTrash" class="trash">
       <h2>Trash</h2>
@@ -108,6 +123,7 @@ const search = ref('')
 const newName = ref('')
 const newFolder = ref('')
 const error = ref('')
+const importReport = ref([])
 const stopping = ref(new Set())
 let refreshTimer = null
 const filteredLabs = computed(() => {
@@ -270,12 +286,22 @@ async function exportLab(lab) {
 async function importFile(file) {
   if (!file) return
   try {
-    await api.importLab(file)
-    notify('success', 'Lab imported')
+    const response = await api.importLab(file)
+    const warnings = Array.isArray(response?.meta?.warnings) ? response.meta.warnings : []
+    importReport.value = warnings
+    notify('success', warnings.length ? `Lab imported with ${warnings.length} warning(s)` : 'Lab imported')
     await load()
   } catch (exception) {
     error.value = exception.message
   }
+}
+
+function formatLabel(format) {
+  if (format === 'eve-ng') return 'EVE-NG'
+  if (format === 'legacy') return 'legacy'
+  if (format === 'teralab-2') return 'v2'
+
+  return 'v2'
 }
 
 async function importLab(event) {

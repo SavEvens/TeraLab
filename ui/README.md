@@ -3,7 +3,7 @@
 
 # TeraLab UI
 
-Vue 3 single-page application for TeraLab v1.5.0.
+Vue 3 single-page application for TeraLab v1.5.1.
 
 ## Design
 
@@ -25,8 +25,11 @@ console dock. No external UI kit or web fonts are used.
 - Icon-first topology nodes with names underneath; link ends show interface
   tags and stop at the node body.
 - First-run setup, login, session/CSRF handling.
-- Lab list with running status, conditional stop, create, drag-and-drop/import,
-  export, duplicate, move, delete, and a 30-day trash with restore.
+- Lab list with running status, format badge, conditional stop, create,
+  drag-and-drop/import (legacy, UNetLab, EVE-NG and TeraLab v2), export,
+  duplicate, move, delete, and a 30-day trash with restore.
+- Portable lab files: EVE-NG-compatible saves with named image references,
+  decoded base64 configs and an import report (see `docs/LAB-FORMAT.md`).
 - Template library: YAML import/export, duplicate, custom editing.
 - Vue Flow topology editor: inspector (name, template, image, CPU, RAM, NIC
   driver, port/serial counts, console), links, undo/redo, copy/paste,

@@ -3,6 +3,70 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.1 release notes
+
+- Release date: 2026-11-20
+- Previous release: v1.5.0
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Portable lab format and EVE-NG import
+
+TeraLab now saves labs in a portable format that is a superset of the modern
+EVE-NG `.unl` file:
+
+- **Import** accepts legacy TeraLab/UNetLab files, modern EVE-NG labs and the
+  new TeraLab format. EVE-NG base64 startup configs are decoded, IOL interface
+  ids are reconstructed, cloud/NAT/OVS network types are preserved, and
+  EVE-NG text objects become text nodes.
+- **Save** always writes the new format (`format="2"`): EVE-NG's lab
+  structure, interface numbering, network types and base64 configs, plus a
+  TeraLab-only `<extensions>` block for future features. EVE-NG ignores the
+  extension block and the TeraLab attributes, so an export can be opened in
+  EVE-NG.
+- **No absolute paths**: images, ISOs, kernels and initrds are stored as
+  portable references (a single name). A writer guard makes path leakage
+  impossible. Legacy labs are normalized on load and rewritten on save.
+- **Import report**: warnings for unmapped images, unsupported node types,
+  cloud/NAT/OVS networks, reconstructed interfaces and the 16-port limit.
+  The lab list shows the file format (EVE-NG, legacy, v2).
+- Unknown EVE-NG node/interface/network attributes and object blocks are
+  preserved when the editor saves a lab.
+
+### Images
+
+- Every image has an editable **reference** (Images page) used by lab files.
+  New uploads use the file name as the reference; collisions get `-2`, `-3`.
+- Deleting an image referenced by any lab is refused.
+- Unmapped references are flagged in the Inspector and in lab validation.
+
+### IOL port numbering
+
+IOL numbers four ports per adapter; TeraLab assumed 16, so interfaces after
+the fourth were wired to non-existent ports (`Ethernet0/4`, …). Interface
+encoding, NETMAP lines, `-e` (now the adapter count) and link keepalives were
+corrected. A six-port node now comes up with `Ethernet0/0–0/3` and
+`Ethernet1/0–1/1` all `up/up` and six CDP neighbours.
+
+### Compatibility notes
+
+- Legacy labs are rewritten as format v2 on their first save, including the
+  editor's autosave. Older TeraLab releases cannot read v2 image references;
+  back up `/var/lib/teralab` before upgrading if you need to roll back.
+- Cloud/NAT/OVS networks are preserved but run as isolated bridges; TeraLab
+  does not modify host networking.
+- Docker and EVE-NG Ethernet-switch nodes import but do not start.
+- Nodes are limited to 16 interfaces; larger imported nodes are truncated
+  with a warning.
+
+## Validation
+
+- PHP 78 tests / 843 assertions; Go suites; UI 17 unit tests; mock UI E2E
+  including the import report and format badge; release gate and CI green.
+- Live on the installed stack: EVE-NG fixture import (configs decoded, cloud
+  preserved, warnings), export with no absolute paths, re-import identical;
+  legacy Test lab duplicated and rewritten as v2; six-port IOL lab with all
+  six interfaces `up/up` and six CDP neighbours.
+
 # TeraLab v1.5.0 release notes
 
 - Release date: 2026-11-20

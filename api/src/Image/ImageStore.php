@@ -56,7 +56,7 @@ final class ImageStore
     public function all(): array
     {
         $statement = $this->pdo->query(
-            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
+            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
             . 'FROM images ORDER BY created_at DESC, name'
         );
         if ($statement === false) {
@@ -79,7 +79,7 @@ final class ImageStore
     public function find(string $id): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
+            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
             . 'FROM images WHERE id = :id'
         );
         $statement->execute([':id' => $id]);
@@ -163,6 +163,7 @@ final class ImageStore
                 'id' => $id,
                 'kind' => $kind,
                 'name' => $name !== null && $name !== '' ? $name : $clientName,
+                'reference' => $this->uniqueReference(ImageReference::portable($clientName)),
                 'path' => $path,
                 'sha256' => $sha256,
                 'size' => filesize($path) ?: 0,
@@ -231,16 +232,78 @@ final class ImageStore
     /**
      * @return array<string, mixed>
      */
-    public function rename(string $id, string $name): array
+    public function rename(string $id, string $name, ?string $reference = null): array
     {
         $name = trim($name);
         if ($name === '' || strlen($name) > 128 || preg_match('/[\x00-\x1f]/', $name) === 1) {
             throw new HttpException(422, 'Invalid image name.');
         }
-        $statement = $this->pdo->prepare('UPDATE images SET name = :name WHERE id = :id');
-        $statement->execute([':name' => $name, ':id' => $id]);
+        $current = $this->find($id);
+        if ($current === null) {
+            throw new HttpException(404, 'Image not found.');
+        }
+        if ($reference !== null) {
+            $reference = trim($reference);
+            if (!ImageReference::isPortable($reference) || $reference === '') {
+                throw new HttpException(422, 'Invalid image reference.');
+            }
+            if (($current['reference'] ?? '') !== $reference && $this->referenceExists($reference)) {
+                throw new HttpException(409, 'Another image already uses that reference.');
+            }
+        }
+        $statement = $this->pdo->prepare('UPDATE images SET name = :name, reference = :reference WHERE id = :id');
+        $statement->execute([
+            ':name' => $name,
+            ':reference' => $reference ?? (string) ($current['reference'] ?? ''),
+            ':id' => $id,
+        ]);
 
         return $this->find($id) ?? throw new HttpException(404, 'Image not found.');
+    }
+
+    /**
+     * Rename the portable reference used by lab files. References are unique
+     * because labs identify images by them.
+     */
+    public function setReference(string $id, string $reference): array
+    {
+        $reference = trim($reference);
+        if (!ImageReference::isPortable($reference) || $reference === '') {
+            throw new HttpException(422, 'Invalid image reference.');
+        }
+        $current = $this->find($id);
+        if ($current === null) {
+            throw new HttpException(404, 'Image not found.');
+        }
+        if (($current['reference'] ?? '') !== $reference && $this->referenceExists($reference)) {
+            throw new HttpException(409, 'Another image already uses that reference.');
+        }
+        $statement = $this->pdo->prepare('UPDATE images SET reference = :reference WHERE id = :id');
+        $statement->execute([':reference' => $reference, ':id' => $id]);
+
+        return $this->find($id) ?? throw new HttpException(404, 'Image not found.');
+    }
+
+    /** Resolve a portable reference (or a legacy path) to an absolute path. */
+    public function resolveReference(string $value): ?string
+    {
+        return (new ImageReferences($this->pdo, $this->config))->resolve($value);
+    }
+
+    /** The reference belonging to the image stored at an absolute path. */
+    public function referenceForPath(string $path): ?string
+    {
+        return (new ImageReferences($this->pdo, $this->config))->referenceForPath($path);
+    }
+
+    private function referenceExists(string $reference): bool
+    {
+        return (new ImageReferences($this->pdo, $this->config))->exists($reference);
+    }
+
+    private function uniqueReference(string $candidate): string
+    {
+        return (new ImageReferences($this->pdo, $this->config))->unique($candidate);
     }
 
     /**
@@ -278,13 +341,14 @@ final class ImageStore
     {
         $statement = $this->pdo->prepare(
             'INSERT INTO images '
-            . '(id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, created_by, created_at) '
-            . 'VALUES (:id, :kind, :name, :path, :sha256, :size, :virtual_size, :format, :backing_file, :notes, :created_by, :created_at)'
+            . '(id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, created_by, created_at) '
+            . 'VALUES (:id, :kind, :name, :reference, :path, :sha256, :size, :virtual_size, :format, :backing_file, :notes, :created_by, :created_at)'
         );
         $statement->execute([
             ':id' => $row['id'],
             ':kind' => $row['kind'],
             ':name' => $row['name'],
+            ':reference' => $row['reference'],
             ':path' => $row['path'],
             ':sha256' => $row['sha256'],
             ':size' => $row['size'],
@@ -303,7 +367,7 @@ final class ImageStore
     private function findByChecksum(string $sha256): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
+            'SELECT id, kind, name, reference, path, sha256, size, virtual_size, format, backing_file, notes, template, created_at '
             . 'FROM images WHERE sha256 = :sha256'
         );
         $statement->execute([':sha256' => $sha256]);

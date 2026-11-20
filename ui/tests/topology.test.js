@@ -92,6 +92,7 @@ describe('topology helpers', () => {
   })
 
   it('allocates the next numeric network and reports used ids', () => {
+    expect(nextNetworkId([])).toBe('1')
     expect(nextNetworkId([{ id: '0' }, { id: '4' }])).toBe('5')
     expect([...usedNetworks([labNode(1, '2')])]).toEqual(['2'])
   })

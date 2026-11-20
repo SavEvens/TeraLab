@@ -104,6 +104,15 @@ try {
   await page.waitForSelector('.lab-table tbody tr')
   const labsStatusBefore = await page.locator('[data-lab-status="lab1"]').innerText()
   const stopButtonsBefore = await page.getByRole('button', { name: '■ Stop' }).count()
+  const formatBadge = await page.locator('.lab-table .badge.format').first().innerText()
+  await page.locator('.toolbar input[type=file]').setInputFiles({
+    name: 'eve-lab.unl',
+    mimeType: 'application/xml',
+    buffer: Buffer.from('<?xml version="1.0"?><lab name="EVE Lab"><topology/></lab>')
+  })
+  await page.waitForSelector('.import-report')
+  const importReport = await page.locator('.import-report').innerText()
+  await page.locator('.import-report').getByRole('button', { name: 'Close' }).click()
 
   // Images: upload, rename, map a template.
   await page.getByRole('link', { name: 'Images' }).click()
@@ -317,6 +326,8 @@ try {
     linkTags,
     interfaceLink,
     labsStatusBefore: labsStatusBefore.replace(/\s+/g, ' ').trim(),
+    formatBadge: formatBadge.trim(),
+    importReport: importReport.replace(/\s+/g, ' ').trim(),
     labsStatusRunning: labsStatusRunning.replace(/\s+/g, ' ').trim(),
     labsStatusAfterStop: labsStatusAfterStop.replace(/\s+/g, ' ').trim(),
     stopButtonsBefore,
@@ -358,6 +369,8 @@ try {
   if (!interfaceLink.iol || interfaceLink.iol !== interfaceLink.r2) throw new Error(`chosen interfaces were not linked: ${JSON.stringify(interfaceLink)}`)
   if (stopButtonsBefore !== 0) throw new Error('stop button shown for a stopped lab')
   if (!/stopped/i.test(labsStatusBefore)) throw new Error(`labs status should start stopped: ${labsStatusBefore}`)
+  if (!/legacy/i.test(formatBadge)) throw new Error(`lab format badge missing: ${formatBadge}`)
+  if (!/image_unmapped/i.test(importReport) || !importReport.includes('pnet0')) throw new Error(`import report incomplete: ${importReport}`)
   if (!/running/i.test(labsStatusRunning) || stopButtonsRunning !== 1) throw new Error('running lab status/stop button missing')
   if (!/stopped/i.test(labsStatusAfterStop) || stopButtonsAfter !== 0) throw new Error('stopping the lab did not clear the status/button')
   if (!/AGPL-3.0-or-later/.test(aboutText)) throw new Error('about page missing licence')

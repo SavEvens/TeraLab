@@ -58,9 +58,33 @@ final class ImageStoreTest extends TestCase
         self::assertSame(strlen($content), $image['size']);
         self::assertSame(8388608, $image['virtual_size']);
         self::assertSame('qcow2', $image['format']);
+        self::assertSame('disk.qcow2', $image['reference']);
         self::assertFileExists((string) $image['path']);
         self::assertFileExists(dirname((string) $image['path']) . '/meta.json');
         self::assertCount(1, $this->store->all());
+    }
+
+    public function testReferencesAreUniqueAndRenameable(): void
+    {
+        $first = $this->store->store($this->upload("QFI\xfb" . str_repeat("a", 60), 'disk.qcow2'), 'qemu', null, null);
+        $second = $this->store->store($this->upload("QFI\xfb" . str_repeat("b", 60), 'disk.qcow2'), 'qemu', null, null);
+
+        self::assertSame('disk.qcow2', $first['reference']);
+        self::assertSame('disk-2.qcow2', $second['reference']);
+
+        $renamed = $this->store->setReference((string) $second['id'], 'veos-4.22.0F');
+        self::assertSame('veos-4.22.0F', $renamed['reference']);
+
+        $this->expectException(HttpException::class);
+        $this->store->setReference((string) $second['id'], 'disk.qcow2');
+    }
+
+    public function testRejectsUnsafeReference(): void
+    {
+        $image = $this->store->store($this->upload("QFI\xfb" . str_repeat("c", 60), 'safe.qcow2'), 'qemu', null, null);
+
+        $this->expectException(HttpException::class);
+        $this->store->setReference((string) $image['id'], '../escape.qcow2');
     }
 
     public function testDuplicateContentIsIdempotent(): void

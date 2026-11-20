@@ -25,12 +25,18 @@ export function nodeFromLab(raw, index) {
       platform: raw.platform || '',
       nic: raw.nic || '',
       serial: raw.serial || 0,
+      nvram: Number(raw.nvram || 0),
+      delay: Number(raw.delay || 0),
+      sat: Number.isInteger(raw.sat) ? raw.sat : -1,
       config: raw.config || '',
+      extraXml: Array.isArray(raw.extra_xml) ? raw.extra_xml : [],
+      attributes: raw.attributes && typeof raw.attributes === 'object' ? raw.attributes : {},
       interfaces: interfaces.map((iface, port) => ({
         id: Number(iface.id ?? port),
-        name: iface.name || `eth${port}`,
+        name: iface.name || defaultPortName(raw.type || 'qemu', port),
         type: iface.type || 'ethernet',
-        network_id: String(iface.network_id || '')
+        network_id: String(iface.network_id || ''),
+        attributes: iface.attributes && typeof iface.attributes === 'object' ? iface.attributes : {}
       }))
     }
   }
@@ -126,20 +132,29 @@ export function toPayload(name, revision, nodes, networks) {
       platform: node.data.platform,
       nic: node.data.nic,
       serial: node.data.serial,
+      nvram: node.data.nvram || 0,
+      delay: node.data.delay || 0,
+      sat: Number.isInteger(node.data.sat) ? node.data.sat : -1,
       config: node.data.config,
+      extra_xml: node.data.extraXml || [],
+      attributes: node.data.attributes || {},
       left: Math.round(node.position.x),
       top: Math.round(node.position.y),
       interfaces: node.data.interfaces.map((iface) => ({
         id: iface.id,
         name: iface.name,
         type: iface.type,
-        network_id: iface.network_id
+        network_id: iface.network_id,
+        attributes: iface.attributes || {}
       }))
     })),
     networks: networks.map((network) => ({
       id: network.id,
       name: network.name,
-      type: network.type || 'bridge'
+      type: network.type || 'bridge',
+      left: network.left || 0,
+      top: network.top || 0,
+      attributes: network.attributes || {}
     }))
   }
 }
@@ -156,7 +171,7 @@ export function firstFreePort(node, preferredNetwork = '') {
 }
 
 export function nextNetworkId(networks) {
-  let max = -1
+  let max = 0
   for (const network of networks) {
     const numeric = Number(network.id)
     if (Number.isInteger(numeric)) max = Math.max(max, numeric)

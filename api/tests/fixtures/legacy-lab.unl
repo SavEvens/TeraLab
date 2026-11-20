@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Legacy TeraLab/UNetLab fixture written for the parser tests. -->
+<lab name="Legacy Lab" id="legacy-lab" version="1" author="TeraLab" revision="5">
+  <description>Legacy fixture with paths and per-node config.</description>
+  <topology>
+    <nodes>
+      <node id="1" name="R1" type="iol" template="iol" image="/var/lib/teralab/images/iol/abc/x86_64.bin" console="telnet" cpu="1" ram="512" ethernet="3" left="100" top="120">
+        <interface id="0" name="Ethernet0/0" type="ethernet" network_id="0"/>
+        <interface id="1" name="Ethernet0/1" type="ethernet" network_id=""/>
+        <interface id="2" name="Ethernet0/2" type="ethernet" network_id="0"/>
+        <config>hostname R1
+!</config>
+      </node>
+      <node id="2" name="PC1" type="vpcs" image="" ethernet="1" left="360" top="120">
+        <interface id="0" name="eth0" type="ethernet" network_id="0"/>
+      </node>
+    </nodes>
+    <networks>
+      <network id="0" type="bridge" name="Net-0"/>
+    </networks>
+  </topology>
+</lab>

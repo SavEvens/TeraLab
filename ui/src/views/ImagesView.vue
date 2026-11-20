@@ -32,11 +32,12 @@
 
     <table class="lab-table">
       <thead>
-        <tr><th>Name</th><th>Kind</th><th>Format</th><th>Size</th><th>Template</th><th>SHA-256</th><th>Added</th><th>Actions</th></tr>
+        <tr><th>Name</th><th>Reference</th><th>Kind</th><th>Format</th><th>Size</th><th>Template</th><th>SHA-256</th><th>Added</th><th>Actions</th></tr>
       </thead>
       <tbody>
         <tr v-for="image in images" :key="image.id">
           <td>{{ image.name }}<small>{{ image.path }}</small></td>
+          <td><code>{{ image.reference || '—' }}</code></td>
           <td>{{ image.kind }}</td>
           <td>{{ image.format || '—' }}</td>
           <td>{{ bytes(image.size) }}</td>
@@ -50,6 +51,7 @@
           <td>{{ new Date(image.created_at * 1000).toLocaleDateString() }}</td>
           <td class="actions">
             <button class="ghost" @click="inspect(image)">Details</button>
+            <button v-if="canEdit" class="ghost" @click="reference(image)">Reference</button>
             <button v-if="canEdit" class="ghost" @click="rename(image)">Rename</button>
             <button v-if="canEdit" class="danger" @click="remove(image)">Delete</button>
           </td>
@@ -63,6 +65,7 @@
         <h2>{{ details.name }}</h2>
         <dl class="template-preview">
           <dt>kind</dt><dd>{{ details.kind }}</dd>
+          <dt>reference</dt><dd class="mono">{{ details.reference || '—' }}</dd>
           <dt>path</dt><dd>{{ details.path }}</dd>
           <dt>format</dt><dd>{{ details.format || '—' }}</dd>
           <dt>size</dt><dd>{{ bytes(details.size) }}</dd>
@@ -137,6 +140,21 @@ async function upload() {
 
 function inspect(image) {
   details.value = image
+}
+
+async function reference(image) {
+  const value = window.prompt(`Reference for “${image.name}” (single name, no paths):`, image.reference || '')
+  if (value === null) return
+  const trimmed = value.trim()
+  if (!trimmed) return
+  try {
+    await api.setImageReference(image.id, trimmed)
+    notify('success', 'Reference updated')
+    await load()
+    if (details.value?.id === image.id) details.value = { ...details.value, reference: trimmed }
+  } catch (exception) {
+    error.value = exception.message
+  }
 }
 
 async function rename(image) {

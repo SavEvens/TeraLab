@@ -37,6 +37,7 @@ export function startMockServer(port = 8099) {
     description: '',
     body: '',
     lock: null,
+    format: 'legacy',
     running: false,
     running_nodes: 0,
     nodes: 2,
@@ -125,8 +126,8 @@ export function startMockServer(port = 8099) {
       lab.networks = 10
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.0' })
-    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.0', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
+    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.1' })
+    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.1', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       return send(response, 200, {
@@ -164,7 +165,11 @@ export function startMockServer(port = 8099) {
     if (path === '/api/v2/labs/import' && request.method === 'POST') {
       return send(response, 201, {
         status: 'success',
-        data: { ...lab, id: 'importlab', name: 'Imported Lab', path: 'Imported-Lab.unl', nodes: 0, networks: 0, node_list: [], network_list: [] }
+        data: { ...lab, id: 'importlab', name: 'Imported Lab', path: 'Imported-Lab.unl', format: 'eve-ng', nodes: 0, networks: 0, node_list: [], network_list: [] },
+        meta: { warnings: [
+          { type: 'image_unmapped', node: 'R1', message: 'image "veos" is not mapped to a stored image.' },
+          { type: 'network_unsupported', network: '2', message: 'Network "Cloud" uses type "pnet0".' }
+        ] }
       })
     }
     if (path === '/api/v2/labs/trash' && request.method === 'GET') {
@@ -262,6 +267,7 @@ export function startMockServer(port = 8099) {
         id: 'img1',
         kind: 'qemu',
         name: 'base',
+        reference: 'base.qcow2',
         path: '/var/lib/teralab/images/qemu/base.qcow2',
         sha256: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
         size: 1048576,

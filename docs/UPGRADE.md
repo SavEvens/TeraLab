@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.5.0
+# Upgrading to TeraLab v1.5.1
 
-v1.5.0 keeps `.unl` labs, the v1 API surface, and the `/var/lib/teralab`
+v1.5.1 keeps `.unl` labs, the v1 API surface, and the `/var/lib/teralab`
 layout. The installer is idempotent and is the supported upgrade path.
 
 ## Before upgrading
@@ -20,7 +20,7 @@ layout. The installer is idempotent and is the supported upgrade path.
 
 ```sh
 git fetch --tags
-git checkout v1.5.0
+git checkout v1.5.1
 sudo packaging/teralab/install.sh
 ```
 
@@ -33,6 +33,15 @@ What is preserved:
 
 Database migrations are forward-only and run at API startup. The images table
 is added by migration `002_images.sql`; existing tables are untouched.
+
+### Lab format migration
+
+v1.5.1 adds portable image references (migration `007_image_references.php`),
+which backfills a reference for every stored image. Labs keep importing in
+their old format, but the **first save** of a lab — including the editor's
+autosave — rewrites it in the new EVE-NG-compatible format (`format="2"`).
+Older TeraLab releases cannot read that format, so keep the backup above
+until you are sure you will not roll back. See `docs/LAB-FORMAT.md`.
 
 ## Importing a v1.1 database and labs
 

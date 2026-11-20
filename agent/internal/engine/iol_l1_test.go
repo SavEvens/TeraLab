@@ -81,7 +81,7 @@ func TestIOUL1KeepaliveMarshal(t *testing.T) {
 }
 
 func TestIOLPortByteMatchesKeepaliveEncoding(t *testing.T) {
-	cases := map[int]byte{0: 0x00, 1: 0x10, 2: 0x20, 3: 0x30, 15: 0xF0}
+	cases := map[int]byte{0: 0x00, 1: 0x10, 2: 0x20, 3: 0x30, 4: 0x01, 5: 0x11, 15: 0x33}
 	for index, want := range cases {
 		if got := iolPortByte(index); got != want {
 			t.Fatalf("iolPortByte(%d) = %#x, want %#x", index, got, want)

@@ -28,8 +28,12 @@ func BuildIOLArgs(spec Spec, appID int, l1Keepalive bool) ([]string, error) {
 		return nil, errors.New("iol application id must be between 1 and 1023")
 	}
 
+	adapters := 0
+	if spec.Ethernet > 0 {
+		adapters = (spec.Ethernet + 3) / 4
+	}
 	args := []string{
-		"-e", strconv.Itoa(spec.Ethernet),
+		"-e", strconv.Itoa(adapters),
 		"-s", "0",
 		"-m", strconv.Itoa(spec.RAM),
 		"-n", strconv.Itoa(spec.NVRAM),
