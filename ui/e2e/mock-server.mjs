@@ -131,8 +131,8 @@ export function startMockServer(port = 8099) {
       nodeStates.lab1 = {}
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.4' })
-    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.4', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
+    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.5' })
+    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.5', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       return send(response, 200, {
@@ -273,7 +273,7 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { status: 'success', data: { state: 'ok' } })
     }
     if (path === '/api/v2/system/host') {
-      return send(response, 200, { data: { load1: 0.2, load5: 0.1, load15: 0.1, disk_free_bytes: 1000000, disk_total_bytes: 2000000, nodes: [], engines: [{ name: 'qemu', available: true, version: '10.0' }] } })
+      return send(response, 200, { data: { load1: 0.2, load5: 0.1, load15: 0.1, cpu_usage_percent: 12.5, disk_free_bytes: 1000000, disk_total_bytes: 2000000, nodes: [], engines: [{ name: 'qemu', available: true, version: '10.0' }, { name: 'dynamips', available: false, version: '' }], interfaces: [{ name: 'eth0', up: true, mac: '00:11:22:33:44:55', addresses: ['192.0.2.10'] }, { name: 'eth1', up: false, mac: '00:11:22:33:44:56', addresses: [] }] } })
     }
     if (path === '/api/v2/system/settings' && request.method === 'GET') return send(response, 200, { data: settings })
     if (path === '/api/v2/system/settings' && request.method === 'PUT') {
@@ -334,15 +334,24 @@ export function startMockServer(port = 8099) {
   })
 
   const wss = new WebSocketServer({ server, path: '/ws' })
+  // Record the frames each console connection sends so e2e can assert that the
+  // telnet console no longer writes resize control JSON into the device stream.
+  const wsMessages = []
   wss.on('connection', (socket) => {
+    const messages = []
+    wsMessages.push(messages)
     socket.send('hello from mock console\r\n')
-    socket.on('message', (message) => socket.send(`echo:${message}`))
+    socket.on('message', (message) => {
+      messages.push(Buffer.isBuffer(message) ? message.toString('utf8') : String(message))
+      socket.send(`echo:${message}`)
+    })
   })
 
   return new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () => resolve({
       server,
       wss,
+      wsMessages,
       close: () => {
         for (const client of wss.clients) client.terminate()
         wss.close()

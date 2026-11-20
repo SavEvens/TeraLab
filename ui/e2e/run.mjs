@@ -70,6 +70,29 @@ try {
     }
   })
 
+  // Bounding boxes of the Vue Flow chrome and the editor toolbars. Used to
+  // prove the zoom controls and minimap are never covered by the bottom bar or
+  // status line, including while the console dock is open.
+  const readChromeLayout = () => page.evaluate(() => {
+    const box = (selector) => {
+      const element = document.querySelector(selector)
+      if (!element) return null
+      const rect = element.getBoundingClientRect()
+      if (!rect.width || !rect.height) return null
+      return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+    }
+    const overlaps = (a, b) => !!(a && b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top)
+    const controls = box('.vue-flow__controls')
+    const minimap = box('.vue-flow__minimap')
+    const bottom = box('.ed-bottom')
+    const status = box('.ed-status')
+    return {
+      controls,
+      minimap,
+      overlap: overlaps(controls, bottom) || overlaps(controls, status) || overlaps(minimap, bottom) || overlaps(minimap, status)
+    }
+  })
+
   const loginStart = Date.now()
   await page.goto(`http://127.0.0.1:${uiPort}/ui/login`)
   await page.getByLabel('Username').waitFor({ timeout: 30000 })
@@ -91,6 +114,9 @@ try {
   await page.getByRole('link', { name: 'System' }).click()
   await page.waitForURL('**/ui/system')
   await page.getByRole('tab', { name: 'Host' }).click()
+  const systemHost = await page.locator('.system-grid').first().innerText()
+  const systemVersionBadges = await page.locator('.system-view .page-head .badge').count()
+  const systemPayloadCards = await page.locator('.system-grid').first().locator('pre.log-view').count()
   await page.getByRole('tab', { name: 'Settings' }).click()
   await page.getByRole('tab', { name: 'Tokens' }).click()
   await page.locator('.token-form input').first().fill('e2e token')
@@ -99,6 +125,8 @@ try {
   await page.getByRole('link', { name: 'About' }).click()
   await page.waitForURL('**/ui/about')
   const aboutText = await page.locator('.about-view').innerText()
+  const aboutBadge = (await page.locator('.about-view .page-head .badge').innerText()).trim()
+  const aboutDots = await page.locator('.about-view .dot').count()
   await page.getByRole('link', { name: 'Labs', exact: true }).click()
   await page.waitForURL('**/ui/labs')
   await page.waitForSelector('.lab-table tbody tr')
@@ -137,7 +165,11 @@ try {
   await page.waitForURL(`**/ui/labs/lab1`)
   await page.waitForSelector('.lab-node')
   const editorMs = Date.now() - editorStart
-
+  const editorButtons = (await page.locator('.editor button').allTextContents()).map((text) => text.trim())
+  const addLinkTop = await page.locator('.ed-actions button').filter({ hasText: '+ Add link' }).count()
+  const addLinkBottom = await page.locator('.ed-bottom button').filter({ hasText: 'Add link' }).count()
+  const addLinkEnabled = await page.locator('.ed-actions button').filter({ hasText: '+ Add link' }).isEnabled()
+  const editorChrome = await readChromeLayout()
 
   // Snapshot create/list.
   await page.getByRole('button', { name: 'Snapshots' }).click()
@@ -182,8 +214,18 @@ try {
   await page.waitForFunction((count) => document.querySelectorAll('.lab-node').length > count, initialNodes)
   const addedNodes = await page.locator('.lab-node').count()
 
+  // Multi-add: a count of 3 in one picker action appends three nodes.
+  const nodeCountBeforeBatch = await page.locator('.ed-status span strong').first().innerText()
+  await page.locator('.add-node').click()
+  await page.waitForSelector('.template-picker')
+  await page.locator('.picker-count input').fill('3')
+  await page.locator('[data-group="ready"] li').filter({ hasText: 'Linux' }).getByRole('button', { name: 'Add', exact: true }).click()
+  await page.waitForFunction((count) => document.querySelectorAll('.lab-node').length === count + 3, addedNodes)
+  const batchNodes = await page.locator('.lab-node').count()
+  const nodeCountAfterBatch = await page.locator('.ed-status span strong').first().innerText()
+
   // Explicit link dialog with an IOL interface (e0/0, e0/1).
-  await page.locator('.ed-bottom button').filter({ hasText: 'Add link' }).click()
+  await page.locator('.ed-actions button').filter({ hasText: 'Add link' }).click()
   await page.waitForSelector('.link-modal')
   await page.locator('select[aria-label="Node A"]').selectOption('3')
   const iolOptions = await page.locator('select[aria-label="Interface A"] option').allTextContents()
@@ -235,6 +277,20 @@ try {
   await page.waitForSelector('.console-dock')
   await page.waitForSelector('.xterm')
   const consoleMs = Date.now() - consoleStart
+  await page.waitForTimeout(500)
+  const resizeFrames = mock.wsMessages.flat().filter((message) => message.startsWith('{"type":"resize"'))
+  const heightBefore = await page.locator('.console-body').evaluate((element) => element.getBoundingClientRect().height)
+  const cssHeightBefore = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--console-h').trim())
+  const handleBox = await page.locator('.console-resize').boundingBox()
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y - 90, { steps: 6 })
+  await page.mouse.up()
+  await page.waitForTimeout(250)
+  const heightAfter = await page.locator('.console-body').evaluate((element) => element.getBoundingClientRect().height)
+  const cssHeightAfter = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--console-h').trim())
+  const dockStoredHeight = await page.evaluate(() => localStorage.getItem('teralab.console-h.user1'))
+  const chromeLayoutConsole = await readChromeLayout()
   const terminalBounds = await page.evaluate(() => {
     const screen = document.querySelector('.console-pane .xterm-screen')?.getBoundingClientRect()
     const pane = document.querySelector('.console-pane')?.getBoundingClientRect()
@@ -334,6 +390,26 @@ try {
     stopButtonsRunning,
     stopButtonsAfter,
     aboutText: aboutText.replace(/\s+/g, ' ').trim().slice(0, 120),
+    aboutBadge,
+    aboutDots,
+    systemHost: systemHost.replace(/\s+/g, ' ').trim().slice(0, 240),
+    systemVersionBadges,
+    systemPayloadCards,
+    editorButtons,
+    addLinkTop,
+    addLinkBottom,
+    addLinkEnabled,
+    editorChrome,
+    nodeCountBeforeBatch,
+    nodeCountAfterBatch,
+    batchNodes,
+    resizeFrames,
+    heightBefore,
+    heightAfter,
+    cssHeightBefore,
+    cssHeightAfter,
+    dockStoredHeight,
+    chromeLayoutConsole,
     initialNodes,
     addedNodes,
     savedText,
@@ -355,6 +431,29 @@ try {
   if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`)
   if (addedNodes !== initialNodes + 1) throw new Error('palette add failed')
   if (!/saved/i.test(savedText)) throw new Error('autosave did not complete')
+  if (systemVersionBadges !== 0) throw new Error('system page still shows a version badge')
+  if (systemPayloadCards !== 0 || systemHost.includes('Host status payload')) throw new Error('system host tab still shows the raw JSON payload card')
+  if (!/CPU usage/i.test(systemHost) || !/\d+(?:\.\d+)?%/.test(systemHost)) throw new Error(`system host tab has no CPU usage percentage: ${systemHost}`)
+  if (aboutDots !== 0) throw new Error('about page still shows status dots')
+  if (!/^v\d+\.\d+\.\d+$/i.test(aboutBadge)) throw new Error(`about page version badge missing: ${aboutBadge}`)
+  if (!editorButtons.includes('+ Add link')) throw new Error(`top bar missing + Add link: ${editorButtons}`)
+  if (editorButtons.includes('Save') || editorButtons.includes('Validate') || editorButtons.some((text) => /^Align/.test(text))) {
+    throw new Error(`removed editor controls still present: ${editorButtons}`)
+  }
+  if (addLinkTop !== 1 || addLinkBottom !== 0) throw new Error(`+ Add link is not in the top bar only: top=${addLinkTop} bottom=${addLinkBottom}`)
+  if (!addLinkEnabled) throw new Error('+ Add link is disabled')
+  if (batchNodes !== addedNodes + 3) throw new Error(`picker count=3 added ${batchNodes - addedNodes} nodes`)
+  if (Number.parseInt(nodeCountBeforeBatch, 10) + 3 !== Number.parseInt(nodeCountAfterBatch, 10)) {
+    throw new Error(`status bar node count did not rise by 3: ${nodeCountBeforeBatch} -> ${nodeCountAfterBatch}`)
+  }
+  if (editorChrome.overlap) throw new Error(`Vue Flow chrome overlaps the toolbar/status bar: ${JSON.stringify(editorChrome)}`)
+  if (chromeLayoutConsole.overlap) throw new Error(`Vue Flow chrome overlaps the toolbar with the console open: ${JSON.stringify(chromeLayoutConsole)}`)
+  if (resizeFrames.length) throw new Error(`console sent resize frames: ${JSON.stringify(resizeFrames)}`)
+  if (!(heightAfter > heightBefore + 50)) throw new Error(`dock drag did not resize the console body: ${heightBefore} -> ${heightAfter}`)
+  if (!(Number.parseFloat(cssHeightAfter) > Number.parseFloat(cssHeightBefore))) throw new Error(`--console-h did not change: ${cssHeightBefore} -> ${cssHeightAfter}`)
+  if (!dockStoredHeight || Number(dockStoredHeight) !== Math.round(Number.parseFloat(cssHeightAfter))) {
+    throw new Error(`dock height was not persisted: ${dockStoredHeight} vs ${cssHeightAfter}`)
+  }
   if (!canvasMenu.includes('Add node')) throw new Error(`canvas context menu missing Add node: ${canvasMenu}`)
   if (!nodeMenu.includes('Open console')) throw new Error('node context menu missing Open console')
   if (!nodeMenu.includes('Stop node') || nodeMenu.includes('Start node') || nodeMenu.includes('Wipe node')) {
