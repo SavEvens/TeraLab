@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# TeraLab-authored device template. Not derived from any UNetLab, EVE-NG or
+# vendor template file. Parameters follow public vendor documentation.
+schema: 1
+id: c8000v
+name: Catalyst 8000V
+kind: qemu
+license: AGPL-3.0-or-later
+icon: CSRv1000.png
+defaults:
+  cpu: 4
+  ram: 8192
+  ethernet: 4
+  console: telnet
+options:
+  description: Cisco Catalyst 8000V Edge router (IOS XE 17.x).
+  qemu_arch: x86_64
+  qemu_nic: vmxnet3
+  qemu_options: '-machine type=pc,accel=kvm -cpu host -serial mon:stdio -nographic -no-user-config -nodefaults -rtc base=utc'
