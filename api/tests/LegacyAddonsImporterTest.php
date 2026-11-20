@@ -157,6 +157,26 @@ final class LegacyAddonsImporterTest extends TestCase
         self::assertSame('existing', $entries[$relative]['status']);
     }
 
+    public function testImportCreatesTheStoreDirectoryWithTheUploadMode(): void
+    {
+        $relative = 'qemu/csr1000vng/hda.qcow2';
+        $previous = umask(0);
+        try {
+            $result = $this->importer->import($this->addons, [$relative], [], null);
+        } finally {
+            umask($previous);
+        }
+
+        self::assertSame('imported', $result['results'][0]['status']);
+        $path = (string) $result['results'][0]['image']['path'];
+        self::assertDirectoryExists(dirname($path));
+        $mode = fileperms(dirname($path));
+        self::assertIsInt($mode);
+        // 0755 matches ImageStore::store(); the agent runs as another user
+        // and must be able to traverse the store directory.
+        self::assertSame(0755, $mode & 0777);
+    }
+
     public function testDryRunDetectsDuplicateContentAndExistingAdoptions(): void
     {
         $this->importer->import($this->addons, ['qemu/csr1000vng/hda.qcow2'], [], null);

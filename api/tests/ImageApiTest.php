@@ -226,6 +226,38 @@ final class ImageApiTest extends TestCase
         self::assertSame(1, $details['summary']['imported']);
     }
 
+    public function testImportRejectsAJsonObjectForFiles(): void
+    {
+        $relative = 'qemu/csr1000vng/hda.qcow2';
+        $response = $this->request('POST', '/api/v2/images/import', [
+            'root' => $this->addons(),
+            'dry_run' => false,
+            'files' => [$relative => $relative],
+        ]);
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('JSON list', (string) $this->json($response)['message']);
+        self::assertCount(0, $this->json($this->request('GET', '/api/v2/images'))['data']);
+    }
+
+    public function testImportRejectsControlCharactersInPaths(): void
+    {
+        $response = $this->request('POST', '/api/v2/images/import', [
+            'root' => $this->addons(),
+            'dry_run' => false,
+            'files' => ["qemu/csr1000vng/hda.qcow2\0"],
+        ]);
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('control characters', (string) $this->json($response)['message']);
+        self::assertCount(0, $this->json($this->request('GET', '/api/v2/images'))['data']);
+
+        $root = $this->request('POST', '/api/v2/images/import', [
+            'root' => $this->addons() . "\n",
+            'dry_run' => true,
+        ]);
+        self::assertSame(422, $root->getStatusCode(), (string) $root->getBody());
+        self::assertStringContainsString('control characters', (string) $this->json($root)['message']);
+    }
+
     public function testImportRequiresCsrf(): void
     {
         $request = (new ServerRequestFactory())->createServerRequest('POST', '/api/v2/images/import', ['REMOTE_ADDR' => '127.0.0.1'])

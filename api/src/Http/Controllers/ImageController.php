@@ -59,6 +59,9 @@ final class ImageController
         if (!is_string($root) || trim($root) === '') {
             throw new HttpException(422, 'root must be a non-empty absolute path.');
         }
+        if ($this->hasControlCharacter($root)) {
+            throw new HttpException(422, 'root must not contain control characters.');
+        }
 
         $dryRun = $body['dry_run'] ?? true;
         if (!is_bool($dryRun)) {
@@ -79,10 +82,16 @@ final class ImageController
         if (!is_array($files) || $files === []) {
             throw new HttpException(422, 'files is required when dry_run is false.');
         }
+        if (!array_is_list($files)) {
+            throw new HttpException(422, 'files must be a JSON list of relative paths, not an object.');
+        }
         $requested = [];
         foreach ($files as $file) {
             if (!is_string($file) || $file === '') {
                 throw new HttpException(422, 'files must be a list of relative paths.');
+            }
+            if ($this->hasControlCharacter($file)) {
+                throw new HttpException(422, 'files must not contain control characters.');
             }
             $requested[] = $file;
         }
@@ -253,6 +262,11 @@ final class ImageController
         $value = $fields[$key] ?? null;
 
         return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    private function hasControlCharacter(string $value): bool
+    {
+        return preg_match('/[\x00-\x1f]/', $value) === 1;
     }
 
     private function ip(ServerRequestInterface $request): string

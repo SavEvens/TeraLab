@@ -338,7 +338,10 @@ final class LegacyAddonsImporter
         // (an earlier or concurrent import of the same checksum).
         $createdDirectory = false;
         if (!is_dir($directory)) {
-            $createdDirectory = mkdir($directory, 0750, true);
+            // Match ImageStore and the installer: the store directory is
+            // traversed by tools running as another user (the agent runs as
+            // teralab-vm), so it must not be more restrictive than an upload.
+            $createdDirectory = mkdir($directory, 0755, true);
             if (!$createdDirectory && !is_dir($directory)) {
                 return $this->failed($relative, 'Cannot create the image store directory.');
             }
