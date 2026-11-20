@@ -970,6 +970,7 @@ final class LabService
 
     /**
      * @param array<string, mixed> $lab
+     * @return array<string, mixed>
      */
     private function write(string $path, array $lab): array
     {

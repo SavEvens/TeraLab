@@ -23,6 +23,7 @@ final class ImageReferenceTest extends TestCase
 
     public function testUniqueCandidates(): void
     {
+        /** @var array<string, bool> $taken */
         $taken = [];
         $exists = static function (string $value) use (&$taken): bool {
             return isset($taken[$value]);
