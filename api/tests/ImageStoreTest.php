@@ -74,6 +74,16 @@ final class ImageStoreTest extends TestCase
         self::assertFileDoesNotExist($this->config->imagesDir . '/tmp/upload-missing');
     }
 
+    public function testIOLImageIsStoredExecutable(): void
+    {
+        $content = "\x7fELF" . str_repeat("\0", 60);
+        $image = $this->store->store($this->upload($content, 'iol.bin'), 'iol', 'IOL', null);
+        self::assertSame('iol', $image['kind']);
+        self::assertNotSame(0, fileperms((string) $image['path']) & 0111);
+        self::assertNotSame(0, fileperms((string) $image['path']) & 0004);
+        self::assertNotSame(0, fileperms(dirname((string) $image['path'])) & 0001);
+    }
+
     public function testRejectsInvalidMagicWithoutRow(): void
     {
         try {

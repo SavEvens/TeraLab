@@ -149,7 +149,7 @@ final class ImageStore
 
             $id = $kind . '-' . substr($sha256, 0, 16);
             $finalDir = $this->config->imagesDir . '/' . $kind . '/' . $id;
-            if (!is_dir($finalDir) && !mkdir($finalDir, 0770, true) && !is_dir($finalDir)) {
+            if (!is_dir($finalDir) && !mkdir($finalDir, 0755, true) && !is_dir($finalDir)) {
                 throw new RuntimeException('Cannot create the image directory.');
             }
 
@@ -157,7 +157,7 @@ final class ImageStore
             if (!rename($temporary, $path)) {
                 throw new RuntimeException('Cannot move the image into place.');
             }
-            @chmod($path, 0640);
+            @chmod($path, in_array($kind, ['iol', 'dynamips'], true) ? 0755 : 0644);
 
             $row = [
                 'id' => $id,

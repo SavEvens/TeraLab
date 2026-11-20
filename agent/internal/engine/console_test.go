@@ -154,3 +154,20 @@ func TestReadCgroupUsage(t *testing.T) {
 		t.Fatal("empty cgroup path must return zero usage")
 	}
 }
+
+func TestEnsureExecutableRepairsMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "iol.bin")
+	if err := os.WriteFile(path, []byte("\x7fELF"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureExecutable(path); err != nil {
+		t.Fatalf("ensureExecutable: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatal("expected executable bit after repair")
+	}
+}
