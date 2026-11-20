@@ -3,6 +3,28 @@
 
 # TeraLab release notes
 
+# TeraLab v1.4.6 release notes
+
+- Release date: 2026-11-20
+- Previous release: v1.4.5
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Fix
+
+- The agent now sets `Content-Length` on JSON responses. Go switches large
+  responses (such as the system status with running nodes) to chunked
+  transfer encoding, which the Unix-socket PHP client cannot decode; the API
+  then reported `The agent returned an invalid response.`
+- This restores the v1.4.5 labs **Status** column and the **■ Stop** action on
+  real deployments, and the System page's host status.
+
+## Validation
+
+- Go test covers a >2 KiB payload: `Content-Length` is present and the body is
+  valid JSON.
+- Verified live: `GET /api/v2/labs` reports the running lab, the System host
+  page returns node data, and the Stop action is shown only while running.
+
 # TeraLab v1.4.5 release notes
 
 - Release date: 2026-11-20
