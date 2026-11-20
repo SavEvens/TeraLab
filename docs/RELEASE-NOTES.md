@@ -3,6 +3,30 @@
 
 # TeraLab release notes
 
+# TeraLab v1.4.2 release notes
+
+- Release date: 2026-11-19
+- Previous release: v1.4.1
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Fixes
+
+- **IOL executable permissions**: uploaded IOL/Dynamips binaries are stored
+  mode 0755 and their directories mode 0755, so the unprivileged `teralab-vm`
+  user can traverse and execute them. QEMU/ISO images are mode 0644 so engines
+  can read them.
+- **Existing uploads are repaired**: the agent adds the exec bit when an IOL
+  image lacks it, and the installer normalizes image directory/file modes on
+  upgrade.
+- The previous 293 MB IOL image started successfully; both IOL nodes reached
+  running state and the console showed the `Router>` prompt.
+
+## Validation
+
+- Go agent tests include executable-mode repair.
+- PHP image-store tests assert IOL exec and traversal bits.
+- PHP 63 tests / 732 assertions; release gate and CI green.
+
 # TeraLab v1.4.1 release notes
 
 - Release date: 2026-11-19

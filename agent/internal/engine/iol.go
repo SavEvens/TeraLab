@@ -54,12 +54,8 @@ func iolAppID(spec Spec) int {
 }
 
 func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
-	info, err := os.Stat(spec.Image)
-	if err != nil {
-		return NodeInfo{}, fmt.Errorf("%w: iol image is missing", ErrEngineUnavailable)
-	}
-	if info.Mode()&0o111 == 0 {
-		return NodeInfo{}, fmt.Errorf("%w: iol image is not executable", ErrEngineUnavailable)
+	if err := ensureExecutable(spec.Image); err != nil {
+		return NodeInfo{}, fmt.Errorf("%w: iol image is not executable: %v", ErrEngineUnavailable, err)
 	}
 	iourc := spec.Iourc
 	if iourc == "" {
@@ -200,4 +196,17 @@ func (m *Manager) prepareIOLFiles(runDir, iourc, netmap string) error {
 	m.chown(netmapPath)
 
 	return nil
+}
+
+// ensureExecutable repairs uploaded engine binaries stored without an exec bit.
+func ensureExecutable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&0o111 != 0 {
+		return nil
+	}
+
+	return os.Chmod(path, info.Mode().Perm()|0o111)
 }
