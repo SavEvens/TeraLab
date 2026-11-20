@@ -130,7 +130,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 	command.Env = []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin",
 		"HOME=" + runDir,
-		"IOURC=" + iourc,
+		"IOURC=" + filepath.Join(runDir, "iourc"),
 		"LD_LIBRARY_PATH=" + filepath.Dir(spec.Image),
 		"TERM=vt100",
 	}

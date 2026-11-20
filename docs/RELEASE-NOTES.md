@@ -3,6 +3,41 @@
 
 # TeraLab release notes
 
+# TeraLab v1.4.4 release notes
+
+- Release date: 2026-11-19
+- Previous release: v1.4.3
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Fixes
+
+- **Node icons**: Apache now serves the legacy `/images` and `/themes` trees.
+  IOL/QEMU/VPCS template icons load instead of showing broken-image boxes.
+  The installer writes both aliases.
+- **IOL iourc**: the IOL process now points at the per-node copy of `iourc`
+  inside its run directory, so `iouc`/licence lookup works for the
+  unprivileged `teralab-vm` user.
+
+## IOL link-state limitation
+
+IOL layer-1 link state is a firmware limitation, not a topology bug. The
+binary exposes `-l` (layer-1 keepalives), but enabling it makes every port time
+out and drop — including connected ports — because the IOU fabric peer does
+not implement the keepalive handshake. GNS3 has the same open issue.
+
+TeraLab therefore keeps `-l` disabled: unconnected IOL ports still isolate
+traffic (no bridge/tap path), which lets IP SLA/reachability failover work, but
+Cisco IOS may report `up/up` after `no shutdown` even when no link is drawn.
+For true interface-state failover labs, use QEMU/VPCS nodes or shut the
+interfaces explicitly. This is documented rather than hidden.
+
+## Validation
+
+- Icons: `/images/icons/Router.png` and `/themes/...` return 200 on the
+  installed Apache.
+- IOL starts with the per-node `iourc`; no `Could not open iourc` warning.
+- PHP 63 tests / 732 assertions; Go suites; UI 9 tests; release gate and CI green.
+
 # TeraLab v1.4.3 release notes
 
 - Release date: 2026-11-19
