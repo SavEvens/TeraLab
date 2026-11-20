@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# TeraLab-authored device template. Not derived from any UNetLab, EVE-NG or
+# vendor template file. Parameters follow public vendor documentation.
+schema: 1
+id: catvedge
+name: Catalyst SD-WAN Edge
+kind: qemu
+license: AGPL-3.0-or-later
+icon: Router.png
+defaults:
+  cpu: 1
+  ram: 1024
+  ethernet: 5
+  console: telnet
+options:
+  description: 'Catalyst SD-WAN Edge (formerly vEdge).'
+  qemu_arch: x86_64
+  qemu_nic: virtio-net-pci
+  qemu_options: '-machine type=pc,accel=kvm -cpu host -serial mon:stdio -nographic -no-user-config -nodefaults -rtc base=utc'

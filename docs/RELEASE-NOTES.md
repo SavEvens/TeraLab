@@ -3,6 +3,82 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.3 release notes
+
+- Release date: 2026-11-20
+- Previous release: v1.5.2
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Twelve new built-in device templates
+
+The built-in catalogue grows from 52 to 64 entries. All twelve new templates
+are metadata only (`schema: 1` YAML), TeraLab-authored under
+AGPL-3.0-or-later, and reuse existing icons. No vendor template, icon, image,
+firmware or licence material is bundled.
+
+Cisco Catalyst 8000V and Firepower:
+
+- `c8000v` — Catalyst 8000V edge router: 4 vCPU, 8 GiB RAM, 4 NICs, telnet.
+- `ftd7` — Firepower Threat Defense 7 (FTDv): 4 vCPU, 8 GiB RAM, 6 NICs, VNC.
+- `fmc7` — Firepower Management Center 7 (FMCv): 4 vCPU, 28 GiB RAM, 1 NIC,
+  VNC.
+
+Legacy Viptela ids:
+
+- `vtmgmt` — vManage: 4 vCPU, 32 GiB RAM, 2 NICs, telnet.
+- `vtsmart` — vSmart: 4 vCPU, 8 GiB RAM, 2 NICs, telnet.
+- `vtbond` — vBond: 2 vCPU, 4 GiB RAM, 2 NICs, telnet.
+- `vtedge` — vEdge: 1 vCPU, 1 GiB RAM, 5 NICs, telnet.
+
+Catalyst SD-WAN ids (best-effort naming compatibility with current Cisco
+product names):
+
+- `catmanager` — Catalyst SD-WAN Manager (formerly vManage): 4 vCPU, 32 GiB.
+- `catcontrol` — Catalyst SD-WAN Controller (formerly vSmart): 4 vCPU, 8 GiB.
+- `catvalid` — Catalyst SD-WAN Validator (formerly vBond): 2 vCPU, 4 GiB.
+- `catvedge` — Catalyst SD-WAN Edge (formerly vEdge): 1 vCPU, 1 GiB, 5 NICs.
+- `catc8k` — Catalyst 8000V SD-WAN Edge (cEdge): 4 vCPU, 8 GiB, 4 NICs.
+
+`catc1k` was in the approved plan but is not shipped: Cisco has no Catalyst
+1000V virtual platform, and the plan explicitly allows dropping it.
+
+## Known limitation: templates are metadata only
+
+The engine does not consume the template `options` block yet. NIC model and
+QEMU arguments beyond the generic QEMU path are therefore not applied in this
+release. Starting FTD and FMC, which need VNC and a vendor-specific disk
+layout, and multi-disk SD-WAN Manager nodes, is **not yet guaranteed**. The
+metadata is correct and forward-compatible; the engine work is deferred.
+
+High RAM defaults are deliberate vendor floors, not typos: `fmc7` (28 GiB)
+and `vtmgmt`/`catmanager` (32 GiB). A host must have enough memory to start
+those nodes.
+
+No UI badge and no port-naming options are added in this release.
+
+## Licensing and provenance
+
+- Every new template is TeraLab-authored `AGPL-3.0-or-later` with an SPDX
+  header; none is derived from UNetLab, EVE-NG or a vendor template.
+- SD-WAN ids are best-effort naming compatibility only; no vendor template,
+  icon, image or licence material was copied.
+- `fortinet.yaml` and the existing BSD-3-Clause templates are untouched.
+
+## Compatibility notes
+
+- No API schema, lab format or database migration changed.
+- `GET /api/v2/templates` now returns the 64 built-in templates (plus any
+  custom templates installed).
+- The OpenAPI document only has its version bumped.
+
+## Validation
+
+- `64 templates checked, 0 problems` from the template schema check.
+- PHP suite: 84 tests, 874 assertions; PHPStan clean.
+- Release gate green.
+- On the deployed pre-release API, `GET /api/v2/templates` returned 64
+  entries with all 12 new ids present, and `catc1k` returned `404`.
+
 # TeraLab v1.5.2 release notes
 
 - Release date: 2026-11-20
