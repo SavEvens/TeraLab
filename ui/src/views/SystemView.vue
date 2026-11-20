@@ -4,7 +4,6 @@
     <div class="page-head">
       <span class="crumbs">Workspace /</span>
       <h1>System</h1>
-      <span class="badge">v{{ version }}</span>
       <div class="spacer"></div>
       <button class="ghost" @click="loadAll">Refresh</button>
     </div>
@@ -19,6 +18,10 @@
         <span>Load 1 / 5 / 15</span>
         <strong>{{ host?.load1 ?? '—' }} / {{ host?.load5 ?? '—' }} / {{ host?.load15 ?? '—' }}</strong>
       </article>
+      <article class="stat-card cpu-usage">
+        <span>CPU usage</span>
+        <strong>{{ cpuUsage }}</strong>
+      </article>
       <article class="stat-card">
         <span>Disk free</span>
         <strong>{{ bytes(host?.disk_free_bytes) }} / {{ bytes(host?.disk_total_bytes) }}</strong>
@@ -31,7 +34,7 @@
         <span>Engines</span>
         <ul class="engine-list">
           <li v-for="engine in host?.engines || []" :key="engine.name">
-            <span class="dot" :class="{ ok: engine.available }"></span>
+            <span class="dot" :class="engine.available ? 'ok' : 'neutral'"></span>
             <strong>{{ engine.name }}</strong>
             <small>{{ engine.available ? engine.version : 'not installed' }}</small>
           </li>
@@ -41,15 +44,11 @@
         <span>Physical interfaces</span>
         <ul class="engine-list">
           <li v-for="iface in host?.interfaces || []" :key="iface.name">
-            <span class="dot" :class="{ ok: iface.up }"></span>
+            <span class="dot" :class="iface.up ? 'ok' : 'neutral'"></span>
             <strong>{{ iface.name }}</strong>
             <small>{{ iface.mac || 'no mac' }} · {{ iface.addresses?.join(', ') || 'no address' }}</small>
           </li>
         </ul>
-      </article>
-      <article class="stat-card wide">
-        <span>Host status payload</span>
-        <pre class="log-view">{{ JSON.stringify(host, null, 2) }}</pre>
       </article>
     </section>
 
@@ -155,7 +154,6 @@ import { notify } from '../stores/toasts'
 const tabs = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
 const active = ref('Host')
 const host = ref(null)
-const version = ref('1.4.0')
 const settingsForm = ref({ timezone: 'UTC', console_default: 'telnet', session_ttl: 3600, max_upload_bytes: 33554432 })
 const saving = ref(false)
 const error = ref('')
@@ -169,6 +167,10 @@ const newToken = ref('')
 const restoreFile = ref(null)
 const restoreResult = ref(null)
 const canAdmin = computed(() => session.user?.role === 'admin')
+const cpuUsage = computed(() => {
+  const value = host.value?.cpu_usage_percent
+  return value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`
+})
 const timezones = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : ['UTC']
 
 function bytes(value) {
@@ -202,8 +204,6 @@ async function loadTokens() {
 async function loadAll() {
   error.value = ''
   try {
-    const health = await api.health()
-    version.value = health.version
     await Promise.all([loadHost(), loadSettings(), loadLogs(), loadTokens()])
   } catch (exception) {
     error.value = exception.message

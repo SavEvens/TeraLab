@@ -5,6 +5,9 @@
       <div class="picker-head">
         <h2>Add node</h2>
         <input ref="searchInput" v-model="search" placeholder="Filter templates" aria-label="Filter templates" />
+        <label class="picker-count">Count
+          <input v-model.number="count" type="number" min="1" max="20" step="1" aria-label="Count" @change="count = clampCount(count)" />
+        </label>
         <button class="ghost" aria-label="Close" @click="$emit('close')">✕</button>
       </div>
 
@@ -21,7 +24,7 @@
               <strong>{{ template.name || template.id }}</strong>
               <small>{{ template.kind }} · {{ imagesFor(template).map((image) => image.name).join(', ') }}</small>
             </span>
-            <button @click="$emit('add', template)">Add</button>
+            <button @click="add(template)">Add</button>
           </li>
         </ul>
       </section>
@@ -37,7 +40,7 @@
               <strong>{{ template.name || template.id }}</strong>
               <small>{{ template.kind }} · no image</small>
             </span>
-            <button class="ghost" @click="$emit('add', template)">Add</button>
+            <button class="ghost" @click="add(template)">Add</button>
           </li>
         </ul>
       </section>
@@ -45,8 +48,8 @@
       <p v-if="!ready.length && !needsImage.length" class="empty">No templates match “{{ search }}”.</p>
 
       <div class="picker-special">
-        <button class="ghost" @click="$emit('add', { id: '__text', name: 'Text', kind: 'text' })">Add text</button>
-        <button class="ghost" @click="$emit('add', { id: '__picture', name: 'Picture', kind: 'picture' })">Add picture</button>
+        <button class="ghost" @click="add({ id: '__text', name: 'Text', kind: 'text' }, 1)">Add text</button>
+        <button class="ghost" @click="add({ id: '__picture', name: 'Picture', kind: 'picture' }, 1)">Add picture</button>
       </div>
     </div>
   </div>
@@ -59,10 +62,20 @@ const props = defineProps({
   templates: { type: Array, default: () => [] },
   images: { type: Array, default: () => [] }
 })
-defineEmits(['add', 'close'])
+const emit = defineEmits(['add', 'close'])
 
 const search = ref('')
 const searchInput = ref(null)
+const count = ref(1)
+
+function clampCount(value) {
+  return Math.max(1, Math.min(20, Math.trunc(Number(value) || 1)))
+}
+
+function add(template, fixedCount = null) {
+  const selectedCount = fixedCount ?? clampCount(count.value)
+  emit('add', { template, count: selectedCount })
+}
 
 const mappedIds = computed(() => new Set(props.images.map((image) => image.template).filter(Boolean)))
 const matching = computed(() => {

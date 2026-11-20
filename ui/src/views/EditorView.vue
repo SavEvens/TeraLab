@@ -55,10 +55,10 @@
           <div class="spacer"></div>
           <div class="ed-actions">
             <button class="add-node" title="Add node" @click="openTemplatePicker()">+ Add node</button>
+            <button class="add-link" title="Add link" @click="openLinkDialog()">+ Add link</button>
             <button class="ghost icon" title="Toggle inspector" aria-label="Toggle inspector" @click="inspectorOpen = !inspectorOpen">▥</button>
             <button class="ghost" :disabled="!canUndo" title="Undo (Ctrl+Z)" @click="undo">↶</button>
             <button class="ghost" :disabled="!canRedo" title="Redo (Ctrl+Y)" @click="redo">↷</button>
-            <button @click="save()">Save</button>
             <button class="ghost" @click="openSnapshots">Snapshots</button>
             <button class="ghost" @click="run('start')">▶ Start lab</button>
             <button class="ghost" @click="run('stop')">■ Stop lab</button>
@@ -81,16 +81,12 @@
         />
 
         <div class="ed-bottom" role="toolbar" aria-label="Topology tools">
-          <button class="ghost" @click="openLinkDialog()">+ Add link</button>
           <button class="ghost" @click="duplicateSelected">Duplicate</button>
-          <button class="ghost" @click="align('x')">Align ⇤</button>
-          <button class="ghost" @click="align('y')">Align ⇡</button>
           <button class="ghost" @click="fit">Fit</button>
           <button class="ghost" :class="{ active: snap }" @click="snap = !snap">Snap</button>
           <button class="ghost" :class="{ active: showGrid }" @click="showGrid = !showGrid">Grid</button>
           <button class="ghost" @click="showTable = !showTable">{{ showTable ? 'Canvas' : 'Table' }}</button>
-          <button class="ghost" @click="validate">Validate</button>
-                  <button class="ghost" :class="{ active: showMinimap }" @click="showMinimap = !showMinimap">Map</button>
+          <button class="ghost" :class="{ active: showMinimap }" @click="showMinimap = !showMinimap">Map</button>
           <button class="ghost" @click="presentation = true">Presentation</button>
         </div>
 
@@ -101,18 +97,12 @@
           <span v-if="selected">selected <strong>{{ selected.data.name }}</strong></span>
           <span class="spacer"></span>
           <span v-if="conflict" class="err">conflict</span>
-          <span v-else-if="problems.length" class="warn">validation issues</span>
           <span v-else-if="dirty" class="warn">unsaved</span>
           <span v-else class="ok">saved</span>
         </div>
       </template>
 
       <button v-else class="presentation-exit" @click="presentation = false">Exit presentation</button>
-
-      <div v-if="problems.length" class="validation-panel" role="status">
-        <strong>Validation</strong>
-        <ul><li v-for="problem in problems" :key="problem">{{ problem }}</li></ul>
-      </div>
     </div>
 
     <div v-if="showSnapshots" class="modal-backdrop" @click.self="showSnapshots = false">
@@ -237,7 +227,6 @@ const showGrid = ref(true)
 const showTable = ref(false)
 const showMinimap = ref(true)
 const clipboard = ref(null)
-const problems = ref([])
 const showSnapshots = ref(false)
 const snapshots = ref([])
 const snapshotName = ref('')
@@ -380,8 +369,7 @@ async function load() {
   }
 }
 
-function addTemplate(template, position = null) {
-  record()
+function appendTemplate(template, position = null) {
   const id = String(nodes.value.reduce((max, node) => Math.max(max, Number(node.id) || 0), 0) + 1)
   if (template.kind === 'text' || template.kind === 'picture') {
     nodes.value.push({
@@ -445,6 +433,11 @@ function addTemplate(template, position = null) {
   dirty.value = true
 }
 
+function addTemplate(template, position = null) {
+  record()
+  appendTemplate(template, position)
+}
+
 function openTemplatePicker(position = null) {
   pickerPosition.value = position
   templatePickerOpen.value = true
@@ -454,9 +447,16 @@ function viewportCenter() {
   return screenToFlowCoordinate({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
 }
 
-function addFromPicker(template) {
-  const position = pickerPosition.value || viewportCenter()
-  addTemplate(template, position)
+function addFromPicker({ template, count } = {}) {
+  const base = pickerPosition.value || viewportCenter()
+  const total = Math.max(1, Math.min(20, Math.trunc(Number(count) || 1)))
+  record()
+  for (let index = 0; index < total; index += 1) {
+    appendTemplate(template, {
+      x: base.x + (index % 5) * 210,
+      y: base.y + Math.floor(index / 5) * 130
+    })
+  }
   templatePickerOpen.value = false
   pickerPosition.value = null
 }
@@ -719,7 +719,6 @@ function openPaneMenu(payload) {
     { separator: true },
     { label: 'Paste', disabled: !clipboard.value?.length, action: pasteSelection },
     { label: 'Fit view', action: fit },
-    { label: 'Validate', action: validate },
     { label: 'Presentation mode', action: () => { presentation.value = true } }
   ]
   contextMenu.value = { ...menuPosition(event), items }
@@ -927,27 +926,6 @@ async function run(action) {
   }
 }
 
-function validate() {
-  problems.value = []
-  const names = new Map()
-  const references = new Set(images.value.map((image) => image.reference).filter(Boolean))
-  for (const node of nodes.value) {
-    const name = node.data.name?.trim()
-    if (!name) problems.value.push('A node has no name')
-    else if (names.has(name)) problems.value.push(`Duplicate node name: ${name}`)
-    names.set(name, true)
-    if (['qemu', 'iol', 'dynamips'].includes(node.data.kind) && !node.data.image && !node.data.iso) {
-      problems.value.push(`${name || node.data.id} has no image`)
-    }
-    if (node.data.image && !references.has(node.data.image)) {
-      problems.value.push(`${name || node.data.id}: image "${node.data.image}" is not mapped`)
-    }
-    if (node.data.interfaces.length > 16) problems.value.push(`${name || node.data.id} has too many ports`)
-  }
-  if (problems.value.length) notify('error', problems.value.slice(0, 3).join('; '), 8000)
-  else notify('success', 'Topology looks valid')
-}
-
 function fit() {
   fitView({ padding: 0.15 })
 }
@@ -968,15 +946,6 @@ function duplicateSelected() {
     return copy
   })
   nodes.value.push(...copies)
-  dirty.value = true
-}
-
-function align(axis) {
-  const selectedNodes = getSelectedNodes.value
-  if (selectedNodes.length < 2) return
-  record()
-  const anchor = selectedNodes[0].position[axis]
-  for (const node of selectedNodes) node.position[axis] = anchor
   dirty.value = true
 }
 

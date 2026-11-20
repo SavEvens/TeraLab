@@ -4,7 +4,9 @@
 package console
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -94,7 +96,9 @@ func (g *Gateway) handleSerial(writer http.ResponseWriter, request *http.Request
 	}
 	defer session.Close()
 
-	g.bridge(writer, request, session)
+	g.bridge(writer, request, session, func(data []byte) bool {
+		return consumeResizeFrame(session, data)
+	})
 }
 
 func (g *Gateway) handleVNC(writer http.ResponseWriter, request *http.Request) {
@@ -116,7 +120,7 @@ func (g *Gateway) handleVNC(writer http.ResponseWriter, request *http.Request) {
 	}
 	defer stream.Close()
 
-	g.bridge(writer, request, stream)
+	g.bridge(writer, request, stream, nil)
 }
 
 func (g *Gateway) handleTCP(writer http.ResponseWriter, request *http.Request) {
@@ -138,14 +142,29 @@ func (g *Gateway) handleTCP(writer http.ResponseWriter, request *http.Request) {
 	}
 	defer stream.Close()
 
-	g.bridge(writer, request, stream)
+	g.bridge(writer, request, stream, nil)
+}
+
+// resizeTarget is the part of a serial console session the gateway drives.
+type resizeTarget interface {
+	Resize(cols, rows int) error
 }
 
 // bridge copies frames between a WebSocket and an engine stream.
 //
+// When consume is not nil it sees every inbound frame first and a true result
+// swallows that frame. Only the serial bridge uses it, for resize control
+// frames, so they are applied to the pty instead of being written into the
+// device console. The VNC and TCP bridges pass nil and stay raw passthrough.
+//
 // The stream is owned by the caller: the pty is shared with the node and must
 // survive viewer disconnects, while TCP streams are closed by their handlers.
-func (g *Gateway) bridge(writer http.ResponseWriter, request *http.Request, stream io.ReadWriteCloser) {
+func (g *Gateway) bridge(
+	writer http.ResponseWriter,
+	request *http.Request,
+	stream io.ReadWriteCloser,
+	consume func([]byte) bool,
+) {
 	connection, err := g.upgrader.Upgrade(writer, request, nil)
 	if err != nil {
 		return
@@ -173,8 +192,65 @@ func (g *Gateway) bridge(writer http.ResponseWriter, request *http.Request, stre
 		if readErr != nil {
 			return
 		}
+		if consume != nil && consume(data) {
+			continue
+		}
 		if _, writeErr := stream.Write(data); writeErr != nil {
 			return
 		}
 	}
+}
+
+// parseResizeFrame recognises a resize control frame: a JSON object with
+// exactly the keys "type", "cols" and "rows", where "type" is the string
+// "resize" and both dimensions are integer values inside the console bounds.
+// Binary traffic, plain text, malformed or differently shaped JSON, extra
+// keys, wrong types, and out-of-range values are all rejected so the caller
+// forwards the frame untouched.
+func parseResizeFrame(data []byte) (cols, rows int, ok bool) {
+	if len(data) == 0 || data[0] != '{' {
+		return 0, 0, false
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var fields map[string]json.RawMessage
+	if err := decoder.Decode(&fields); err != nil {
+		return 0, 0, false
+	}
+	// Reject anything after the object, e.g. two concatenated frames.
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return 0, 0, false
+	}
+	if len(fields) != 3 {
+		return 0, 0, false
+	}
+
+	var frameType string
+	if err := json.Unmarshal(fields["type"], &frameType); err != nil || frameType != "resize" {
+		return 0, 0, false
+	}
+	if err := json.Unmarshal(fields["cols"], &cols); err != nil {
+		return 0, 0, false
+	}
+	if err := json.Unmarshal(fields["rows"], &rows); err != nil {
+		return 0, 0, false
+	}
+	if cols < 1 || cols > 1024 || rows < 1 || rows > 256 {
+		return 0, 0, false
+	}
+
+	return cols, rows, true
+}
+
+// consumeResizeFrame applies a recognised resize control frame and reports
+// whether the caller must not forward it. A frame that does not match the
+// strict shape is never touched, so console traffic stays byte-for-byte.
+func consumeResizeFrame(target resizeTarget, data []byte) bool {
+	cols, rows, ok := parseResizeFrame(data)
+	if !ok {
+		return false
+	}
+	_ = target.Resize(cols, rows)
+
+	return true
 }

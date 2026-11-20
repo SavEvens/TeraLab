@@ -3,6 +3,133 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.5 release notes
+
+- Release date: 2026-11-20
+- Previous release: v1.5.4
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Editor chrome
+
+The Align buttons, the Validate button and the Save button are removed from
+the editor. The pane context-menu Validate entry and the validation panel went
+with them.
+
+Saving is unchanged: autosave (1 s debounce), Ctrl+S, the save-state
+indicator, the conflict modal, and the silent saves before start, stop and wipe
+all remain. Problems are still reported where they block work — import warnings
+and node-start errors are unchanged. There is no standalone topology
+validation until passive validation on save lands as a follow-up.
+
+## Add link in the top bar
+
+"+ Add link" now sits next to "+ Add node" in the top bar and is always
+enabled. The link dialog validates the selection itself ("Choose two nodes and
+interfaces", "Pick two different nodes"), so there is nothing to disable.
+
+## Add several copies of a template at once
+
+The template picker has a **Count** field: 1 to 20 copies of a template can be
+added in one action. The copies cascade in a grid from the click point (or the
+viewport centre), and one undo step removes the whole batch. Add text and Add
+picture keep adding a single element.
+
+## Zoom controls and minimap
+
+The Vue Flow zoom controls and the minimap are no longer covered by the bottom
+toolbar or the status bar, and they stay clear of the console dock, including
+after the dock is resized. With the console open they sit above it.
+
+## Resizable console dock
+
+The console dock has a drag handle on its top edge. Drag it, press Up/Down
+while it is focused, or double-click it to return to the default. The height is
+clamped to 140 px – 75 vh and stored per user in the browser (`localStorage`,
+key `teralab.console-h.<user>`). It is applied through the `--console-h` CSS
+variable, which the editor chrome and the Vue Flow panels now follow; the
+default is the previous 332 px, so nothing moves until someone drags. The
+height is a browser preference only — nothing is stored on the server.
+
+## No resize frames in the device console
+
+The telnet console no longer sends `{"type":"resize",…}` frames — neither on
+open nor on fit-driven terminal resizes.
+
+The agent still understands the frame: the serial console bridge consumes a
+strictly shaped resize control frame — a JSON object with exactly `type`
+(`"resize"`), `cols` (1–1024) and `rows` (1–256), all integers — applies it to
+the node's PTY with `pty.Setsize`, and never forwards it. Every other frame,
+including binary traffic, plain text, malformed JSON, extra keys and
+out-of-range values, passes through byte-for-byte. The VNC and TCP bridges are
+unchanged (raw passthrough). No client can write control JSON into a device
+console again.
+
+## System page: operational status only
+
+The System → Host tab no longer shows the raw host-JSON card or the duplicated
+version badge. Engines that are not installed and interfaces that are down use
+a neutral grey dot; red is reserved for real errors. A new **CPU usage** card
+shows a measured percentage.
+
+## CPU usage in the host status
+
+The agent's host status gains `cpu_usage_percent`: two `/proc/stat` samples
+about 250 ms apart, bounded by the request context, reported to one decimal
+place. It is `0` when sampling is unavailable (for example off Linux, or when
+`/proc/stat` cannot be read), and the two-sample wait adds roughly 250 ms to a
+host-status call. The Load 1/5/15 card keeps bare unitless load averages.
+
+## About page: licence and provenance only
+
+About is now a pure licence/provenance display: components are listed by name
+and licence with no status colours. Product, Licence, the source link, the
+no-warranty notices and the version badge all remain. The System page no longer
+duplicates the version; About and the header badge are where it shows.
+
+## Compatibility notes
+
+- No API shape change: the v1 and v2 endpoints keep their request and response
+  shapes. The only addition is `cpu_usage_percent` in the agent host-status
+  payload consumed by the System page; `docs/API.md` is unchanged in this
+  release.
+- The reported product version is now `1.5.5`.
+- No database migration and no lab-format change: labs, image references and
+  the `/var/lib/teralab` layout are unchanged. There is nothing to migrate and
+  no additional backup is required beyond the normal upgrade backup described
+  in `docs/UPGRADE.md`.
+- Removing the Validate button is intentional. Import warnings and node-start
+  errors still surface problems; passive validation on save is a follow-up.
+- The console height is a per-user browser preference, not part of a lab or an
+  account. Clearing site data restores the 332 px default.
+- The System page no longer shows the version; About does, next to the
+  unchanged header badge.
+- The mock e2e threshold (10 s for 100 nodes) is pre-existing, and the suite
+  can flake on a concurrently loaded host.
+
+## Licensing and provenance
+
+No new dependency and no upstream-derived code. The About cleanup keeps every
+AGPL-required notice (product, licence, source link, no-warranty text); it only
+removes status colouring. `LICENSE`, `NOTICE`, `PROVENANCE.md` and `LICENSES/`
+change only in their version strings.
+
+## Validation
+
+Verified on the running stack:
+
+- The host status reported `cpu_usage_percent` (for example `2`), and the
+  System CPU usage card rendered it with a `%`.
+- A resize control frame sent to a real IOL console was consumed: the device
+  output showed only the following `show clock` command, with no JSON.
+- The Test lab starts normally.
+- PHP suite: 105 tests, 1116 assertions, PHPStan clean.
+- Go: all packages, including `-race` for the console, system and engine
+  packages.
+- UI: 24 tests and a successful build.
+- Mock e2e passes when run alone (`UI_E2E_OK`, about 8.9–9.8 s). The 10 s
+  threshold for 100 nodes is pre-existing, and a concurrently loaded host can
+  make the suite flake.
+
 # TeraLab v1.5.4 release notes
 
 - Release date: 2026-11-20
