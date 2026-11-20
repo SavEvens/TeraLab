@@ -1,12 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
   <section class="editor" :class="{ presentation, 'has-console': consoleOpen }">
-    <div class="canvas" @dragover.prevent @drop="dropTemplate">
+    <div class="canvas">
       <VueFlow
         v-show="!showTable"
         v-model:nodes="nodes"
         v-model:edges="edges"
         :node-types="nodeTypes"
+        :edge-types="edgeTypes"
         :min-zoom="0.2"
         :max-zoom="2.5"
         :snap-to-grid="snap"
@@ -53,7 +54,7 @@
           </div>
           <div class="spacer"></div>
           <div class="ed-actions">
-            <button class="ghost icon" title="Toggle devices palette" aria-label="Toggle devices palette" @click="paletteOpen = !paletteOpen">▤</button>
+            <button class="add-node" title="Add node" @click="openTemplatePicker()">+ Add node</button>
             <button class="ghost icon" title="Toggle inspector" aria-label="Toggle inspector" @click="inspectorOpen = !inspectorOpen">▥</button>
             <button class="ghost" :disabled="!canUndo" title="Undo (Ctrl+Z)" @click="undo">↶</button>
             <button class="ghost" :disabled="!canRedo" title="Redo (Ctrl+Y)" @click="redo">↷</button>
@@ -65,7 +66,6 @@
           </div>
         </div>
 
-        <Palette v-show="paletteOpen" class="floating-palette" :templates="templates" @add="addTemplate" />
         <Inspector
           v-show="inspectorOpen"
           class="floating-inspector"
@@ -81,6 +81,7 @@
         />
 
         <div class="ed-bottom" role="toolbar" aria-label="Topology tools">
+          <button class="ghost" @click="openLinkDialog()">+ Add link</button>
           <button class="ghost" @click="duplicateSelected">Duplicate</button>
           <button class="ghost" @click="align('x')">Align ⇤</button>
           <button class="ghost" @click="align('y')">Align ⇡</button>
@@ -141,6 +142,24 @@
       </div>
     </div>
 
+    <TemplatePicker
+      v-if="templatePickerOpen"
+      :templates="templates"
+      :images="images"
+      @add="addFromPicker"
+      @close="templatePickerOpen = false"
+    />
+
+    <AddLinkDialog
+      v-if="linkDialog"
+      :nodes="linkNodes"
+      :networks="networks"
+      :initial-source="linkDialog.source"
+      :initial-target="linkDialog.target"
+      @create="createLink"
+      @close="linkDialog = null"
+    />
+
     <ContextMenu
       v-if="contextMenu"
       :x="contextMenu.x"
@@ -170,23 +189,26 @@ import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import Palette from '../components/Palette.vue'
 import Inspector from '../components/Inspector.vue'
 import LabNode from '../components/LabNode.vue'
+import LinkEdge from '../components/LinkEdge.vue'
+import TemplatePicker from '../components/TemplatePicker.vue'
+import AddLinkDialog from '../components/AddLinkDialog.vue'
 import ContextMenu from '../components/ContextMenu.vue'
 import TextNode from '../components/TextNode.vue'
 import PictureNode from '../components/PictureNode.vue'
 import { api } from '../api'
 import { notify, progress, dismiss } from '../stores/toasts'
 import { openConsole, consoleState } from '../stores/consoles'
-import { firstFreePort } from '../topology'
+import { buildEdges, defaultPortName } from '../topology'
 import { session } from '../stores/session'
 
 const props = defineProps({ id: { type: String, required: true } })
 const router = useRouter()
-const { screenToFlowCoordinate, fitView, getSelectedNodes, getViewport, setViewport } = useVueFlow()
+const { screenToFlowCoordinate, fitView, getSelectedNodes, getViewport, setViewport, viewport } = useVueFlow()
 
 const nodeTypes = { lab: LabNode, text: TextNode, picture: PictureNode }
+const edgeTypes = { link: LinkEdge }
 const nodes = ref([])
 const edges = ref([])
 const networks = ref([])
@@ -202,7 +224,9 @@ const error = ref('')
 const conflict = ref(null)
 const autosavePaused = ref(false)
 const presentation = ref(false)
-const paletteOpen = ref(true)
+const templatePickerOpen = ref(false)
+const pickerPosition = ref(null)
+const linkDialog = ref(null)
 const inspectorOpen = ref(true)
 const loading = ref(true)
 const history = ref([])
@@ -219,7 +243,7 @@ const snapshots = ref([])
 const snapshotName = ref('')
 const bulkAction = ref('start')
 const contextMenu = ref(null)
-const zoom = computed(() => Math.round(((getViewport.value?.zoom ?? 1)) * 100))
+const zoom = computed(() => Math.round(((viewport.value?.zoom ?? 1)) * 100))
 const consoleOpen = computed(() => consoleState.tabs.length > 0)
 const selectionCount = computed(() => getSelectedNodes.value.length || (selected.value ? 1 : 0))
 const canUndo = computed(() => history.value.length > 0)
@@ -229,6 +253,7 @@ const saveLabel = computed(() => {
   if (dirty.value) return 'Unsaved changes'
   return savedAt.value ? `Saved ${savedAt.value.toLocaleTimeString()}` : 'Saved'
 })
+const linkNodes = computed(() => nodes.value.filter((node) => node.type === 'lab'))
 let autosaveTimer = null
 let suppressWatch = true
 
@@ -295,7 +320,7 @@ function buildNode(raw, index) {
       config: raw.config || '',
       interfaces: interfaces.map((iface, port) => ({
         id: Number(iface.id ?? port),
-        name: iface.name || `eth${port}`,
+        name: iface.name || defaultPortName(raw.type || 'qemu', port),
         type: iface.type || 'ethernet',
         network_id: String(iface.network_id || '')
       }))
@@ -304,37 +329,10 @@ function buildNode(raw, index) {
 }
 
 function rebuildEdges() {
-  const byNetwork = new Map()
-  for (const node of nodes.value) {
-    node.data.interfaces.forEach((iface, index) => {
-      if (!iface.network_id) return
-      if (!byNetwork.has(iface.network_id)) byNetwork.set(iface.network_id, [])
-      byNetwork.get(iface.network_id).push({ node, index })
-    })
-  }
-  const next = []
+  const built = buildEdges(nodes.value)
+  edges.value = built.edges
   edgeNetworks.clear()
-  for (const [networkId, ports] of byNetwork.entries()) {
-    if (ports.length < 2) continue
-    for (let index = 0; index < ports.length - 1; index += 1) {
-      const from = ports[index]
-      const to = ports[index + 1]
-      const id = `e-${networkId}-${from.node.id}-${from.index}-${to.node.id}-${to.index}`
-      next.push({
-        id,
-        source: from.node.id,
-        target: to.node.id,
-        sourceHandle: 'node-s',
-        targetHandle: 'node-t',
-        data: { networkId },
-        type: 'straight',
-        animated: false,
-        style: { stroke: '#5b8cff', strokeWidth: 2 }
-      })
-      edgeNetworks.set(id, networkId)
-    }
-  }
-  edges.value = next
+  for (const [id, networkId] of built.networks) edgeNetworks.set(id, networkId)
 }
 
 async function load() {
@@ -390,7 +388,7 @@ function addTemplate(template, position = null) {
   const ethernet = Math.min(16, Math.max(0, defaults.ethernet ?? (template.kind === 'vpcs' ? 1 : 4)))
   const interfaces = Array.from({ length: ethernet }, (_, index) => ({
     id: index,
-    name: `eth${index}`,
+    name: defaultPortName(template.kind, index),
     type: 'ethernet',
     network_id: ''
   }))
@@ -421,38 +419,62 @@ function addTemplate(template, position = null) {
   dirty.value = true
 }
 
-function dropTemplate(event) {
-  const id = event.dataTransfer.getData('application/x-teralab-template')
-  const template = templates.value.find((item) => item.id === id)
-  if (!template) return
-  const position = screenToFlowCoordinate({ x: event.clientX, y: event.clientY })
+function openTemplatePicker(position = null) {
+  pickerPosition.value = position
+  templatePickerOpen.value = true
+}
+
+function viewportCenter() {
+  return screenToFlowCoordinate({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
+}
+
+function addFromPicker(template) {
+  const position = pickerPosition.value || viewportCenter()
   addTemplate(template, position)
+  templatePickerOpen.value = false
+  pickerPosition.value = null
 }
 
-function portFromHandle(node, handle, prefix) {
-  const value = String(handle || '')
-  if (value.startsWith(prefix)) {
-    const index = Number(value.slice(2))
-    const port = node.data.interfaces[index]
-    if (port) return port
-  }
-
-  return null
+function openLinkDialog(source = '', target = '') {
+  linkDialog.value = { source, target }
 }
 
-function addLinkBetween(source, target, preferredNetwork = '') {
-  if (!source || !target || source.id === target.id) return false
-  const sourcePort = portFromHandle(source, 'node-s', 's-') || firstFreePort(source)
-  const targetPort = portFromHandle(target, 'node-t', 't-') || firstFreePort(target, sourcePort?.network_id || preferredNetwork)
-  if (!sourcePort) {
-    notify('error', `${source.data.name}: no free port`)
-    return false
+// Create the link between the two chosen interfaces. When both interfaces are
+// already attached to different links the target network is merged into the
+// source network so no interface is silently dropped.
+function createLink({ sourceId, sourceIndex, targetId, targetIndex }) {
+  const source = nodes.value.find((node) => node.id === sourceId)
+  const target = nodes.value.find((node) => node.id === targetId)
+  const sourcePort = source?.data.interfaces[sourceIndex]
+  const targetPort = target?.data.interfaces[targetIndex]
+  if (!source || !target || !sourcePort || !targetPort) {
+    notify('error', 'Choose two nodes and interfaces')
+    return
   }
-  if (!targetPort) {
-    notify('error', `${target.data.name}: no free port`)
-    return false
+  if (source.id === target.id) {
+    notify('error', 'Pick two different nodes')
+    return
   }
-  let networkId = targetPort.network_id || sourcePort.network_id || preferredNetwork
+  const sourceNetwork = String(sourcePort.network_id || '')
+  const targetNetwork = String(targetPort.network_id || '')
+  if (sourceNetwork && sourceNetwork === targetNetwork) {
+    notify('error', 'Those interfaces are already linked')
+    return
+  }
+
+  record()
+  let networkId = sourceNetwork || targetNetwork
+  if (sourceNetwork && targetNetwork) {
+    const merged = networks.value.find((network) => String(network.id) === targetNetwork)
+    const kept = networks.value.find((network) => String(network.id) === sourceNetwork)
+    for (const node of nodes.value) {
+      for (const iface of node.data.interfaces) {
+        if (String(iface.network_id) === targetNetwork) iface.network_id = sourceNetwork
+      }
+    }
+    networks.value = networks.value.filter((network) => String(network.id) !== targetNetwork)
+    notify('info', `Merged ${merged?.name || 'link'} into ${kept?.name || 'link'}`)
+  }
   if (!networkId) {
     networkId = nextNetworkId()
     networks.value.push({ id: networkId, name: `Net-${networkId}`, type: 'bridge' })
@@ -461,15 +483,14 @@ function addLinkBetween(source, target, preferredNetwork = '') {
   targetPort.network_id = networkId
   rebuildEdges()
   dirty.value = true
-
-  return true
+  linkDialog.value = null
 }
 
 function connect(params) {
   const source = nodes.value.find((node) => node.id === params.source)
   const target = nodes.value.find((node) => node.id === params.target)
-  if (!source || !target) return
-  addLinkBetween(source, target)
+  if (!source || !target || source.id === target.id) return
+  openLinkDialog(source.id, target.id)
 }
 
 function clearNetwork(networkId) {
@@ -554,7 +575,7 @@ function updatePorts(count) {
     }
   }
   while (interfaces.length < count) {
-    interfaces.push({ id: interfaces.length, name: `eth${interfaces.length}`, type: 'ethernet', network_id: '' })
+    interfaces.push({ id: interfaces.length, name: defaultPortName(selected.value.data.kind, interfaces.length), type: 'ethernet', network_id: '' })
   }
   cleanupNetworks()
   rebuildEdges()
@@ -651,21 +672,13 @@ function menuPosition(event) {
   }
 }
 
-function deviceItems(flowPosition) {
-  if (!templates.value.length) return [{ label: 'Loading…', disabled: true }]
-  return templates.value.map((template) => ({
-    label: template.name || template.id,
-    hint: template.kind,
-    action: () => addTemplate(template, flowPosition)
-  }))
-}
-
 function openPaneMenu(payload) {
   const event = payload?.event || payload
   event?.preventDefault?.()
   const flowPosition = screenToFlowCoordinate({ x: event.clientX, y: event.clientY })
   const items = [
-    { label: 'Add node', children: deviceItems(flowPosition) },
+    { label: 'Add node', action: () => openTemplatePicker(flowPosition) },
+    { label: 'Add link', action: () => openLinkDialog() },
     { label: 'Add text', action: () => addTemplate({ id: '__text', name: 'Text', kind: 'text' }, flowPosition) },
     { label: 'Add picture', action: () => addTemplate({ id: '__picture', name: 'Picture', kind: 'picture' }, flowPosition) },
     { separator: true },
@@ -675,16 +688,6 @@ function openPaneMenu(payload) {
     { label: 'Presentation mode', action: () => { presentation.value = true } }
   ]
   contextMenu.value = { ...menuPosition(event), items }
-}
-
-function linkTargetItems(node) {
-  return nodes.value
-    .filter((candidate) => candidate.id !== node.id && candidate.type === 'lab')
-    .map((candidate) => ({
-      label: candidate.data.name,
-      hint: candidate.data.kind,
-      action: () => addLinkBetween(node, candidate)
-    }))
 }
 
 async function nodeControl(action, node) {
@@ -724,7 +727,7 @@ function openNodeMenu(payload) {
     items.push({ label: 'Start node', action: () => nodeControl('start', node) })
     items.push({ label: 'Stop node', action: () => nodeControl('stop', node) })
     items.push({ label: 'Wipe node', action: () => nodeControl('wipe', node) })
-    items.push({ label: 'Add link to', children: linkTargetItems(node), disabled: linkTargetItems(node).length === 0 })
+    items.push({ label: 'Add link…', action: () => openLinkDialog(node.id), disabled: linkNodes.value.length < 2 })
     items.push({ separator: true })
   }
   items.push({ label: 'Configure', action: () => { selected.value = node; inspectorOpen.value = true } })
@@ -949,7 +952,7 @@ function pasteSelection() {
 
 function saveViewport() {
   try {
-    localStorage.setItem(`teralab.view.${session.user?.id || 'anon'}.${props.id}`, JSON.stringify(getViewport.value))
+    localStorage.setItem(`teralab.view.${session.user?.id || 'anon'}.${props.id}`, JSON.stringify(getViewport()))
   } catch {}
 }
 

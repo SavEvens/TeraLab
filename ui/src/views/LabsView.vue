@@ -33,7 +33,7 @@
 
     <table class="lab-table">
       <thead>
-        <tr><th>Name</th><th>Owner</th><th>Revision</th><th>Nodes</th><th>Lock</th><th>Actions</th></tr>
+        <tr><th>Name</th><th>Owner</th><th>Revision</th><th>Nodes</th><th>Status</th><th>Lock</th><th>Actions</th></tr>
       </thead>
       <tbody>
         <tr v-for="lab in filteredLabs" :key="lab.id">
@@ -45,10 +45,22 @@
           <td>{{ lab.revision }}</td>
           <td>{{ lab.nodes }}</td>
           <td>
+            <span :class="['state-pill', lab.running ? 'running' : 'stopped']" :data-lab-status="lab.id">
+              <span class="state-dot" aria-hidden="true"></span>
+              {{ lab.running ? `Running${lab.running_nodes ? ` (${lab.running_nodes})` : ''}` : 'Stopped' }}
+            </span>
+          </td>
+          <td>
             <span v-if="lab.lock" class="lock">locked by {{ lab.lock.username }}</span>
             <span v-else>—</span>
           </td>
           <td class="actions">
+            <button
+              v-if="lab.running"
+              class="ghost stop-lab"
+              :disabled="stopping.has(lab.id)"
+              @click="stop(lab)"
+            >{{ stopping.has(lab.id) ? 'Stopping…' : '■ Stop' }}</button>
             <button class="ghost" @click="duplicate(lab)">Duplicate</button>
             <button class="ghost" @click="move(lab)">Move</button>
             <button class="ghost" @click="exportLab(lab)">Export</button>
@@ -84,7 +96,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../stores/toasts'
 
@@ -96,6 +108,8 @@ const search = ref('')
 const newName = ref('')
 const newFolder = ref('')
 const error = ref('')
+const stopping = ref(new Set())
+let refreshTimer = null
 const filteredLabs = computed(() => {
   const needle = search.value.trim().toLowerCase()
   if (!needle) return labs.value
@@ -105,11 +119,15 @@ const filteredLabs = computed(() => {
 async function load() {
   error.value = ''
   try {
-    labs.value = (await api.labs()).data
+    await refreshLabs()
     await loadTrash()
   } catch (exception) {
     error.value = exception.message
   }
+}
+
+async function refreshLabs() {
+  labs.value = (await api.labs()).data
 }
 
 async function loadTrash() {
@@ -158,8 +176,49 @@ async function create() {
   }
 }
 
-async function duplicate(lab) {
+function waitForJob(jobID) {
+  return new Promise((resolve) => {
+    let attempts = 0
+    const poll = window.setInterval(async () => {
+      attempts += 1
+      try {
+        const job = (await api.job(jobID)).data
+        if (job.state !== 'running' && job.state !== 'queued') {
+          window.clearInterval(poll)
+          resolve(job)
+          return
+        }
+      } catch {
+        window.clearInterval(poll)
+        resolve(null)
+        return
+      }
+      if (attempts >= 60) {
+        window.clearInterval(poll)
+        resolve(null)
+      }
+    }, 500)
+  })
+}
+
+async function stop(lab) {
+  if (stopping.value.has(lab.id)) return
+  stopping.value = new Set(stopping.value).add(lab.id)
   try {
+    const result = await api.stopLab(lab.id)
+    if (result?.job_id) await waitForJob(result.job_id)
+    notify('success', `${lab.name} stopped`)
+    await refreshLabs()
+  } catch (exception) {
+    notify('error', exception.message)
+  } finally {
+    const next = new Set(stopping.value)
+    next.delete(lab.id)
+    stopping.value = next
+  }
+}
+
+async function duplicate(lab) {  try {
     await api.duplicateLab(lab.id)
     notify('success', 'Lab duplicated')
     await load()
@@ -236,5 +295,14 @@ async function dropImport(event) {
   await importFile(file)
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  refreshTimer = window.setInterval(() => {
+    if (!document.hidden && !stopping.value.size) refreshLabs().catch(() => {})
+  }, 15000)
+})
+
+onBeforeUnmount(() => {
+  window.clearInterval(refreshTimer)
+})
 </script>

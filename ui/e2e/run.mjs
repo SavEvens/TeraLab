@@ -101,6 +101,9 @@ try {
   const aboutText = await page.locator('.about-view').innerText()
   await page.getByRole('link', { name: 'Labs', exact: true }).click()
   await page.waitForURL('**/ui/labs')
+  await page.waitForSelector('.lab-table tbody tr')
+  const labsStatusBefore = await page.locator('[data-lab-status="lab1"]').innerText()
+  const stopButtonsBefore = await page.getByRole('button', { name: '■ Stop' }).count()
 
   // Images: upload, rename, map a template.
   await page.getByRole('link', { name: 'Images' }).click()
@@ -135,7 +138,7 @@ try {
   await page.getByRole('button', { name: 'Close' }).click()
 
   // Context menus: canvas, node, and link.
-  await page.locator('.canvas').click({ button: 'right', position: { x: 700, y: 500 } })
+  await page.locator('.canvas').click({ button: 'right', position: { x: 700, y: 800 } })
   await page.waitForSelector('.context-menu')
   const canvasMenu = await page.locator('.context-menu').innerText()
   await page.screenshot({ path: `${outDir}/context-menu.png`, fullPage: true })
@@ -151,17 +154,47 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.vue-flow__edge').length === 0, null, { timeout: 10000 })
 
   await page.locator('.lab-node').first().click({ button: 'right' })
-  const addLink = page.locator('.context-menu .context-item').filter({ hasText: 'Add link to' })
-  await addLink.hover()
-  await page.locator('.context-menu .context-submenu .context-item').filter({ hasText: 'R2' }).first().click()
+  await page.getByText('Add link…', { exact: true }).click()
+  await page.waitForSelector('.link-modal')
+  const linkInterfaceOptions = await page.locator('select[aria-label="Interface A"] option').allTextContents()
+  await page.getByRole('button', { name: 'Create link' }).click()
   await page.waitForFunction(() => document.querySelectorAll('.vue-flow__edge').length === 1, null, { timeout: 10000 })
   const linkMenuRecreated = await page.locator('.vue-flow__edge').count()
+  const linkTagsAfterRecreate = await page.locator('.link-port-tag').allTextContents()
   const initialNodes = await page.locator('.lab-node').count()
 
-  // Add a node from the palette.
-  await page.locator('.palette li').first().dblclick()
+  // Add node: templates grouped by image mapping.
+  await page.locator('.add-node').click()
+  await page.waitForSelector('.template-picker')
+  const pickerReady = await page.locator('[data-group="ready"]').innerText()
+  const pickerNeedsImage = await page.locator('[data-group="needs-image"]').innerText()
+  await page.screenshot({ path: `${outDir}/add-node.png` })
+  await page.locator('[data-group="needs-image"] li').filter({ hasText: 'Cisco IOL' }).getByRole('button', { name: 'Add' }).click()
   await page.waitForFunction((count) => document.querySelectorAll('.lab-node').length > count, initialNodes)
   const addedNodes = await page.locator('.lab-node').count()
+
+  // Explicit link dialog with an IOL interface (e0/0, e0/1).
+  await page.locator('.ed-bottom button').filter({ hasText: 'Add link' }).click()
+  await page.waitForSelector('.link-modal')
+  await page.locator('select[aria-label="Node A"]').selectOption('3')
+  const iolOptions = await page.locator('select[aria-label="Interface A"] option').allTextContents()
+  await page.locator('select[aria-label="Interface A"]').selectOption('1')
+  await page.locator('select[aria-label="Node B"]').selectOption('2')
+  const linkSummary = await page.locator('.link-summary').innerText()
+  await page.screenshot({ path: `${outDir}/add-link.png` })
+  await page.getByRole('button', { name: 'Create link' }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.vue-flow__edge').length === 2, null, { timeout: 10000 })
+  const linkTags = await page.locator('.link-port-tag').allTextContents()
+  await page.waitForTimeout(1600)
+  const linkedState = (await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()).lab
+  const iolNode = linkedState.node_list.find((node) => node.id === '3')
+  const r2Node = linkedState.node_list.find((node) => node.id === '2')
+  const interfaceLink = {
+    iol: iolNode?.interfaces?.[1]?.network_id,
+    r2: r2Node?.interfaces?.[1]?.network_id
+  }
+  await page.waitForTimeout(400)
+  await page.screenshot({ path: `${outDir}/links.png` })
 
   // Inspector edit triggers autosave.
   await page.locator('.lab-node').first().click()
@@ -208,9 +241,13 @@ try {
   await page.waitForSelector('.lab-node')
 
   // Text and picture objects plus the accessible table view.
-  await page.locator('.palette .special button', { hasText: 'Text' }).click()
+  await page.locator('.add-node').click()
+  await page.waitForSelector('.template-picker')
+  await page.locator('.picker-special button', { hasText: 'Add text' }).click()
   await page.waitForSelector('.text-node')
-  await page.locator('.palette .special button', { hasText: 'Picture' }).click()
+  await page.locator('.add-node').click()
+  await page.waitForSelector('.template-picker')
+  await page.locator('.picker-special button', { hasText: 'Add picture' }).click()
   await page.waitForSelector('.picture-node')
   await page.getByRole('button', { name: 'Table' }).click()
   await page.waitForSelector('.node-table')
@@ -222,7 +259,21 @@ try {
   const startToast = await page.locator('.toasts').innerText()
   await page.waitForTimeout(800)
 
+  await page.getByRole('button', { name: 'Canvas', exact: true }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.vue-flow__edge').length > 0, null, { timeout: 10000 })
   await page.screenshot({ path: `${outDir}/editor.png`, fullPage: true })
+
+  // Labs menu: running status and stop control.
+  await page.getByRole('link', { name: '← Labs' }).click()
+  await page.waitForURL('**/ui/labs')
+  await page.waitForFunction(() => document.querySelector('[data-lab-status="lab1"]')?.textContent.includes('Running'), null, { timeout: 10000 })
+  const labsStatusRunning = await page.locator('[data-lab-status="lab1"]').innerText()
+  const stopButtonsRunning = await page.getByRole('button', { name: '■ Stop' }).count()
+  await page.screenshot({ path: `${outDir}/labs-running.png` })
+  await page.getByRole('button', { name: '■ Stop' }).click()
+  await page.waitForFunction(() => document.querySelector('[data-lab-status="lab1"]')?.textContent.includes('Stopped'), null, { timeout: 15000 })
+  const labsStatusAfterStop = await page.locator('[data-lab-status="lab1"]').innerText()
+  const stopButtonsAfter = await page.getByRole('button', { name: '■ Stop' }).count()
 
   // Large-lab open budgets (50 and 100 nodes).
   await fetch(`http://127.0.0.1:${mockPort}/__fifty`, { method: 'POST' })
@@ -257,6 +308,20 @@ try {
     nodeMenu: nodeMenu.replace(/\s+/g, ' ').trim(),
     edgeMenu: edgeMenu.replace(/\s+/g, ' ').trim(),
     linkMenuRecreated,
+    linkInterfaceOptions,
+    linkTagsAfterRecreate,
+    pickerReady: pickerReady.replace(/\s+/g, ' ').trim(),
+    pickerNeedsImage: pickerNeedsImage.replace(/\s+/g, ' ').trim(),
+    iolOptions,
+    linkSummary: linkSummary.replace(/\s+/g, ' ').trim(),
+    linkTags,
+    interfaceLink,
+    labsStatusBefore: labsStatusBefore.replace(/\s+/g, ' ').trim(),
+    labsStatusRunning: labsStatusRunning.replace(/\s+/g, ' ').trim(),
+    labsStatusAfterStop: labsStatusAfterStop.replace(/\s+/g, ' ').trim(),
+    stopButtonsBefore,
+    stopButtonsRunning,
+    stopButtonsAfter,
     aboutText: aboutText.replace(/\s+/g, ' ').trim().slice(0, 120),
     initialNodes,
     addedNodes,
@@ -279,10 +344,22 @@ try {
   if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`)
   if (addedNodes !== initialNodes + 1) throw new Error('palette add failed')
   if (!/saved/i.test(savedText)) throw new Error('autosave did not complete')
-  if (!canvasMenu.includes('Add node')) throw new Error('canvas context menu missing Add node')
+  if (!canvasMenu.includes('Add node')) throw new Error(`canvas context menu missing Add node: ${canvasMenu}`)
   if (!nodeMenu.includes('Open console')) throw new Error('node context menu missing Open console')
   if (!edgeMenu.includes('Delete link')) throw new Error('link context menu missing Delete link')
   if (linkMenuRecreated !== 1) throw new Error('context-menu link creation failed')
+  if (!linkInterfaceOptions.some((option) => option.includes('eth0'))) throw new Error(`link dialog missing interfaces: ${linkInterfaceOptions}`)
+  if (!pickerReady.includes('Linux') || pickerReady.includes('Cisco IOL')) throw new Error('template picker ready group is wrong')
+  if (!pickerNeedsImage.includes('Cisco IOL') || pickerNeedsImage.includes('Linux')) throw new Error('template picker needs-image group is wrong')
+  if (!iolOptions.some((option) => option.startsWith('e0/0'))) throw new Error(`IOL interface labels missing: ${iolOptions}`)
+  if (!iolOptions.some((option) => option.startsWith('e0/1'))) throw new Error(`IOL interface labels missing: ${iolOptions}`)
+  if (!linkSummary.includes('creates a new link')) throw new Error(`link summary wrong: ${linkSummary}`)
+  if (!linkTags.includes('e0/1')) throw new Error(`link end tag missing IOL port: ${linkTags}`)
+  if (!interfaceLink.iol || interfaceLink.iol !== interfaceLink.r2) throw new Error(`chosen interfaces were not linked: ${JSON.stringify(interfaceLink)}`)
+  if (stopButtonsBefore !== 0) throw new Error('stop button shown for a stopped lab')
+  if (!/stopped/i.test(labsStatusBefore)) throw new Error(`labs status should start stopped: ${labsStatusBefore}`)
+  if (!/running/i.test(labsStatusRunning) || stopButtonsRunning !== 1) throw new Error('running lab status/stop button missing')
+  if (!/stopped/i.test(labsStatusAfterStop) || stopButtonsAfter !== 0) throw new Error('stopping the lab did not clear the status/button')
   if (!/AGPL-3.0-or-later/.test(aboutText)) throw new Error('about page missing licence')
   if (terminalBounds.screenBottom > terminalBounds.paneBottom + 1) throw new Error(`terminal clipped: ${JSON.stringify(terminalBounds)}`)
   if (nodeFields.nic !== 'virtio-net-pci' || nodeFields.serial !== 2) throw new Error('node nic/serial were not saved')

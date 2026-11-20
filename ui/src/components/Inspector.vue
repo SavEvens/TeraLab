@@ -75,7 +75,7 @@
         <button class="danger" @click="$emit('delete', node)">Delete</button>
       </div>
     </template>
-    <p v-else class="hint">Select a node to edit it, or drag a template from the device palette.</p>
+    <p v-else class="hint">Select a node to edit it, or use “+ Add node” to place a template.</p>
   </aside>
 </template>
 

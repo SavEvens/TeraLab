@@ -36,6 +36,30 @@ export function nodeFromLab(raw, index) {
   }
 }
 
+// Interface names used by the engine for a freshly created port.
+export function defaultPortName(kind, index) {
+  if (kind === 'iol' || kind === 'dynamips') {
+    return `Ethernet${Math.floor(index / 4)}/${index % 4}`
+  }
+
+  return `eth${index}`
+}
+
+// Compact interface label shown in dialogs and on link ends (e0/0, e0/1…).
+export function portLabel(node, index) {
+  const iface = node?.data?.interfaces?.[index]
+  const name = String(iface?.name || '')
+  const ethernet = /^ethernet(\d+)\/(\d+)$/i.exec(name)
+  if (ethernet) return `e${ethernet[1]}/${ethernet[2]}`
+  if (/^e\d+\/\d+$/i.test(name)) return name.toLowerCase()
+  if (name && !/^eth\d+$/.test(name)) return name
+  if (['iol', 'dynamips'].includes(node?.data?.kind)) {
+    return `e${Math.floor(index / 4)}/${index % 4}`
+  }
+
+  return name || `e${index}`
+}
+
 export function buildEdges(nodes) {
   const byNetwork = new Map()
   for (const node of nodes) {
@@ -49,9 +73,18 @@ export function buildEdges(nodes) {
   const networks = new Map()
   for (const [networkId, ports] of byNetwork.entries()) {
     if (ports.length < 2) continue
-    for (let index = 0; index < ports.length - 1; index += 1) {
-      const from = ports[index]
-      const to = ports[index + 1]
+    // Draw shared segments in visual order so the chain follows the canvas
+    // instead of crossing over nodes (node ids are unrelated to layout).
+    const ordered = [...ports].sort((left, right) => {
+      const x = (left.node.position?.x ?? 0) - (right.node.position?.x ?? 0)
+      if (x !== 0) return x
+      const y = (left.node.position?.y ?? 0) - (right.node.position?.y ?? 0)
+
+      return y !== 0 ? y : left.index - right.index
+    })
+    for (let index = 0; index < ordered.length - 1; index += 1) {
+      const from = ordered[index]
+      const to = ordered[index + 1]
       const id = `e-${networkId}-${from.node.id}-${from.index}-${to.node.id}-${to.index}`
       edges.push({
         id,
@@ -59,8 +92,12 @@ export function buildEdges(nodes) {
         target: to.node.id,
         sourceHandle: 'node-s',
         targetHandle: 'node-t',
-        data: { networkId },
-        type: 'straight',
+        data: {
+          networkId,
+          sourcePort: portLabel(from.node, from.index),
+          targetPort: portLabel(to.node, to.index)
+        },
+        type: 'link',
         style: { stroke: '#5b8cff', strokeWidth: 2 }
       })
       networks.set(id, networkId)

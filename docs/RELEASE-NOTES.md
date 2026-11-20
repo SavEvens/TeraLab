@@ -3,6 +3,45 @@
 
 # TeraLab release notes
 
+# TeraLab v1.4.5 release notes
+
+- Release date: 2026-11-20
+- Previous release: v1.4.4
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Editor
+
+- **Add link dialog**: links are created by choosing the node *and interface*
+  on each end (`e0/0`, `e0/1`, `eth1`, …). Ends can be swapped before
+  creating. Both drag-to-connect and the node/canvas context menus open the
+  same dialog.
+- **Add node menu**: the toggleable device palette is gone. A single
+  “+ Add node” button opens a template menu split into **Ready to deploy**
+  (an image is mapped to the template) and **Needs an image** (no mapping
+  yet). Search, text, and picture objects live in the same menu.
+- **Link rendering**: links now stop at the node body instead of the outer
+  node box, and each end carries a compact interface tag. Shared segments are
+  chained in canvas order so links no longer cut across intermediate nodes.
+  Interface tags keep a constant screen size while zooming.
+- New IOL ports are named `Ethernet0/0`, `Ethernet0/1`, … and shown as
+  `e0/0`, `e0/1` in the link dialog and on the link ends.
+- The zoom indicator now reports the real value, and per-lab viewport
+  persistence works again.
+
+## Labs
+
+- The labs table has a **Status** column derived from the agent's running
+  nodes (`GET /api/v2/labs` now returns `running` and `running_nodes`).
+- A **■ Stop** action appears only while a lab is running; the list refreshes
+  every 15 seconds so status stays current.
+
+## Validation
+
+- PHP 64 tests / 740 assertions; Go suites; UI 15 unit tests; UI E2E; release
+  gate and CI green.
+- E2E covers: grouped Add node menu, explicit interface selection, interface
+  tags on link ends, running status and the conditional stop button.
+
 # TeraLab v1.4.4 release notes
 
 - Release date: 2026-11-19

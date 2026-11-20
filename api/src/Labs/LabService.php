@@ -441,6 +441,34 @@ final class LabService
     }
 
     /**
+     * Running node counts keyed by lab id, from the agent's in-memory state.
+     *
+     * @return array<string, int>
+     */
+    public function runningLabs(): array
+    {
+        try {
+            $status = $this->agent->status();
+        } catch (HttpException) {
+            return [];
+        }
+
+        $counts = [];
+        foreach ((array) ($status['nodes'] ?? []) as $node) {
+            if (!is_array($node) || ($node['state'] ?? '') !== 'running') {
+                continue;
+            }
+            $labID = (string) ($node['lab_id'] ?? '');
+            if ($labID === '') {
+                continue;
+            }
+            $counts[$labID] = ($counts[$labID] ?? 0) + 1;
+        }
+
+        return $counts;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function stop(string $id, ?string $userId = null, bool $isAdmin = false): array

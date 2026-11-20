@@ -29,6 +29,9 @@ final class LabApiTest extends TestCase
     /** @var list<array{path: string, payload: array<string, mixed>}> */
     private array $calls = [];
 
+    /** @var list<array<string, mixed>> */
+    private array $runningNodes = [];
+
     protected function setUp(): void
     {
         $this->root = sys_get_temp_dir() . '/teralab-labapi-' . bin2hex(random_bytes(6));
@@ -51,6 +54,12 @@ final class LabApiTest extends TestCase
             }
             if ($path === '/v1/node.stop' || $path === '/v1/node.wipe') {
                 return [200, '{"ok":true,"result":{"state":"ok"}}'];
+            }
+            if ($path === '/v1/system/status') {
+                return [200, json_encode([
+                    'ok' => true,
+                    'result' => ['nodes' => $this->runningNodes],
+                ], JSON_THROW_ON_ERROR)];
             }
 
             return [200, '{"ok":true,"result":{}}'];
@@ -152,6 +161,42 @@ final class LabApiTest extends TestCase
             'revision' => 1,
         ]);
         self::assertSame(409, $stale->getStatusCode());
+    }
+
+    public function testLabListReportsRunningState(): void
+    {
+        $create = $this->request('POST', '/api/v2/labs', ['name' => 'State Lab']);
+        $lab = $this->json($create)['data'];
+
+        $list = $this->json($this->request('GET', '/api/v2/labs'))['data'];
+        $row = $this->labRow($list, (string) $lab['id']);
+        self::assertFalse($row['running']);
+        self::assertSame(0, $row['running_nodes']);
+
+        $this->runningNodes = [
+            ['id' => 'a-1', 'lab_id' => $lab['id'], 'state' => 'running'],
+            ['id' => 'a-2', 'lab_id' => $lab['id'], 'state' => 'stopped'],
+            ['id' => 'b-1', 'lab_id' => 'another-lab', 'state' => 'running'],
+        ];
+
+        $list = $this->json($this->request('GET', '/api/v2/labs'))['data'];
+        $row = $this->labRow($list, (string) $lab['id']);
+        self::assertTrue($row['running']);
+        self::assertSame(1, $row['running_nodes']);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $labs
+     * @return array<string, mixed>
+     */
+    private function labRow(array $labs, string $id): array
+    {
+        foreach ($labs as $lab) {
+            if ((string) $lab['id'] === $id) {
+                return $lab;
+            }
+        }
+        self::fail('lab not found in listing: ' . $id);
     }
 
     /**
