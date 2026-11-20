@@ -1,14 +1,12 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.5.4
+# Upgrading to TeraLab v1.5.5
 
-v1.5.4 is a patch release: it can adopt an existing
-`/opt/unetlab/addons` image tree in place, keeping `.unl` labs, the v1 API
-surface, and the `/var/lib/teralab` layout unchanged. There is no lab-format
-change. The only database change is the automatic migration
-`008_external_images.sql`, which adds an `external` column (default `0`) to the
-`images` table. The installer is idempotent and is the supported upgrade path.
+v1.5.5 is a patch release: editor and console polish plus the System/About
+clean-up, keeping `.unl` labs, the v1 API surface, and the `/var/lib/teralab`
+layout unchanged. There is no database migration and no lab-format change. The
+installer is idempotent and is the supported upgrade path.
 
 ## Before upgrading
 
@@ -24,7 +22,7 @@ change. The only database change is the automatic migration
 
 ```sh
 git fetch --tags
-git checkout v1.5.4
+git checkout v1.5.5
 sudo packaging/teralab/install.sh
 ```
 
@@ -66,6 +64,37 @@ sudo /opt/teralab/packaging/teralab/teralab-firewall
 Until the rule is present, IP traffic between lab nodes is dropped (IPv4
 always; IPv6 where the host's `FORWARD` policy is `DROP`). See
 `docs/INSTALL.md` for details.
+
+## Editor and console changes in v1.5.5
+
+The editor loses the Align, Validate and Save buttons. Saving is automatic:
+autosave runs 1 s after the last change, Ctrl+S still saves, the save-state
+indicator and the conflict dialog still work, and start/stop/wipe still save
+first. The removed validation checked node names, images and port counts on
+demand; import warnings and node-start errors still report problems, and
+passive validation on save is a follow-up.
+
+Other changes you will notice:
+
+- **+ Add link** is in the top bar next to **+ Add node** and is always
+  enabled; the link dialog validates the selection.
+- The template picker adds 1–20 copies of a template in one action; one undo
+  step removes the whole batch.
+- The console dock can be dragged by its top edge, keeps its height per browser
+  and user, and resets with a double-click (Up/Down also adjust it). Nothing is
+  stored server-side.
+- The telnet console sends no resize frames any more. A custom client that
+  sends `{"type":"resize","cols":…,"rows":…}` is still honoured: the agent
+  applies the frame to the node's PTY instead of printing it into the device
+  console, and every other frame passes through byte-for-byte. The VNC and TCP
+  consoles are unchanged.
+- The System page is operational only: no version badge and no raw host JSON;
+  grey means absent/idle, red means a real error, and a CPU usage card shows a
+  measured percentage. The version stays on **About** and in the header badge;
+  the System page no longer duplicates it. About now lists components as
+  name + licence with no status colours; the AGPL notices there are unchanged.
+
+No account, permission or lab setting is affected by any of these changes.
 
 ## Adopting existing `/opt/unetlab/addons` images
 
