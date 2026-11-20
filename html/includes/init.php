@@ -134,7 +134,7 @@ if (!isset($node_templates)) {
 $teralabVersionFile = BASE_DIR.'/TERALAB_VERSION';
 $teralabVersion = is_file($teralabVersionFile) ? trim((string) file_get_contents($teralabVersionFile)) : '';
 if ($teralabVersion === '') {
-	$teralabVersion = '1.4.2';
+	$teralabVersion = '1.4.3';
 }
 if (!defined('VERSION')) define('VERSION', $teralabVersion);
 if (!defined('BASE_LAB')) define('BASE_LAB', getenv('TERALAB_LABS') ?: BASE_DIR.'/labs');

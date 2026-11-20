@@ -96,6 +96,9 @@ try {
   await page.locator('.token-form input').first().fill('e2e token')
   await page.getByRole('button', { name: 'Create token' }).click()
   await page.waitForFunction(() => document.querySelector('.token-once')?.textContent.includes('tl_mock_token'), null, { timeout: 10000 })
+  await page.getByRole('link', { name: 'About' }).click()
+  await page.waitForURL('**/ui/about')
+  const aboutText = await page.locator('.about-view').innerText()
   await page.getByRole('link', { name: 'Labs', exact: true }).click()
   await page.waitForURL('**/ui/labs')
 
@@ -123,12 +126,36 @@ try {
   await page.waitForSelector('.lab-node')
   const editorMs = Date.now() - editorStart
 
+
   // Snapshot create/list.
   await page.getByRole('button', { name: 'Snapshots' }).click()
   await page.locator('.snapshot-modal input').fill('before changes')
   await page.getByRole('button', { name: 'Create snapshot' }).click()
   await page.waitForFunction(() => document.querySelector('.snapshot-modal tbody')?.textContent.includes('before changes'), null, { timeout: 10000 })
   await page.getByRole('button', { name: 'Close' }).click()
+
+  // Context menus: canvas, node, and link.
+  await page.locator('.canvas').click({ button: 'right', position: { x: 700, y: 500 } })
+  await page.waitForSelector('.context-menu')
+  const canvasMenu = await page.locator('.context-menu').innerText()
+  await page.screenshot({ path: `${outDir}/context-menu.png`, fullPage: true })
+  await page.keyboard.press('Escape')
+  await page.locator('.lab-node').first().click({ button: 'right' })
+  await page.waitForSelector('.context-menu')
+  const nodeMenu = await page.locator('.context-menu').innerText()
+  await page.keyboard.press('Escape')
+  await page.locator('.vue-flow__edge-path').first().click({ button: 'right', force: true })
+  await page.waitForSelector('.context-menu')
+  const edgeMenu = await page.locator('.context-menu').innerText()
+  await page.getByText('Delete link', { exact: true }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.vue-flow__edge').length === 0, null, { timeout: 10000 })
+
+  await page.locator('.lab-node').first().click({ button: 'right' })
+  const addLink = page.locator('.context-menu .context-item').filter({ hasText: 'Add link to' })
+  await addLink.hover()
+  await page.locator('.context-menu .context-submenu .context-item').filter({ hasText: 'R2' }).first().click()
+  await page.waitForFunction(() => document.querySelectorAll('.vue-flow__edge').length === 1, null, { timeout: 10000 })
+  const linkMenuRecreated = await page.locator('.vue-flow__edge').count()
   const initialNodes = await page.locator('.lab-node').count()
 
   // Add a node from the palette.
@@ -166,6 +193,11 @@ try {
   await page.waitForSelector('.console-dock')
   await page.waitForSelector('.xterm')
   const consoleMs = Date.now() - consoleStart
+  const terminalBounds = await page.evaluate(() => {
+    const screen = document.querySelector('.console-pane .xterm-screen')?.getBoundingClientRect()
+    const pane = document.querySelector('.console-pane')?.getBoundingClientRect()
+    return { screenBottom: screen?.bottom ?? 0, paneBottom: pane?.bottom ?? 0 }
+  })
   const consoleTab = await page.locator('.console-dock .tabs button').first().innerText()
   await page.waitForTimeout(1000)
   await page.getByRole('link', { name: '← Labs' }).click()
@@ -220,6 +252,12 @@ try {
     loginMs,
     editorMs,
     consoleMs,
+    terminalBounds,
+    canvasMenu: canvasMenu.replace(/\s+/g, ' ').trim(),
+    nodeMenu: nodeMenu.replace(/\s+/g, ' ').trim(),
+    edgeMenu: edgeMenu.replace(/\s+/g, ' ').trim(),
+    linkMenuRecreated,
+    aboutText: aboutText.replace(/\s+/g, ' ').trim().slice(0, 120),
     initialNodes,
     addedNodes,
     savedText,
@@ -241,6 +279,12 @@ try {
   if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`)
   if (addedNodes !== initialNodes + 1) throw new Error('palette add failed')
   if (!/saved/i.test(savedText)) throw new Error('autosave did not complete')
+  if (!canvasMenu.includes('Add node')) throw new Error('canvas context menu missing Add node')
+  if (!nodeMenu.includes('Open console')) throw new Error('node context menu missing Open console')
+  if (!edgeMenu.includes('Delete link')) throw new Error('link context menu missing Delete link')
+  if (linkMenuRecreated !== 1) throw new Error('context-menu link creation failed')
+  if (!/AGPL-3.0-or-later/.test(aboutText)) throw new Error('about page missing licence')
+  if (terminalBounds.screenBottom > terminalBounds.paneBottom + 1) throw new Error(`terminal clipped: ${JSON.stringify(terminalBounds)}`)
   if (nodeFields.nic !== 'virtio-net-pci' || nodeFields.serial !== 2) throw new Error('node nic/serial were not saved')
   if (!imageRow.includes('Renamed base')) throw new Error('image rename failed')
   if (!imageOptions.some((option) => option.includes('Renamed base'))) throw new Error('inspector image picker missing uploaded image')

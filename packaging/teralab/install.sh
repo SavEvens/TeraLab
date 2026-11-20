@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 TeraLab contributors
 #
-# Install TeraLab v1.4.2 on a Debian 13 host.
+# Install TeraLab v1.4.3 on a Debian 13 host.
 #
 # The installer never overwrites configuration, the database, labs, or images.
 # It is safe to re-run and is the supported upgrade path from v1.1.
@@ -163,6 +163,7 @@ Alias /api "$ROOT/api/public"
     AllowOverride None
     Require all granted
 </Directory>
+Alias /about.php "$ROOT/html/about.php"
 Alias /ui "$ROOT/html/ui"
 <Directory "$ROOT/html/ui">
     Options -Indexes +FollowSymLinks

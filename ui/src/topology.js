@@ -57,9 +57,10 @@ export function buildEdges(nodes) {
         id,
         source: from.node.id,
         target: to.node.id,
-        sourceHandle: `s-${from.index}`,
-        targetHandle: `t-${to.index}`,
+        sourceHandle: 'node-s',
+        targetHandle: 'node-t',
         data: { networkId },
+        type: 'straight',
         style: { stroke: '#5b8cff', strokeWidth: 2 }
       })
       networks.set(id, networkId)
@@ -104,6 +105,17 @@ export function toPayload(name, revision, nodes, networks) {
       type: network.type || 'bridge'
     }))
   }
+}
+
+export function firstFreePort(node, preferredNetwork = '') {
+  const interfaces = Array.isArray(node?.data?.interfaces) ? node.data.interfaces : []
+  const free = interfaces.find((iface) => !iface.network_id)
+  if (free) return free
+  if (preferredNetwork !== '') {
+    return interfaces.find((iface) => iface.network_id === preferredNetwork) || null
+  }
+
+  return null
 }
 
 export function nextNetworkId(networks) {

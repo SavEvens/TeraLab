@@ -3,6 +3,35 @@
 
 # TeraLab release notes
 
+# TeraLab v1.4.3 release notes
+
+- Release date: 2026-11-19
+- Previous release: v1.4.2
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Editor
+
+- **Right-click context menus**: canvas (add node/text/picture, paste, fit,
+  validate, presentation), node (console, start/stop/wipe, add link to another
+  node, configure, duplicate, delete), and link (delete link, rename network).
+- **Icon-first nodes**: each node is a device icon with its name underneath,
+  status LED, and hover/selection glow instead of a rectangular card.
+- **No per-port link dots**: nodes expose one source and one target connection
+  handle; links automatically use the first free interface. Port counts remain
+  editable in the inspector.
+- Straight links, a line grid, and hidden edge-update handles for a cleaner
+  GNS3/EVE-NG-like canvas.
+- **Console fix**: xterm/noVNC now size below a compact action row, so the
+  bottom terminal line (the command being typed) is no longer clipped.
+- **About page**: `/ui/about` shows product, version, licence, source link,
+  components, and the no-warranty notice. `/about.php` is also aliased.
+
+## Validation
+
+- Browser E2E covers canvas/node/link context menus, deleting a link and
+  re-adding it through the node menu, the About page, and terminal bounds.
+- PHP 63 tests / 732 assertions; UI 9 tests; release gate and CI green.
+
 # TeraLab v1.4.2 release notes
 
 - Release date: 2026-11-19
