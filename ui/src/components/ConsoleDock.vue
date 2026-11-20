@@ -1,6 +1,18 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
   <section v-if="state.tabs.length" class="console-dock">
+    <div
+      class="console-resize"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize console"
+      tabindex="0"
+      title="Drag to resize the console"
+      @pointerdown="startResize"
+      @keydown.up.prevent="resizeBy(20)"
+      @keydown.down.prevent="resizeBy(-20)"
+      @dblclick="resetHeight"
+    ></div>
     <div class="tabs" role="tablist">
       <button
         v-for="tab in state.tabs"
@@ -30,14 +42,108 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { consoleState, closeConsole, activateConsole } from '../stores/consoles'
+import { session } from '../stores/session'
 import TelnetConsole from '../consoles/TelnetConsole.vue'
 import VncConsole from '../consoles/VncConsole.vue'
 
+const DEFAULT_HEIGHT = 332
+const MIN_HEIGHT = 140
+const MAX_RATIO = 0.75
 const state = consoleState
 const collapsed = ref(false)
+let dragging = false
+let startY = 0
+let startHeight = DEFAULT_HEIGHT
+
+function clampHeight(value) {
+  const max = Math.max(MIN_HEIGHT, Math.round(window.innerHeight * MAX_RATIO))
+  return Math.min(max, Math.max(MIN_HEIGHT, Math.round(Number(value) || DEFAULT_HEIGHT)))
+}
+
+function currentHeight() {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--console-h')
+  const parsed = Number.parseFloat(raw)
+  return Number.isFinite(parsed) ? parsed : DEFAULT_HEIGHT
+}
+
+function applyHeight(value) {
+  document.documentElement.style.setProperty('--console-h', `${clampHeight(value)}px`)
+}
+
+function storageKey() {
+  const id = session.user?.id || session.user?.username || 'anon'
+  return `teralab.console-h.${id}`
+}
+
+function persistHeight() {
+  try {
+    localStorage.setItem(storageKey(), String(Math.round(currentHeight())))
+  } catch {}
+}
+
+function restoreHeight() {
+  try {
+    const parsed = Number.parseFloat(localStorage.getItem(storageKey()))
+    applyHeight(Number.isFinite(parsed) ? parsed : DEFAULT_HEIGHT)
+  } catch {
+    applyHeight(DEFAULT_HEIGHT)
+  }
+}
+
+function startResize(event) {
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+  dragging = true
+  startY = event.clientY
+  startHeight = currentHeight()
+  window.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('pointerup', endResize)
+  window.addEventListener('pointercancel', endResize)
+  event.preventDefault()
+}
+
+function onPointerMove(event) {
+  if (!dragging) return
+  applyHeight(startHeight + (startY - event.clientY))
+}
+
+function endResize() {
+  if (!dragging) return
+  dragging = false
+  window.removeEventListener('pointermove', onPointerMove)
+  window.removeEventListener('pointerup', endResize)
+  window.removeEventListener('pointercancel', endResize)
+  persistHeight()
+}
+
+function resizeBy(delta) {
+  applyHeight(currentHeight() + delta)
+  persistHeight()
+}
+
+function resetHeight() {
+  applyHeight(DEFAULT_HEIGHT)
+  persistHeight()
+}
+
+function onViewportResize() {
+  applyHeight(currentHeight())
+}
+
 function closeAll() {
   for (const tab of [...state.tabs]) closeConsole(tab.id)
 }
+
+onMounted(() => {
+  restoreHeight()
+  window.addEventListener('resize', onViewportResize)
+})
+onBeforeUnmount(() => {
+  endResize()
+  window.removeEventListener('resize', onViewportResize)
+})
+watch(() => session.user?.id, (id) => {
+  if (id) restoreHeight()
+})
 </script>

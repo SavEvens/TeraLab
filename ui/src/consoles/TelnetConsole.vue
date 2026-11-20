@@ -53,7 +53,6 @@ function connect() {
     status.value = 'connected'
     terminal.writeln('\x1b[32m[connected]\x1b[0m')
     fit.fit()
-    socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }))
   }
   socket.onmessage = (event) => {
     terminal.write(typeof event.data === 'string' ? event.data : new Uint8Array(event.data))
@@ -122,9 +121,6 @@ onMounted(() => {
   })
   terminal.onData((data) => {
     if (socket?.readyState === WebSocket.OPEN) socket.send(data)
-  })
-  terminal.onResize(({ cols, rows }) => {
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', cols, rows }))
   })
   observer = new ResizeObserver(() => fit?.fit())
   observer.observe(host.value)
