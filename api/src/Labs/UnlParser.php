@@ -265,7 +265,7 @@ final class UnlParser
 
     /**
      * @param array<string, string> $configs
-     * @param array<string, bool> $networkIds
+     * @param array<array-key, bool> $networkIds
      * @param list<array<string, string>> $warnings
      * @return array<string, mixed>
      */
@@ -362,7 +362,7 @@ final class UnlParser
      * slot | port << 4; legacy TeraLab files list every port in order.
      *
      * @param list<array<string, mixed>> $raw
-     * @param array<string, bool> $networkIds
+     * @param array<array-key, bool> $networkIds
      * @param list<array<string, string>> $warnings
      * @return list<array<string, mixed>>
      */

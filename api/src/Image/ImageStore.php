@@ -264,6 +264,8 @@ final class ImageStore
     /**
      * Rename the portable reference used by lab files. References are unique
      * because labs identify images by them.
+     *
+     * @return array<string, mixed>
      */
     public function setReference(string $id, string $reference): array
     {
