@@ -71,7 +71,23 @@ describe('TemplatePicker', () => {
 
     const vpcs = wrapper.findAll('[data-group="needs-image"] li').find((item) => item.text().includes('VPCS'))
     await vpcs.find('button').trigger('click')
-    expect(wrapper.emitted('add')[0][0].id).toBe('vpcs')
+    expect(wrapper.emitted('add')[0][0].template.id).toBe('vpcs')
+    expect(wrapper.emitted('add')[0][0].count).toBe(1)
+  })
+
+  it('clamps the count to 1-20 and forwards it', async () => {
+    const wrapper = mount(TemplatePicker, { props: { templates, images } })
+    const count = wrapper.find('input[type="number"]')
+    const linux = () => wrapper.findAll('[data-group="ready"] li').find((item) => item.text().includes('Linux'))
+
+    await count.setValue('25')
+    await linux().find('button').trigger('click')
+    expect(wrapper.emitted('add').at(-1)[0].template.id).toBe('linux')
+    expect(wrapper.emitted('add').at(-1)[0].count).toBe(20)
+
+    await count.setValue('0')
+    await linux().find('button').trigger('click')
+    expect(wrapper.emitted('add').at(-1)[0].count).toBe(1)
   })
 
   it('filters across both groups', async () => {
