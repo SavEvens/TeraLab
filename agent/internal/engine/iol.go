@@ -20,19 +20,25 @@ import (
 
 // BuildIOLArgs renders argv for an IOL instance.
 //
-// IOL is a user-supplied binary; TeraLab never redistributes it.
-func BuildIOLArgs(spec Spec, appID int) ([]string, error) {
+// IOL is a user-supplied binary; TeraLab never redistributes it. The -l flag
+// enables layer-1 keepalives, which the agent answers on a separate channel
+// so interface state follows the topology.
+func BuildIOLArgs(spec Spec, appID int, l1Keepalive bool) ([]string, error) {
 	if appID < 1 || appID > 1023 {
 		return nil, errors.New("iol application id must be between 1 and 1023")
 	}
 
-	return []string{
+	args := []string{
 		"-e", strconv.Itoa(spec.Ethernet),
 		"-s", "0",
 		"-m", strconv.Itoa(spec.RAM),
 		"-n", strconv.Itoa(spec.NVRAM),
-		strconv.Itoa(appID),
-	}, nil
+	}
+	if l1Keepalive {
+		args = append(args, "-l")
+	}
+
+	return append(args, strconv.Itoa(appID)), nil
 }
 
 // buildNETMAP renders IOL interface netmap lines: local UDP port, peer host,
@@ -71,12 +77,18 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 
 	appID := iolAppID(spec)
 	peerID := iolPeerID(appID)
-	args, err := BuildIOLArgs(spec, appID)
+	l1Keepalive := m.iolImageSupportsL1(spec.Image)
+	if !l1Keepalive {
+		m.logger.Info("iol image does not advertise layer-1 keepalives; interface state will not follow the topology",
+			"image", spec.Image, "node", spec.ID)
+	}
+	args, err := BuildIOLArgs(spec, appID, l1Keepalive)
 	if err != nil {
 		return NodeInfo{}, err
 	}
 
 	taps := make([]string, 0, spec.Ethernet)
+	linked := make([]bool, spec.Ethernet)
 	netmapLines := make([]string, 0, spec.Ethernet)
 	for index := 0; index < spec.Ethernet; index++ {
 		tap := spec.TapName(index)
@@ -85,6 +97,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 			return NodeInfo{}, err
 		}
 		taps = append(taps, tap)
+		linked[index] = strings.TrimSpace(spec.Networks[index]) != ""
 		netmapLines = append(netmapLines, iolNetmapLine(appID, peerID, index))
 	}
 
@@ -93,8 +106,21 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		m.cleanupTaps(taps)
 		return NodeInfo{}, err
 	}
+	relays := []io.Closer{relay}
+	var l1 *iolL1Responder
+	if l1Keepalive {
+		l1, err = startIOLL1(appID, peerID, int(m.cfg.VMUID), linked)
+		if err != nil {
+			_ = relay.Close()
+			m.cleanupTaps(taps)
+			return NodeInfo{}, err
+		}
+		relays = append(relays, l1)
+	}
 	cleanup := func() {
-		_ = relay.Close()
+		for _, closer := range relays {
+			_ = closer.Close()
+		}
 		m.cleanupTaps(taps)
 	}
 
@@ -162,7 +188,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		Spec:        spec,
 		Cmd:         command,
 		PTY:         ptmx,
-		Relays:      []io.Closer{relay},
+		Relays:      relays,
 		RunDir:      runDir,
 		Taps:        taps,
 		CgroupPath:  cgroupPath,

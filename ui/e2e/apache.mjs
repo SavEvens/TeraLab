@@ -88,7 +88,7 @@ try {
   session = await login()
   const version = await call('GET', '/version')
   const health = await call('GET', '/health')
-  if (version.version !== '1.4.6' || health.version !== '1.4.6') {
+  if (version.version !== '1.5.0' || health.version !== '1.5.0') {
     throw new Error(`version mismatch: ${version.version}/${health.version}`)
   }
   if (session.cookieSecure) throw new Error('session cookie is Secure over plain HTTP')
