@@ -33,6 +33,7 @@ type Config struct {
 	QEMUImg         string
 	VPCSBinary      string
 	DynamipsBinary  string
+	DockerBinary    string
 	IOLIourc        string
 	NetworkBackend  string
 	// BridgeGroupFwdMask is written to each lab bridge port so STP and LACP
@@ -59,6 +60,7 @@ func Load() (Config, error) {
 		QEMUImg:        env("TERALAB_QEMU_IMG", "/usr/bin/qemu-img"),
 		VPCSBinary:     env("TERALAB_VPCS", "/usr/bin/vpcs"),
 		DynamipsBinary: env("TERALAB_DYNAMIPS", "/usr/bin/dynamips"),
+		DockerBinary:   env("TERALAB_DOCKER", "/usr/bin/docker"),
 		IOLIourc:       env("TERALAB_IOL_IOURC", "/etc/teralab/iourc"),
 		NetworkBackend: env("TERALAB_NETWORK_BACKEND", "auto"),
 		VMUser:         env("TERALAB_VM_USER", "teralab-vm"),

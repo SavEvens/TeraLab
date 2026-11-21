@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -109,9 +110,43 @@ func Engines(ctx context.Context, cfg config.Config, manager *engine.Manager) []
 			Binary:    "",
 			Available: hasExecutableImage(cfg.ImagesDir),
 		},
+		dockerEngineStatus(ctx, cfg),
 	}
 
 	return statuses
+}
+
+// dockerEngineStatus reports docker availability: the binary must exist and
+// the daemon must answer `docker info`. A missing or unresponsive daemon is a
+// soft failure, so the System page can explain why docker nodes will not
+// start without failing the whole status call.
+func dockerEngineStatus(ctx context.Context, cfg config.Config) EngineStatus {
+	status := EngineStatus{Name: "docker", Binary: cfg.DockerBinary}
+	if cfg.DockerBinary == "" {
+		return status
+	}
+	if _, err := exec.LookPath(cfg.DockerBinary); err != nil {
+		return status
+	}
+	infoCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(infoCtx, cfg.DockerBinary, "info").Run(); err != nil {
+		return status
+	}
+	status.Available = true
+
+	versionCtx, cancelVersion := context.WithTimeout(ctx, 3*time.Second)
+	defer cancelVersion()
+	output, err := exec.CommandContext(
+		versionCtx,
+		cfg.DockerBinary,
+		"version", "--format", "{{.Server.Version}}",
+	).Output()
+	if err == nil {
+		status.Version = strings.TrimSpace(string(output))
+	}
+
+	return status
 }
 
 func fileExists(path string) bool {

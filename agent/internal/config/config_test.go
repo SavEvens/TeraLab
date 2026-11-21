@@ -129,3 +129,29 @@ func TestLoadRejectsInvalidBridgeGroupFwdMask(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadDockerBinary(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	t.Setenv("TERALAB_DOCKER", "/opt/teralab/bin/docker")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if cfg.DockerBinary != "/opt/teralab/bin/docker" {
+		t.Fatalf("unexpected docker binary: %s", cfg.DockerBinary)
+	}
+}
+
+func TestLoadDockerBinaryDefaultsToUsrBinDocker(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	t.Setenv("TERALAB_DOCKER", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if cfg.DockerBinary != "/usr/bin/docker" {
+		t.Fatalf("unexpected docker binary default: %s", cfg.DockerBinary)
+	}
+}
