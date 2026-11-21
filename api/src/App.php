@@ -31,6 +31,7 @@ use TeraLab\Api\Http\Controllers\NetworkController;
 use TeraLab\Api\Http\Controllers\NodeController;
 use TeraLab\Api\Http\Controllers\SystemController;
 use TeraLab\Api\Http\Controllers\TemplateController;
+use TeraLab\Api\Http\Controllers\UsersController;
 use TeraLab\Api\Http\Controllers\V1Controller;
 use TeraLab\Api\Http\Controllers\VersionController;
 use TeraLab\Api\Http\Middleware\AuthMiddleware;
@@ -359,6 +360,30 @@ final class App
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/system/tokens/{id}', fn ($request, $response, array $args) => $system->revokeToken($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $users = $container->get(UsersController::class);
+        $app->get('/api/v2/users', fn ($request, $response) => $users->index($request, $response))
+            ->add($adminRole())
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/users', fn ($request, $response) => $users->create($request, $response))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->patch('/api/v2/users/{id}', fn ($request, $response, array $args) => $users->update($request, $response, $args))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/users/{id}/password', fn ($request, $response, array $args) => $users->resetPassword($request, $response, $args))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/users/{id}/sessions/revoke', fn ($request, $response, array $args) => $users->revokeSessions($request, $response, $args))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->delete('/api/v2/users/{id}', fn ($request, $response, array $args) => $users->delete($request, $response, $args))
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $jobs = $container->get(JobController::class);

@@ -79,6 +79,22 @@ production.
 5. Upload qcow2/ISO/IOL/Dynamips files on the Images page, then pick them in
    the node inspector. Custom YAML templates live in `/etc/teralab/templates`.
 
+### Users
+
+The administrator manages accounts from **System → Users**: add a user, choose
+a role (`admin`, `editor`, or `user`), and optionally set an email, display
+name, and expiry. Leave the password empty to have TeraLab generate one; a
+generated password is shown once, when the account is created or its password
+is reset, and cannot be recovered later. An admin-typed password is never
+displayed. `editor` accounts can build and run labs, `user` accounts have
+read-only lab access, and `admin` accounts also manage users and system
+settings.
+
+Deleting a user keeps that user's labs by default; they become ownerless and
+admin-only. Choose “also delete labs” to move them to the 30-day lab trash
+instead; with that option, deletion is refused while any owned lab has running
+nodes. Every user can change their own password from the top bar.
+
 There are no default accounts, no telemetry, and no `setcap` usage.
 
 ## Engines

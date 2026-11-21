@@ -27,6 +27,34 @@ export function startMockServer(port = 8099) {
   let images = []
   let snapshots = []
   let tokens = []
+  const usersNow = Math.floor(Date.now() / 1000)
+  let nextUserId = 10
+  let generatedCount = 0
+  let lastUserAction = null
+  let users = [
+    { id: 'user1', username: 'admin', email: 'admin@example.test', name: 'Ada Admin', role: 'admin', expiration: -1, created_at: usersNow - 7200, updated_at: usersNow - 3600, session_count: 2, last_seen_at: usersNow - 60, lab_count: 1 },
+    { id: 'user2', username: 'editor', email: 'editor@example.test', name: 'Ed Editor', role: 'editor', expiration: Math.floor((Date.now() + 30 * 86400000) / 1000), created_at: usersNow - 6000, updated_at: usersNow - 5000, session_count: 0, last_seen_at: null, lab_count: 2 },
+    { id: 'user3', username: 'viewer', email: '', name: 'Vera Viewer', role: 'user', expiration: -1, created_at: usersNow - 4000, updated_at: usersNow - 3000, session_count: 0, last_seen_at: null, lab_count: 0 }
+  ]
+  const adminCount = () => users.filter((user) => user.role === 'admin').length
+  const generatedPassword = () => `Teralab-Gen-${++generatedCount}-2026!`
+  const sessionUser = (request) => {
+    const match = /(?:^|;\s*)teralab_session=([^;]+)/.exec(String(request.headers.cookie || ''))
+    if (!match) return null
+    return users.find((user) => user.username === decodeURIComponent(match[1])) || null
+  }
+  const requireAdmin = (request, response) => {
+    const actor = sessionUser(request)
+    if (!actor) {
+      send(response, 401, { message: 'Authentication required.' })
+      return null
+    }
+    if (actor.role !== 'admin') {
+      send(response, 403, { message: 'Administrator role required.' })
+      return null
+    }
+    return actor
+  }
   // Per-node runtime state exposed by GET /labs/{id}/nodes. lab1 has one node
   // already running (Start is hidden) and one stopped (Start and Wipe shown).
   const nodeStates = { lab1: { 1: 'running', 2: 'stopped' } }
@@ -84,6 +112,9 @@ export function startMockServer(port = 8099) {
     }
     if (request.method === 'GET' && path === '/__state') {
       return send(response, 200, { lab: { name: lab.name, node_list: lab.node_list, network_list: lab.network_list } })
+    }
+    if (request.method === 'GET' && path === '/__users-state') {
+      return send(response, 200, { users, lastUserAction })
     }
     if (request.method === 'POST' && path === '/__fifty') {
       const nodeList = Array.from({ length: 50 }, (_, index) => ({
@@ -163,20 +194,142 @@ export function startMockServer(port = 8099) {
     if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
+      const input = await body(request)
+      const user = users.find((candidate) => candidate.username === input.username)
+      if (!user) return send(response, 401, { message: 'Invalid username or password.' })
       return send(response, 200, {
         status: 'success',
-        user: { id: 'user1', username: 'admin', role: 'admin' },
+        user: { id: user.id, username: user.username, role: user.role },
         csrf_token: csrf,
         expires_in: 3600
-      }, { 'Set-Cookie': 'teralab_session=test; Path=/; HttpOnly; SameSite=Lax' })
+      }, { 'Set-Cookie': `teralab_session=${encodeURIComponent(user.username)}; Path=/; HttpOnly; SameSite=Lax` })
     }
     if (path === '/api/v2/auth/me') {
-      if (!String(request.headers.cookie || '').includes('teralab_session=')) {
-        return send(response, 401, { message: 'Authentication required.' })
-      }
-      return send(response, 200, { user: { id: 'user1', username: 'admin', role: 'admin' }, csrf_token: csrf })
+      const user = sessionUser(request)
+      if (!user) return send(response, 401, { message: 'Authentication required.' })
+      return send(response, 200, { user: { id: user.id, username: user.username, role: user.role }, csrf_token: csrf })
     }
     if (path === '/api/v2/auth/logout') return send(response, 200, { status: 'success' })
+    if (path === '/api/v2/auth/password' && request.method === 'POST') {
+      const input = await body(request)
+      if (!input.current_password) return send(response, 422, { message: 'current_password and new_password are required.' })
+      return send(response, 200, { status: 'success' })
+    }
+    if (path === '/api/v2/users' && request.method === 'GET') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      return send(response, 200, { data: users })
+    }
+    if (path === '/api/v2/users' && request.method === 'POST') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      const input = await body(request)
+      const username = String(input.username || '').trim()
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$/.test(username)) {
+        return send(response, 422, { message: 'username must be 3-32 characters and start with a letter or digit.' })
+      }
+      if (users.some((user) => user.username === username)) {
+        return send(response, 422, { message: 'That username is already taken.' })
+      }
+      if (!['admin', 'editor', 'user'].includes(input.role)) {
+        return send(response, 422, { message: 'role must be admin, editor, or user.' })
+      }
+      const generated = input.password ? null : generatedPassword()
+      const user = {
+        id: `user${nextUserId++}`,
+        username,
+        email: typeof input.email === 'string' ? input.email : '',
+        name: typeof input.name === 'string' ? input.name : '',
+        role: input.role,
+        expiration: Number.isInteger(input.expiration) ? input.expiration : -1,
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+        session_count: 0,
+        last_seen_at: null,
+        lab_count: 0
+      }
+      users = [...users, user]
+      lastUserAction = { type: 'create', username, password_generated: !!generated }
+      return send(response, 201, { data: { user, ...(generated ? { password: generated } : {}) } })
+    }
+    const userMatch = /^\/api\/v2\/users\/([^/]+)$/.exec(path)
+    if (request.method === 'PATCH' && userMatch) {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      const id = decodeURIComponent(userMatch[1])
+      const target = users.find((user) => user.id === id)
+      if (!target) return send(response, 404, { message: 'User not found.' })
+      const input = await body(request)
+      if (input.role !== undefined && input.role !== target.role) {
+        if (!['admin', 'editor', 'user'].includes(input.role)) {
+          return send(response, 422, { message: 'role must be admin, editor, or user.' })
+        }
+        if (target.id === actor.id) {
+          return send(response, 409, { message: 'You cannot change your own role.' })
+        }
+        if (target.role === 'admin' && input.role !== 'admin' && adminCount() <= 1) {
+          return send(response, 409, { message: 'The last administrator cannot be demoted.' })
+        }
+      }
+      users = users.map((user) => user.id === id
+        ? {
+            ...user,
+            email: typeof input.email === 'string' ? input.email : user.email,
+            name: typeof input.name === 'string' ? input.name : user.name,
+            expiration: Number.isInteger(input.expiration) ? input.expiration : user.expiration,
+            role: input.role !== undefined ? input.role : user.role,
+            updated_at: Math.floor(Date.now() / 1000)
+          }
+        : user)
+      lastUserAction = { type: 'update', username: target.username }
+      return send(response, 200, { data: users.find((user) => user.id === id) })
+    }
+    if (request.method === 'DELETE' && userMatch) {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      const id = decodeURIComponent(userMatch[1])
+      const target = users.find((user) => user.id === id)
+      if (!target) return send(response, 404, { message: 'User not found.' })
+      const input = await body(request)
+      if (target.id === actor.id) {
+        return send(response, 409, { message: 'You cannot delete your own account.' })
+      }
+      if (target.role === 'admin' && adminCount() <= 1) {
+        return send(response, 409, { message: 'The last administrator cannot be deleted.' })
+      }
+      if (input.delete_labs && lab.owner === target.username && lab.running) {
+        return send(response, 409, { message: 'One or more labs have running nodes; stop them before deleting the user.' })
+      }
+      const labsTrashed = input.delete_labs ? target.lab_count : 0
+      users = users.filter((user) => user.id !== id)
+      lastUserAction = { type: 'delete', username: target.username, delete_labs: !!input.delete_labs, labs_trashed: labsTrashed }
+      return send(response, 200, { data: { deleted: true, labs_trashed: labsTrashed } })
+    }
+    const userPasswordMatch = /^\/api\/v2\/users\/([^/]+)\/password$/.exec(path)
+    if (request.method === 'POST' && userPasswordMatch) {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      const id = decodeURIComponent(userPasswordMatch[1])
+      const target = users.find((user) => user.id === id)
+      if (!target) return send(response, 404, { message: 'User not found.' })
+      const input = await body(request)
+      const generated = input.password ? null : generatedPassword()
+      users = users.map((user) => user.id === id ? { ...user, session_count: 0, updated_at: Math.floor(Date.now() / 1000) } : user)
+      lastUserAction = { type: 'password', username: target.username, password_generated: !!generated }
+      return send(response, 200, { data: generated ? { password: generated } : {} })
+    }
+    const userRevokeMatch = /^\/api\/v2\/users\/([^/]+)\/sessions\/revoke$/.exec(path)
+    if (request.method === 'POST' && userRevokeMatch) {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      const id = decodeURIComponent(userRevokeMatch[1])
+      const target = users.find((user) => user.id === id)
+      if (!target) return send(response, 404, { message: 'User not found.' })
+      const revoked = target.session_count || 0
+      users = users.map((user) => user.id === id ? { ...user, session_count: 0, last_seen_at: null } : user)
+      lastUserAction = { type: 'revoke', username: target.username, revoked }
+      return send(response, 200, { data: { revoked } })
+    }
     if (path === '/api/v2/labs' && request.method === 'GET') {
       return send(response, 200, { data: [{ ...lab, node_list: undefined, network_list: undefined }] })
     }

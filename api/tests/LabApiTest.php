@@ -228,6 +228,47 @@ final class LabApiTest extends TestCase
         self::assertSame(1, $row['running_nodes']);
     }
 
+    public function testCrossUserLabIsolation(): void
+    {
+        $lab = $this->createLab('Private Lab');
+        $labID = (string) $lab['id'];
+        $this->createUser('user-b', 'Teralab-User-B-2026!', 'editor');
+        [$bCookie, $bCsrf] = $this->login('user-b', 'Teralab-User-B-2026!');
+
+        // B is an editor: role gates pass, so every 403 below comes from the
+        // per-lab ownership check rather than the editor middleware.
+        $requests = [
+            ['GET', '/api/v2/labs/' . $labID, []],
+            ['PUT', '/api/v2/labs/' . $labID, ['revision' => 1]],
+            ['GET', '/api/v2/labs/' . $labID . '/export', []],
+            ['GET', '/api/v2/labs/' . $labID . '/nodes', []],
+            ['POST', '/api/v2/labs/' . $labID . '/start', []],
+            ['POST', '/api/v2/labs/' . $labID . '/stop', []],
+            ['POST', '/api/v2/labs/' . $labID . '/wipe', []],
+            ['POST', '/api/v2/labs/' . $labID . '/move', ['folder' => 'elsewhere']],
+            ['POST', '/api/v2/labs/' . $labID . '/duplicate', []],
+            ['DELETE', '/api/v2/labs/' . $labID, []],
+            ['GET', '/api/v2/labs/' . $labID . '/snapshots', []],
+            ['POST', '/api/v2/labs/' . $labID . '/snapshots', ['name' => 'intruder']],
+            ['POST', '/api/v2/labs/' . $labID . '/snapshots/whatever/restore', []],
+            ['DELETE', '/api/v2/labs/' . $labID . '/snapshots/whatever', []],
+            ['POST', '/api/v2/labs/' . $labID . '/nodes/1/start', []],
+            ['POST', '/api/v2/labs/' . $labID . '/nodes/1/stop', []],
+            ['POST', '/api/v2/labs/' . $labID . '/nodes/1/wipe', []],
+        ];
+        foreach ($requests as [$method, $path, $body]) {
+            $response = $this->request($method, $path, $body, [], $bCookie, null, $bCsrf);
+            self::assertSame(403, $response->getStatusCode(), $method . ' ' . $path . ': ' . (string) $response->getBody());
+        }
+
+        $bIndex = $this->json($this->request('GET', '/api/v2/labs', [], [], $bCookie))['data'];
+        self::assertNotContains($labID, array_column($bIndex, 'id'));
+
+        $adminIndex = $this->json($this->request('GET', '/api/v2/labs'))['data'];
+        self::assertContains($labID, array_column($adminIndex, 'id'));
+        self::assertSame(200, $this->request('GET', '/api/v2/labs/' . $labID)->getStatusCode());
+    }
+
     /**
      * @param list<array<string, mixed>> $labs
      * @return array<string, mixed>
@@ -240,6 +281,58 @@ final class LabApiTest extends TestCase
             }
         }
         self::fail('lab not found in listing: ' . $id);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function createLab(string $name): array
+    {
+        $response = $this->request('POST', '/api/v2/labs', [
+            'name' => $name,
+            'networks' => [['id' => '0', 'name' => 'Net-1']],
+            'nodes' => [[
+                'id' => '1',
+                'name' => 'PC1',
+                'type' => 'vpcs',
+                'interfaces' => [['id' => 0, 'network_id' => '0']],
+            ]],
+        ]);
+        self::assertSame(201, $response->getStatusCode(), (string) $response->getBody());
+
+        return $this->json($response)['data'];
+    }
+
+    private function createUser(string $username, string $password, string $role): string
+    {
+        $id = bin2hex(random_bytes(16));
+        $statement = $this->pdo->prepare(
+            'INSERT INTO users (id, username, password_hash, role, expiration, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :role, -1, :now, :now)'
+        );
+        $statement->execute([
+            ':id' => $id,
+            ':username' => $username,
+            ':password_hash' => password_hash($password, PASSWORD_ARGON2ID),
+            ':role' => $role,
+            ':now' => time(),
+        ]);
+
+        return $id;
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function login(string $username, string $password): array
+    {
+        $response = $this->request('POST', '/api/v2/auth/login', [
+            'username' => $username,
+            'password' => $password,
+        ]);
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+
+        return [$this->cookie($response), (string) $this->json($response)['csrf_token']];
     }
 
     private function registerImage(string $reference): void
@@ -273,14 +366,16 @@ final class LabApiTest extends TestCase
         array $headers = [],
         ?string $cookie = null,
         ?UploadedFile $file = null,
+        ?string $csrf = null,
     ): ResponseInterface {
         $request = (new ServerRequestFactory())->createServerRequest($method, $path, ['REMOTE_ADDR' => '127.0.0.1']);
         $effectiveCookie = $cookie ?? $this->cookie;
+        $effectiveCsrf = $csrf ?? $this->csrf;
         if ($effectiveCookie !== '') {
             $request = $request->withCookieParams([Config::COOKIE_NAME => $effectiveCookie]);
         }
-        if ($this->csrf !== '') {
-            $request = $request->withHeader('X-CSRF-Token', $this->csrf);
+        if ($effectiveCsrf !== '') {
+            $request = $request->withHeader('X-CSRF-Token', $effectiveCsrf);
         }
         foreach ($headers as $name => $value) {
             $request = $request->withHeader($name, $value);

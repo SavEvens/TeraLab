@@ -142,16 +142,179 @@
       </table>
       <p v-if="!tokens.length" class="empty">No API tokens.</p>
     </section>
+
+    <section v-show="active === 'Users'" class="panel users-panel">
+      <div class="toolbar">
+        <button @click="openAddUser">Add user</button>
+        <button class="ghost" @click="refreshUsers">Refresh</button>
+        <span class="hint">{{ users.length }} users</span>
+      </div>
+      <table class="lab-table users-table">
+        <thead>
+          <tr><th>User</th><th>Role</th><th>Expires</th><th>Sessions</th><th>Last activity</th><th>Labs</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="user in users" :key="user.id" :data-user="user.username">
+            <td>
+              <strong>{{ user.username }}</strong>
+              <span v-if="isSelf(user)" class="badge you">(you)</span>
+              <small>{{ userDetails(user) }}</small>
+            </td>
+            <td><span class="badge role">{{ user.role }}</span></td>
+            <td>{{ expirationLabel(user.expiration) }}</td>
+            <td>{{ user.session_count ?? 0 }}</td>
+            <td>{{ user.last_seen_at ? date(user.last_seen_at) : 'never' }}</td>
+            <td>{{ user.lab_count ?? 0 }}</td>
+            <td class="actions">
+              <button class="ghost" @click="openEditUser(user)">Edit</button>
+              <button class="ghost" @click="openResetPassword(user)">Reset password</button>
+              <button class="ghost" @click="forceLogout(user)">Force logout</button>
+              <button class="danger" @click="openDeleteUser(user)">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-if="!users.length" class="empty">No users.</p>
+    </section>
+
+    <div v-if="addUser.open" class="modal-backdrop" @click.self="closeAddUser">
+      <div class="modal users-modal add-user-modal" role="dialog" aria-modal="true" aria-labelledby="add-user-title">
+        <h2 id="add-user-title">Add user</h2>
+        <template v-if="addUser.generated">
+          <p class="hint">The account exists. Give this password to the user; it is shown once and cannot be recovered.</p>
+          <p class="token-once" role="status">
+            Copy this password now; it is shown once:
+            <code>{{ addUser.generated }}</code>
+          </p>
+          <div class="row"><button type="button" @click="closeAddUser">Close</button></div>
+        </template>
+        <form v-else @submit.prevent="createUser">
+          <label>Username
+            <input v-model="addUser.form.username" aria-label="Username" autocomplete="off" required />
+          </label>
+          <label>Role
+            <select v-model="addUser.form.role" aria-label="Role">
+              <option value="admin">admin</option>
+              <option value="editor">editor</option>
+              <option value="user">user</option>
+            </select>
+          </label>
+          <div class="field-grid">
+            <label>Email (optional)
+              <input v-model="addUser.form.email" type="email" aria-label="Email" autocomplete="off" />
+            </label>
+            <label>Display name (optional)
+              <input v-model="addUser.form.name" aria-label="Display name" autocomplete="off" />
+            </label>
+          </div>
+          <label>Expires (optional)
+            <input v-model="addUser.form.expiration" type="datetime-local" aria-label="Expires" />
+          </label>
+          <p class="hint">Leave the expiration empty for an account that never expires.</p>
+          <label>Password (optional)
+            <input v-model="addUser.form.password" type="password" aria-label="Password" autocomplete="new-password" />
+          </label>
+          <p class="hint">Leave the password empty to generate a one-time password, shown once after the account is created.</p>
+          <div class="row">
+            <button type="button" class="ghost" :disabled="addUser.saving" @click="closeAddUser">Cancel</button>
+            <button type="submit" :disabled="addUser.saving || !addUser.form.username.trim()">
+              {{ addUser.saving ? 'Creating…' : 'Create user' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div v-if="editUser.open" class="modal-backdrop" @click.self="closeEditUser">
+      <div class="modal users-modal edit-user-modal" role="dialog" aria-modal="true" aria-labelledby="edit-user-title">
+        <h2 id="edit-user-title">Edit {{ editUser.user.username }}</h2>
+        <form @submit.prevent="saveUser">
+          <div class="field-grid">
+            <label>Email
+              <input v-model="editUser.form.email" type="email" aria-label="Email" autocomplete="off" />
+            </label>
+            <label>Display name
+              <input v-model="editUser.form.name" aria-label="Display name" autocomplete="off" />
+            </label>
+          </div>
+          <label>Expires
+            <input v-model="editUser.form.expiration" type="datetime-local" aria-label="Expires" />
+          </label>
+          <p class="hint">Empty means never. Expiration is enforced at login and on every session check.</p>
+          <label>Role
+            <select v-model="editUser.form.role" aria-label="Role" :disabled="editingSelf">
+              <option value="admin">admin</option>
+              <option value="editor">editor</option>
+              <option value="user">user</option>
+            </select>
+          </label>
+          <p v-if="editingSelf" class="hint">You cannot change your own role. The last administrator cannot be demoted.</p>
+          <div class="row">
+            <button type="button" class="ghost" :disabled="editUser.saving" @click="closeEditUser">Cancel</button>
+            <button type="submit" :disabled="editUser.saving">{{ editUser.saving ? 'Saving…' : 'Save' }}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div v-if="resetPassword.open" class="modal-backdrop" @click.self="closeResetPassword">
+      <div class="modal users-modal reset-password-modal" role="dialog" aria-modal="true" aria-labelledby="reset-password-title">
+        <h2 id="reset-password-title">Reset password for {{ resetPassword.user.username }}</h2>
+        <template v-if="resetPassword.generated">
+          <p class="hint">All sessions of this user were revoked. Give this password to the user; it is shown once and cannot be recovered.</p>
+          <p class="token-once" role="status">
+            Copy this password now; it is shown once:
+            <code>{{ resetPassword.generated }}</code>
+          </p>
+          <div class="row"><button type="button" @click="closeResetPassword">Close</button></div>
+        </template>
+        <form v-else @submit.prevent="resetPasswordFor">
+          <label>New password (optional)
+            <input v-model="resetPassword.password" type="password" aria-label="New password" autocomplete="new-password" />
+          </label>
+          <p class="hint">Leave empty to generate a one-time password. Resetting revokes all of the user's sessions.</p>
+          <div class="row">
+            <button type="button" class="ghost" :disabled="resetPassword.saving" @click="closeResetPassword">Cancel</button>
+            <button type="submit" :disabled="resetPassword.saving">
+              {{ resetPassword.saving ? 'Resetting…' : 'Reset password' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div v-if="deleteUser.open" class="modal-backdrop" @click.self="closeDeleteUser">
+      <div class="modal users-modal delete-user-modal" role="dialog" aria-modal="true" aria-labelledby="delete-user-title">
+        <h2 id="delete-user-title">Delete {{ deleteUser.user.username }}?</h2>
+        <p class="hint">
+          The account and its sessions are removed. Their labs are kept and become ownerless (visible to
+          administrators) unless you choose to delete them.
+        </p>
+        <div class="check-row">
+          <input id="delete-user-labs" v-model="deleteUser.deleteLabs" type="checkbox" aria-label="Also delete their labs" />
+          <label for="delete-user-labs">Also delete their labs</label>
+        </div>
+        <p class="hint">
+          Deleting labs moves them to the 30-day trash. Deletion is refused while any of their labs has
+          running nodes.
+        </p>
+        <div class="row">
+          <button type="button" class="ghost" :disabled="deleteUser.saving" @click="closeDeleteUser">Cancel</button>
+          <button type="button" class="danger" :disabled="deleteUser.saving" @click="removeUser">
+            {{ deleteUser.saving ? 'Deleting…' : 'Delete user' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
 
-const tabs = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
 const active = ref('Host')
 const host = ref(null)
 const settingsForm = ref({ timezone: 'UTC', console_default: 'telnet', session_ttl: 3600, max_upload_bytes: 33554432 })
@@ -166,12 +329,32 @@ const tokenDays = ref(90)
 const newToken = ref('')
 const restoreFile = ref(null)
 const restoreResult = ref(null)
+const users = ref([])
+const usersLoaded = ref(false)
+const addUser = ref(emptyAddUser())
+const editUser = ref({ open: false, user: null, saving: false, form: emptyUserForm() })
+const resetPassword = ref({ open: false, user: null, saving: false, password: '', generated: '' })
+const deleteUser = ref({ open: false, user: null, saving: false, deleteLabs: false })
 const canAdmin = computed(() => session.user?.role === 'admin')
+const tabs = computed(() => {
+  const list = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
+  if (canAdmin.value) list.push('Users')
+  return list
+})
 const cpuUsage = computed(() => {
   const value = host.value?.cpu_usage_percent
   return value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`
 })
+const editingSelf = computed(() => !!editUser.value.user && isSelf(editUser.value.user))
 const timezones = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : ['UTC']
+
+function emptyUserForm() {
+  return { email: '', name: '', expiration: '', role: 'user' }
+}
+
+function emptyAddUser() {
+  return { open: false, saving: false, generated: '', form: { username: '', role: 'user', email: '', name: '', expiration: '', password: '' } }
+}
 
 function bytes(value) {
   const size = Number(value || 0)
@@ -183,6 +366,37 @@ function bytes(value) {
 
 function date(value) {
   return value ? new Date(value * 1000).toLocaleString() : '—'
+}
+
+function isSelf(user) {
+  return !!session.user && String(user?.id) === String(session.user.id)
+}
+
+function userDetails(user) {
+  const parts = [user.name, user.email].filter((part) => typeof part === 'string' && part.trim() !== '')
+  return parts.length ? parts.join(' · ') : 'no name or email'
+}
+
+function expirationLabel(value) {
+  if (value === null || value === undefined || Number(value) < 0) return 'never'
+  return date(Number(value))
+}
+
+function toDateTimeLocal(value) {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds < 0) return ''
+  const when = new Date(seconds * 1000)
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}T${pad(when.getHours())}:${pad(when.getMinutes())}`
+}
+
+function toUnixSeconds(value) {
+  const milliseconds = new Date(value).getTime()
+  return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : -1
+}
+
+function toastError(exception) {
+  notify('error', exception?.message || 'Request failed')
 }
 
 async function loadHost() {
@@ -201,6 +415,17 @@ async function loadTokens() {
   tokens.value = (await api.tokens()).data
 }
 
+async function refreshUsers() {
+  if (!canAdmin.value) return
+  try {
+    users.value = (await api.users()).data || []
+    usersLoaded.value = true
+    error.value = ''
+  } catch (exception) {
+    error.value = exception.message
+  }
+}
+
 async function loadAll() {
   error.value = ''
   try {
@@ -208,6 +433,7 @@ async function loadAll() {
   } catch (exception) {
     error.value = exception.message
   }
+  if (canAdmin.value && (active.value === 'Users' || usersLoaded.value)) await refreshUsers()
 }
 
 async function saveSettings() {
@@ -276,6 +502,155 @@ async function revokeToken(id) {
     error.value = exception.message
   }
 }
+
+function openAddUser() {
+  addUser.value = { ...emptyAddUser(), open: true }
+}
+
+function closeAddUser() {
+  if (addUser.value.saving) return
+  addUser.value = emptyAddUser()
+}
+
+async function createUser() {
+  const dialog = addUser.value
+  const username = dialog.form.username.trim()
+  if (!username || dialog.saving) return
+  dialog.saving = true
+  try {
+    const payload = { username, role: dialog.form.role }
+    const email = dialog.form.email.trim()
+    const name = dialog.form.name.trim()
+    if (email) payload.email = email
+    if (name) payload.name = name
+    if (dialog.form.expiration) payload.expiration = toUnixSeconds(dialog.form.expiration)
+    if (dialog.form.password) payload.password = dialog.form.password
+    const data = (await api.createUser(payload)).data || {}
+    notify('success', `User ${username} created`)
+    dialog.saving = false
+    await refreshUsers()
+    if (typeof data.password === 'string' && data.password !== '') dialog.generated = data.password
+    else closeAddUser()
+  } catch (exception) {
+    dialog.saving = false
+    toastError(exception)
+  }
+}
+
+function openEditUser(user) {
+  editUser.value = {
+    open: true,
+    user,
+    saving: false,
+    form: {
+      email: user.email || '',
+      name: user.name || '',
+      expiration: toDateTimeLocal(user.expiration),
+      role: user.role
+    }
+  }
+}
+
+function closeEditUser() {
+  if (editUser.value.saving) return
+  editUser.value = { open: false, user: null, saving: false, form: emptyUserForm() }
+}
+
+async function saveUser() {
+  const dialog = editUser.value
+  if (!dialog.user || dialog.saving) return
+  dialog.saving = true
+  try {
+    const payload = {
+      email: dialog.form.email.trim(),
+      name: dialog.form.name.trim(),
+      expiration: dialog.form.expiration ? toUnixSeconds(dialog.form.expiration) : -1
+    }
+    if (!editingSelf.value) payload.role = dialog.form.role
+    await api.updateUser(dialog.user.id, payload)
+    notify('success', `User ${dialog.user.username} updated`)
+    dialog.saving = false
+    closeEditUser()
+    await refreshUsers()
+  } catch (exception) {
+    dialog.saving = false
+    const message = exception?.message || 'Request failed'
+    const hint = /admin/i.test(message) && /(role|demote|last)/i.test(message)
+      ? ' You cannot change your own role, and the last administrator cannot be demoted.'
+      : ''
+    notify('error', `${message}${hint}`)
+  }
+}
+
+function openResetPassword(user) {
+  resetPassword.value = { open: true, user, saving: false, password: '', generated: '' }
+}
+
+function closeResetPassword() {
+  if (resetPassword.value.saving) return
+  resetPassword.value = { open: false, user: null, saving: false, password: '', generated: '' }
+}
+
+async function resetPasswordFor() {
+  const dialog = resetPassword.value
+  if (!dialog.user || dialog.saving) return
+  dialog.saving = true
+  try {
+    const payload = {}
+    if (dialog.password) payload.password = dialog.password
+    const data = (await api.resetUserPassword(dialog.user.id, payload)).data || {}
+    notify('success', `Password reset for ${dialog.user.username}`)
+    dialog.saving = false
+    await refreshUsers()
+    if (typeof data.password === 'string' && data.password !== '') dialog.generated = data.password
+    else closeResetPassword()
+  } catch (exception) {
+    dialog.saving = false
+    toastError(exception)
+  }
+}
+
+async function forceLogout(user) {
+  if (!window.confirm(`Force logout ${user.username}? All of their sessions will be revoked.`)) return
+  try {
+    const data = (await api.revokeUserSessions(user.id)).data || {}
+    const revoked = Number(data.revoked || 0)
+    notify('success', `${revoked} session${revoked === 1 ? '' : 's'} revoked for ${user.username}`)
+    await refreshUsers()
+  } catch (exception) {
+    toastError(exception)
+  }
+}
+
+function openDeleteUser(user) {
+  deleteUser.value = { open: true, user, saving: false, deleteLabs: false }
+}
+
+function closeDeleteUser() {
+  if (deleteUser.value.saving) return
+  deleteUser.value = { open: false, user: null, saving: false, deleteLabs: false }
+}
+
+async function removeUser() {
+  const dialog = deleteUser.value
+  if (!dialog.user || dialog.saving) return
+  dialog.saving = true
+  try {
+    const data = (await api.deleteUser(dialog.user.id, { delete_labs: dialog.deleteLabs })).data || {}
+    const trashed = Number(data.labs_trashed || 0)
+    notify('success', `User ${dialog.user.username} deleted${trashed ? `; ${trashed} lab(s) moved to trash` : ''}`)
+    dialog.saving = false
+    closeDeleteUser()
+    await refreshUsers()
+  } catch (exception) {
+    dialog.saving = false
+    toastError(exception)
+  }
+}
+
+watch(active, (tab) => {
+  if (tab === 'Users' && canAdmin.value) refreshUsers()
+})
 
 onMounted(loadAll)
 </script>

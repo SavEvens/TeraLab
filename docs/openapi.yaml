@@ -20,6 +20,7 @@ tags:
   - name: images
   - name: jobs
   - name: system
+  - name: users
 security:
   - cookieAuth: []
 components:
@@ -141,6 +142,124 @@ components:
               node: { type: string }
               network: { type: string }
               value: { type: string }
+    User:
+      type: object
+      description: |
+        An account as returned by the admin user endpoints. Password hashes are
+        never included.
+      required: [id, username, role, expiration]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string, nullable: true }
+        name: { type: string, nullable: true }
+        role: { type: string, enum: [admin, editor, user] }
+        expiration:
+          type: integer
+          description: "`-1` for no expiry, otherwise a unix timestamp"
+        created_at: { type: integer }
+        updated_at: { type: integer }
+        session_count: { type: integer, minimum: 0 }
+        last_seen_at: { type: integer, nullable: true }
+        lab_count: { type: integer, minimum: 0 }
+    UserListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/User' }
+    UserResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/User' }
+    UserCreatedResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [user]
+          properties:
+            user: { $ref: '#/components/schemas/User' }
+            password:
+              type: string
+              description: "Generated password, returned once; absent when the request supplied one"
+    UserCreateRequest:
+      type: object
+      required: [username, role]
+      properties:
+        username:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$'
+        role: { type: string, enum: [admin, editor, user] }
+        email: { type: string, format: email, nullable: true }
+        name: { type: string, maxLength: 128, nullable: true }
+        password:
+          type: string
+          description: "Omitted or empty to generate one; a supplied password is never echoed"
+        expiration:
+          type: integer
+          nullable: true
+          description: "`-1` or `null` means never, otherwise a unix timestamp"
+          default: -1
+    UserUpdateRequest:
+      type: object
+      properties:
+        email: { type: string, format: email, nullable: true }
+        name: { type: string, maxLength: 128, nullable: true }
+        expiration:
+          type: integer
+          nullable: true
+          description: "`-1` or `null` means never (null is normalised to `-1`); otherwise a unix timestamp"
+        role:
+          type: string
+          enum: [admin, editor, user]
+          description: "The last administrator cannot be demoted"
+    UserPasswordResetRequest:
+      type: object
+      properties:
+        password:
+          type: string
+          description: "Omitted or empty to generate one; a supplied password is never echoed"
+    UserPasswordResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          properties:
+            password:
+              type: string
+              nullable: true
+              description: "Present only when the reset generated the password; absent when the request supplied one"
+    UserSessionsRevokeResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [revoked]
+          properties:
+            revoked: { type: integer, minimum: 0 }
+    UserDeleteRequest:
+      type: object
+      properties:
+        delete_labs:
+          type: boolean
+          default: false
+          description: "Move the user's labs to the 30-day trash instead of keeping them"
+    UserDeleteResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [deleted, labs_trashed]
+          properties:
+            deleted: { type: boolean, enum: [true] }
+            labs_trashed: { type: integer, minimum: 0 }
 paths:
   /api/v2/health:
     get:
@@ -228,6 +347,135 @@ paths:
       responses:
         '200': { description: Password changed }
         '403': { description: Current password incorrect }
+  /api/v2/users:
+    get:
+      tags: [users]
+      summary: List users with session and lab counts (admin)
+      description: |
+        Administrator only. Accounts are returned without password hashes,
+        together with their active session and owned-lab counts.
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserListResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+    post:
+      tags: [users]
+      summary: Create a user (admin)
+      description: |
+        Administrator only, with CSRF. Omit `password` to generate one; the
+        generated value is returned once in `data.password`. A supplied password
+        is validated against the policy and never echoed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreateRequest' }
+      responses:
+        '201':
+          description: Created; includes the generated password when one was generated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserCreatedResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '422': { description: "Invalid input, weak password, or duplicate username" }
+  /api/v2/users/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    patch:
+      tags: [users]
+      summary: Update a user's email, name, expiration, or role (admin)
+      description: |
+        Administrator only, with CSRF. Changing your own role returns 409, as
+        does demoting the last administrator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserUpdateRequest' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '404': { description: User not found }
+        '409': { description: Self role change or last administrator }
+        '422': { description: Invalid input }
+    delete:
+      tags: [users]
+      summary: Delete a user (admin)
+      description: |
+        Administrator only, with CSRF. Labs are kept by default and become
+        ownerless; `delete_labs` moves them to the 30-day lab trash. Deletion
+        fails with 409 for yourself, the last administrator, or when
+        `delete_labs` is set and an owned lab has running nodes. The user's
+        sessions, permissions, lab locks, and API tokens are removed.
+      parameters:
+        - { name: delete_labs, in: query, required: false, schema: { type: boolean, default: false } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserDeleteRequest' }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserDeleteResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '404': { description: User not found }
+        '409': { description: "Self deletion, last administrator, or running labs" }
+        '422': { description: Invalid delete_labs value }
+  /api/v2/users/{id}/password:
+    post:
+      tags: [users]
+      summary: Set or generate a user's password (admin)
+      description: |
+        Administrator only, with CSRF. Omit `password` to generate one. A
+        generated password is returned once in `data.password`; an admin-typed
+        password is never echoed. All sessions of the target user are revoked.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserPasswordResetRequest' }
+      responses:
+        '200':
+          description: "Password set; the generated password is returned once when one was generated"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPasswordResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '404': { description: User not found }
+        '422': { description: Password does not meet the policy }
+  /api/v2/users/{id}/sessions/revoke:
+    post:
+      tags: [users]
+      summary: Revoke all sessions of a user (admin)
+      description: Administrator only, with CSRF. Used for force-logout.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Sessions revoked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserSessionsRevokeResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '404': { description: User not found }
   /api/v2/labs:
     get:
       tags: [labs]

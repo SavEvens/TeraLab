@@ -450,6 +450,123 @@ try {
   }
   const imagesAfterDelete = await page.locator('.images-view tbody tr').count()
 
+  // System -> Users: full lifecycle, guards, and the self-service password dialog.
+  await page.getByRole('link', { name: 'System' }).click()
+  await page.waitForURL('**/ui/system')
+  await page.getByRole('tab', { name: 'Users' }).click()
+  await page.waitForSelector('.users-table tbody tr')
+  const usersRowsAdmin = await page.locator('.users-table tbody tr').count()
+  const usersAdminRow = (await page.locator('.users-table tbody tr[data-user="admin"]').innerText()).replace(/\s+/g, ' ').trim()
+  const usersSelfBadge = (await page.locator('.users-table tbody tr[data-user="admin"] .badge.you').innerText()).trim()
+
+  await page.locator('tr[data-user="admin"]').getByRole('button', { name: 'Edit' }).click()
+  await page.waitForSelector('.edit-user-modal')
+  const selfRoleDisabled = await page.locator('.edit-user-modal select[aria-label="Role"]').isDisabled()
+  await page.locator('.edit-user-modal').getByRole('button', { name: 'Cancel' }).click()
+
+  await page.getByRole('button', { name: 'Add user' }).click()
+  await page.waitForSelector('.add-user-modal')
+  await page.locator('.add-user-modal input[aria-label="Username"]').fill('e2e-editor')
+  await page.locator('.add-user-modal select[aria-label="Role"]').selectOption('editor')
+  await page.locator('.add-user-modal input[aria-label="Email"]').fill('e2e-editor@example.test')
+  await page.locator('.add-user-modal input[aria-label="Display name"]').fill('E2E Editor')
+  await page.locator('.add-user-modal button[type="submit"]').click()
+  await page.waitForSelector('.add-user-modal .token-once code', { timeout: 10000 })
+  const addGeneratedPassword = (await page.locator('.add-user-modal .token-once code').innerText()).trim()
+  const addPasswordOnceVisible = await page.locator('.add-user-modal form').count()
+  await page.locator('.add-user-modal').getByRole('button', { name: 'Close' }).click()
+  await page.waitForFunction(() => !document.querySelector('.add-user-modal'))
+  await page.waitForFunction(() => [...document.querySelectorAll('.users-table tbody tr')].some((row) => row.dataset.user === 'e2e-editor'))
+  await page.getByRole('button', { name: 'Add user' }).click()
+  await page.waitForSelector('.add-user-modal')
+  const addPasswordCleared = await page.locator('.add-user-modal .token-once').count()
+  await page.locator('.add-user-modal').getByRole('button', { name: 'Cancel' }).click()
+
+  const newUserRow = page.locator('.users-table tbody tr[data-user="e2e-editor"]')
+  await newUserRow.getByRole('button', { name: 'Edit' }).click()
+  await page.waitForSelector('.edit-user-modal')
+  await page.locator('.edit-user-modal input[aria-label="Display name"]').fill('E2E Renamed')
+  await page.locator('.edit-user-modal select[aria-label="Role"]').selectOption('user')
+  await page.locator('.edit-user-modal input[aria-label="Expires"]').fill('2027-06-01T12:00')
+  await page.locator('.edit-user-modal button[type="submit"]').click()
+  await page.waitForFunction(() => !document.querySelector('.edit-user-modal'))
+  await page.waitForFunction(() => document.querySelector('tr[data-user="e2e-editor"]')?.textContent.includes('E2E Renamed'))
+  const editedUserRole = (await newUserRow.locator('.badge.role').innerText()).trim()
+
+  await newUserRow.getByRole('button', { name: 'Reset password' }).click()
+  await page.waitForSelector('.reset-password-modal')
+  await page.locator('.reset-password-modal button[type="submit"]').click()
+  await page.waitForSelector('.reset-password-modal .token-once code')
+  const resetGeneratedPassword = (await page.locator('.reset-password-modal .token-once code').innerText()).trim()
+  await page.locator('.reset-password-modal').getByRole('button', { name: 'Close' }).click()
+  await page.waitForFunction(() => !document.querySelector('.reset-password-modal'))
+
+  page.once('dialog', (dialog) => dialog.accept())
+  await newUserRow.getByRole('button', { name: 'Force logout' }).click()
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /revoked/i.test(toast.textContent || '')), null, { timeout: 10000 })
+
+  await newUserRow.getByRole('button', { name: 'Delete' }).click()
+  await page.waitForSelector('.delete-user-modal')
+  const deleteDialogText = (await page.locator('.delete-user-modal').innerText()).replace(/\s+/g, ' ').trim()
+  await page.locator('.delete-user-modal input[aria-label="Also delete their labs"]').check()
+  await page.locator('.delete-user-modal').getByRole('button', { name: 'Delete user' }).click()
+  await page.waitForFunction(() => !document.querySelector('.delete-user-modal'))
+  await page.waitForFunction(() => !document.querySelector('tr[data-user="e2e-editor"]'))
+  const deleteWithLabs = (await (await fetch(`http://127.0.0.1:${mockPort}/__users-state`)).json()).lastUserAction
+
+  await page.getByRole('button', { name: 'Add user' }).click()
+  await page.waitForSelector('.add-user-modal')
+  await page.locator('.add-user-modal input[aria-label="Username"]').fill('e2e-temp')
+  await page.locator('.add-user-modal input[aria-label="Password"]').fill('Typed-Password-123!')
+  await page.locator('.add-user-modal button[type="submit"]').click()
+  await page.waitForFunction(() => !document.querySelector('.add-user-modal'))
+  await page.waitForFunction(() => [...document.querySelectorAll('.users-table tbody tr')].some((row) => row.dataset.user === 'e2e-temp'))
+  const typedCreateAction = (await (await fetch(`http://127.0.0.1:${mockPort}/__users-state`)).json()).lastUserAction
+  const typedAddSecretPanel = await page.locator('.add-user-modal .token-once').count()
+  const tempUserRow = page.locator('.users-table tbody tr[data-user="e2e-temp"]')
+  await tempUserRow.getByRole('button', { name: 'Reset password' }).click()
+  await page.waitForSelector('.reset-password-modal')
+  await page.locator('.reset-password-modal input[aria-label="New password"]').fill('Typed-Reset-1234!')
+  await page.locator('.reset-password-modal button[type="submit"]').click()
+  await page.waitForFunction(() => !document.querySelector('.reset-password-modal'))
+  const typedResetAction = (await (await fetch(`http://127.0.0.1:${mockPort}/__users-state`)).json()).lastUserAction
+  const typedResetSecretPanel = await page.locator('.reset-password-modal .token-once').count()
+  await tempUserRow.getByRole('button', { name: 'Delete' }).click()
+  await page.locator('.delete-user-modal').getByRole('button', { name: 'Delete user' }).click()
+  await page.waitForFunction(() => !document.querySelector('tr[data-user="e2e-temp"]'))
+  const deleteWithoutLabs = (await (await fetch(`http://127.0.0.1:${mockPort}/__users-state`)).json()).lastUserAction
+
+  await page.locator('tr[data-user="admin"]').getByRole('button', { name: 'Delete' }).click()
+  await page.locator('.delete-user-modal').getByRole('button', { name: 'Delete user' }).click()
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /own account/i.test(toast.textContent || '')), null, { timeout: 10000 })
+  const selfDeleteDialogOpen = await page.locator('.delete-user-modal').count()
+  await page.locator('.delete-user-modal').getByRole('button', { name: 'Cancel' }).click()
+
+  await page.getByRole('button', { name: 'Change password' }).click()
+  await page.waitForSelector('.password-modal')
+  await page.locator('.password-modal input[aria-label="Current password"]').fill('Teralab-Admin-2026!')
+  await page.locator('.password-modal input[aria-label="New password"]').fill('New-Admin-Password-2026!')
+  await page.locator('.password-modal input[aria-label="Confirm new password"]').fill('Mismatch-Password-2026!')
+  await page.locator('.password-modal button[type="submit"]').click()
+  const passwordMismatchText = (await page.locator('.password-modal .error').innerText()).trim()
+  await page.locator('.password-modal input[aria-label="Confirm new password"]').fill('New-Admin-Password-2026!')
+  await page.locator('.password-modal button[type="submit"]').click()
+  await page.waitForFunction(() => !document.querySelector('.password-modal'))
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /Password changed/i.test(toast.textContent || '')), null, { timeout: 10000 })
+
+  await page.getByRole('button', { name: 'Log out' }).click()
+  await page.waitForURL('**/ui/login')
+  await page.getByLabel('Username').fill('viewer')
+  await page.getByLabel('Password').fill('Teralab-Viewer-2026!')
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await page.waitForURL('**/ui/labs')
+  await page.getByRole('link', { name: 'System' }).click()
+  await page.waitForURL('**/ui/system')
+  await page.waitForSelector('[role="tab"]')
+  const viewerHasUsersTab = await page.getByRole('tab', { name: 'Users' }).count()
+  const usersForbidden = await page.evaluate(async () => (await fetch('/api/v2/users', { credentials: 'same-origin' })).status)
+  const remainingUsernames = (await (await fetch(`http://127.0.0.1:${mockPort}/__users-state`)).json()).users.map((user) => user.username)
+
   const result = {
     loginMs,
     editorMs,
@@ -534,6 +651,27 @@ try {
     linkedRemaining,
     linkedNetworksAfterSave,
     imagesAfterDelete,
+    usersRowsAdmin,
+    usersAdminRow,
+    usersSelfBadge,
+    selfRoleDisabled,
+    addGeneratedOnce: addGeneratedPassword.length >= 16,
+    addPasswordOnceVisible,
+    addPasswordCleared,
+    editedUserRole,
+    resetGeneratedOnce: resetGeneratedPassword.length >= 16,
+    deleteDialogText,
+    deleteWithLabs,
+    deleteWithoutLabs,
+    selfDeleteDialogOpen,
+    passwordMismatchText,
+    typedCreateAction,
+    typedAddSecretPanel,
+    typedResetAction,
+    typedResetSecretPanel,
+    viewerHasUsersTab,
+    usersForbidden,
+    remainingUsernames,
     pageErrors: errors
   }
   console.log(JSON.stringify(result, null, 2))
@@ -645,6 +783,39 @@ try {
   if (linkedRemaining[0].network_id !== '') throw new Error(`peer port still attached after delete: ${JSON.stringify(linkedRemaining)}`)
   if (linkedNetworksAfterSave !== 0) throw new Error(`saved lab has an orphan network after delete: ${JSON.stringify(prunedState.network_list)}`)
   if (imagesAfterDelete !== 0) throw new Error('image delete failed')
+  if (usersRowsAdmin !== 3) throw new Error(`users tab listed ${usersRowsAdmin} users`)
+  if (!usersAdminRow.includes('(you)') || !usersAdminRow.includes('admin')) throw new Error(`admin row is missing the self marker or role: ${usersAdminRow}`)
+  if (usersSelfBadge !== '(you)') throw new Error(`self marker is wrong: ${usersSelfBadge}`)
+  if (!selfRoleDisabled) throw new Error('role select is editable for your own account')
+  if (addGeneratedPassword.length < 16) throw new Error('created user did not get a generated one-time password')
+  if (addPasswordOnceVisible !== 0) throw new Error('create form is still visible after generating a password')
+  if (addPasswordCleared !== 0) throw new Error('generated password survived closing the add dialog')
+  if (editedUserRole.toLowerCase() !== 'user') throw new Error(`edited user role was not applied: ${editedUserRole}`)
+  if (resetGeneratedPassword.length < 16) throw new Error('password reset did not return a generated password')
+  if (!/kept/i.test(deleteDialogText) || !/running/i.test(deleteDialogText)) {
+    throw new Error(`delete dialog does not explain the lab policy: ${deleteDialogText}`)
+  }
+  if (deleteWithLabs?.type !== 'delete' || deleteWithLabs.delete_labs !== true) {
+    throw new Error(`delete with labs sent the wrong flag: ${JSON.stringify(deleteWithLabs)}`)
+  }
+  if (deleteWithoutLabs?.type !== 'delete' || deleteWithoutLabs.delete_labs !== false) {
+    throw new Error(`delete without labs sent the wrong flag: ${JSON.stringify(deleteWithoutLabs)}`)
+  }
+  if (selfDeleteDialogOpen !== 1) throw new Error('self-delete guard closed the dialog')
+  if (!/do not match/i.test(passwordMismatchText)) throw new Error(`password confirmation was not validated: ${passwordMismatchText}`)
+  if (typedCreateAction?.type !== 'create' || typedCreateAction.password_generated !== false) {
+    throw new Error(`typed create reported a generated password: ${JSON.stringify(typedCreateAction)}`)
+  }
+  if (typedAddSecretPanel !== 0) throw new Error('typed create showed a one-time password panel')
+  if (typedResetAction?.type !== 'password' || typedResetAction.password_generated !== false) {
+    throw new Error(`typed reset reported a generated password: ${JSON.stringify(typedResetAction)}`)
+  }
+  if (typedResetSecretPanel !== 0) throw new Error('typed reset showed a one-time password panel')
+  if (viewerHasUsersTab !== 0) throw new Error('non-admin still sees the Users tab')
+  if (usersForbidden !== 403) throw new Error(`GET /api/v2/users returned ${usersForbidden} for a non-admin`)
+  if (remainingUsernames.some((username) => username === 'e2e-editor' || username === 'e2e-temp')) {
+    throw new Error(`deleted users are still listed: ${JSON.stringify(remainingUsernames)}`)
+  }
   if (!/start/i.test(startToast)) throw new Error('start job toast missing')
   console.log('UI_E2E_OK')
 } finally {
