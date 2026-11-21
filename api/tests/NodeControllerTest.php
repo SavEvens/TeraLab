@@ -91,6 +91,8 @@ final class NodeControllerTest extends TestCase
             ['id' => 'node1', 'name' => 'R1', 'cpu' => 1000],
             ['id' => 'node1', 'name' => 'R1', 'ethernet' => 'two'],
             ['id' => 'node1', 'name' => 'R1', 'networks' => [1]],
+            ['id' => 'node1', 'name' => 'R1', 'config' => ['hostname R1']],
+            ['id' => 'node1', 'name' => 'R1', 'config' => str_repeat('a', 65537)],
         ] as $payload) {
             $response = $this->request(
                 $app,
@@ -114,15 +116,18 @@ final class NodeControllerTest extends TestCase
             'lab_id' => 'lab1',
             'name' => 'R1',
             'engine' => 'docker',
-            'image' => 'frrouting/frr:10.0.1',
+            'image' => 'quay.io/frrouting/frr:10.7.1',
             'cpu' => 1,
             'ram' => 256,
             'ethernet' => 1,
             'networks' => ['tlab0'],
             'console' => 'telnet',
+            'config' => "frr version 10.7.1\nhostname R1\n!\n",
             'docker' => [
                 'console_command' => '/usr/bin/vtysh',
-                'cap_add' => ['NET_ADMIN'],
+                'cap_add' => ['NET_ADMIN', 'SYS_ADMIN'],
+                'daemons' => ['zebra', 'ospfd'],
+                'config_path' => '/etc/frr/frr.conf',
                 'pull' => false,
             ],
         ], ['X-CSRF-Token' => $csrf], $cookie);
@@ -131,10 +136,13 @@ final class NodeControllerTest extends TestCase
         self::assertCount(1, $this->calls);
         $payload = $this->calls[0]['payload'];
         self::assertSame('docker', $payload['engine']);
-        self::assertSame('frrouting/frr:10.0.1', $payload['image']);
+        self::assertSame('quay.io/frrouting/frr:10.7.1', $payload['image']);
+        self::assertSame("frr version 10.7.1\nhostname R1\n!\n", $payload['config']);
         self::assertSame([
             'console_command' => '/usr/bin/vtysh',
-            'cap_add' => ['NET_ADMIN'],
+            'cap_add' => ['NET_ADMIN', 'SYS_ADMIN'],
+            'daemons' => ['zebra', 'ospfd'],
+            'config_path' => '/etc/frr/frr.conf',
             'pull' => false,
         ], $payload['docker']);
     }

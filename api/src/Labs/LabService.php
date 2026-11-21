@@ -894,6 +894,12 @@ final class LabService
         // telnet. Stored nodes may still carry another mode (old labs, manual
         // edits); normalise instead of letting the agent reject the start.
         $spec['console'] = 'telnet';
+        // Node startup configs are generic: the agent injects them wherever
+        // the template's `config_path` points and enforces the size/NUL caps.
+        // The docker spec carries no iso/kernel/initrd/image-store lookups.
+        if (($node['config'] ?? '') !== '') {
+            $spec['config'] = (string) $node['config'];
+        }
 
         return $spec;
     }

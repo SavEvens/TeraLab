@@ -151,6 +151,10 @@ final class LabServiceTest extends TestCase
         self::assertSame('vpcs', $starts[1]['payload']['engine']);
         self::assertSame(['tl-test-bridge-0'], $starts[1]['payload']['networks']);
         self::assertStringStartsWith((string) $lab['id'] . '-', (string) $starts[0]['payload']['id']);
+        foreach ($starts as $start) {
+            self::assertArrayNotHasKey('docker', $start['payload'], 'non-docker specs carry no docker block');
+            self::assertArrayNotHasKey('config', $start['payload'], 'non-docker nodes have no config here');
+        }
     }
 
     public function testFailedNodeStartKeepsLabLinks(): void
@@ -695,6 +699,57 @@ final class LabServiceTest extends TestCase
         foreach (['iso', 'kernel', 'initrd', 'append', 'nvram', 'platform', 'serial'] as $key) {
             self::assertArrayNotHasKey($key, $payload, 'docker specs must not carry ' . $key);
         }
+    }
+
+    public function testDockerFrrNodeEmitsTheDaemonBlockAndTheNodeConfig(): void
+    {
+        $this->template('frr', (string) file_get_contents(dirname(__DIR__) . '/templates/builtin/frr.yaml'));
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'docker', '', [0, 0, 0]);
+        $node['template'] = 'frr';
+        $node['config'] = "frr version 10.7.1\nhostname R1\nrouter ospf\n network 10.0.0.0/8 area 0\n!\n";
+        $lab = $service->create([
+            'name' => 'FRR Lab',
+            'networks' => [['id' => '0', 'name' => 'Net-1']],
+            'nodes' => [$node],
+        ]);
+
+        $service->start((string) $lab['id']);
+        $payload = $this->startPayload();
+
+        self::assertSame('docker', $payload['engine']);
+        self::assertSame('quay.io/frrouting/frr:10.7.1', $payload['image']);
+        self::assertSame([
+            'console_command' => '/usr/bin/vtysh',
+            'cap_add' => ['NET_ADMIN', 'SYS_ADMIN'],
+            'daemons' => ['zebra', 'ospfd', 'bgpd'],
+            'config_path' => '/etc/frr/frr.conf',
+            'pull' => true,
+        ], $payload['docker']);
+        self::assertSame($node['config'], $payload['config'], 'the node startup config reaches the engine verbatim');
+        foreach (['iso', 'kernel', 'initrd', 'append', 'nvram', 'platform', 'serial'] as $key) {
+            self::assertArrayNotHasKey($key, $payload, 'docker specs must not carry ' . $key);
+        }
+    }
+
+    public function testDockerNodeWithoutAConfigOmitsTheConfigField(): void
+    {
+        $this->template('frr-ospf', (string) file_get_contents(dirname(__DIR__) . '/templates/builtin/frr-ospf.yaml'));
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'docker', '', [0]);
+        $node['template'] = 'frr-ospf';
+        $lab = $service->create([
+            'name' => 'FRR OSPF Lab',
+            'networks' => [['id' => '0', 'name' => 'Net-1']],
+            'nodes' => [$node],
+        ]);
+
+        $service->start((string) $lab['id']);
+        $payload = $this->startPayload();
+
+        self::assertSame(['zebra', 'ospfd'], $payload['docker']['daemons']);
+        self::assertSame('/etc/frr/frr.conf', $payload['docker']['config_path']);
+        self::assertArrayNotHasKey('config', $payload, 'an empty node config must not be emitted');
     }
 
     public function testDockerNodeStartsWithATelnetConsoleWhateverTheStoredMode(): void

@@ -12,10 +12,11 @@ use TeraLab\Api\Http\HttpException;
  * Bounded `options.docker` block for container-backed templates.
  *
  * A docker node is a container, not a virtual machine: there is no image store
- * lookup, no iso/kernel/initrd and no QEMU parameters. The only values a
- * template can contribute are the container reference, the console command and
- * a small capability allowlist. The agent validates the same values again
- * (defence in depth); this class is the API-side authority.
+ * lookup, no iso/kernel/initrd and no QEMU parameters. The values a template
+ * can contribute are the container reference, the console command, a small
+ * capability allowlist, an optional daemon selection and the container path
+ * where the node's startup config is injected. The agent validates the same
+ * values again (defence in depth); this class is the API-side authority.
  */
 final class DockerOptions
 {
@@ -23,7 +24,7 @@ final class DockerOptions
     public const OPTION = 'docker';
 
     /** Keys allowed inside `options.docker`. */
-    public const KEYS = ['image', 'console_command', 'cap_add', 'pull'];
+    public const KEYS = ['image', 'console_command', 'cap_add', 'pull', 'daemons', 'config_path'];
 
     /**
      * Docker reference grammar: optional registry host (with optional port),
@@ -47,6 +48,25 @@ final class DockerOptions
     public const CAP_ADD = ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'];
 
     public const MAX_CAP_ADD = 8;
+
+    /**
+     * Daemons a template may select. This is the selectable set of the
+     * published FRR image's `/etc/frr/daemons` file; `zebra` and `staticd`
+     * always run and listing `zebra` is allowed for readability.
+     */
+    public const DAEMONS = [
+        'zebra', 'bgpd', 'ospfd', 'ospf6d', 'ripd', 'ripngd', 'isisd', 'pimd',
+        'pim6d', 'ldpd', 'nhrpd', 'eigrpd', 'babeld', 'sharpd', 'pbrd', 'bfdd',
+        'fabricd', 'vrrpd', 'pathd',
+    ];
+
+    public const MAX_DAEMONS = 12;
+
+    /**
+     * Container path for the node's startup config: absolute, no shell
+     * metacharacters, at most 200 path characters after the leading slash.
+     */
+    public const CONFIG_PATH_PATTERN = '~^/[A-Za-z0-9_./-]{1,200}\z~';
 
     /**
      * Validate `options.docker` when present.
@@ -121,6 +141,20 @@ final class DockerOptions
             }
         }
 
+        if (array_key_exists('daemons', $docker)) {
+            self::assertDaemons($docker['daemons']);
+        }
+
+        if (array_key_exists('config_path', $docker)) {
+            $path = $docker['config_path'];
+            if (!is_string($path)) {
+                throw new HttpException(422, 'Template option docker.config_path must be a string.');
+            }
+            if (trim($path) !== '') {
+                self::assertConfigPath($path);
+            }
+        }
+
         if (array_key_exists('pull', $docker) && !is_bool($docker['pull'])) {
             throw new HttpException(422, 'Template option docker.pull must be a boolean.');
         }
@@ -189,6 +223,20 @@ final class DockerOptions
             }
         }
 
+        $daemons = $docker['daemons'] ?? null;
+        if ($daemons !== null) {
+            $valid = self::assertDaemons($daemons);
+            if ($valid !== []) {
+                $spec['daemons'] = $valid;
+            }
+        }
+
+        $configPath = $docker['config_path'] ?? null;
+        if (is_string($configPath) && trim($configPath) !== '') {
+            self::assertConfigPath($configPath);
+            $spec['config_path'] = $configPath;
+        }
+
         $pull = $docker['pull'] ?? true;
         if (!is_bool($pull)) {
             throw new HttpException(422, 'Template option docker.pull must be a boolean.');
@@ -218,6 +266,61 @@ final class DockerOptions
         }
         if (preg_match(self::IMAGE_PATTERN, $image) !== 1) {
             throw new HttpException(422, 'Template option docker.image must be a valid container image reference.');
+        }
+    }
+
+    /**
+     * Validate a daemon selection and return it as a list.
+     *
+     * @throws HttpException 422 when the selection is not a bounded list
+     * @return list<string>
+     */
+    private static function assertDaemons(mixed $daemons): array
+    {
+        if (!is_array($daemons) || !array_is_list($daemons)) {
+            throw new HttpException(422, 'Template option docker.daemons must be a list.');
+        }
+        if (count($daemons) > self::MAX_DAEMONS) {
+            throw new HttpException(
+                422,
+                'Template option docker.daemons allows at most ' . self::MAX_DAEMONS . ' entries.',
+            );
+        }
+        $valid = [];
+        foreach ($daemons as $daemon) {
+            if (!is_string($daemon) || !in_array($daemon, self::DAEMONS, true)) {
+                throw new HttpException(
+                    422,
+                    'Template option docker.daemons must be one of: ' . implode(', ', self::DAEMONS) . '.',
+                );
+            }
+            if (in_array($daemon, $valid, true)) {
+                throw new HttpException(422, 'Template option docker.daemons must not repeat a daemon.');
+            }
+            $valid[] = $daemon;
+        }
+
+        return $valid;
+    }
+
+    /**
+     * @throws HttpException 422 when the path is not an absolute container path
+     */
+    private static function assertConfigPath(string $path): void
+    {
+        if (preg_match(self::CONFIG_PATH_PATTERN, $path) !== 1) {
+            throw new HttpException(
+                422,
+                'Template option docker.config_path must be an absolute path without shell metacharacters.',
+            );
+        }
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '..') {
+                throw new HttpException(
+                    422,
+                    'Template option docker.config_path must not contain parent directory segments.',
+                );
+            }
         }
     }
 

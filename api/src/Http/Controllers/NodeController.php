@@ -140,6 +140,14 @@ final class NodeController
             }
         }
 
+        // Node startup config is engine-agnostic and passed through verbatim;
+        // the agent enforces the 64 KiB/NUL limit. It is larger than the
+        // general string limit above, hence the separate call.
+        $config = $this->string($data, 'config', maxLength: 65536);
+        if ($config !== null) {
+            $spec['config'] = $config;
+        }
+
         foreach (['cpu' => 64, 'ram' => 131072, 'ethernet' => 16, 'nvram' => 4096] as $key => $maximum) {
             $value = $data[$key] ?? null;
             if ($value === null) {
