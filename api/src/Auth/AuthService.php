@@ -8,6 +8,7 @@ namespace TeraLab\Api\Auth;
 
 use PDO;
 use TeraLab\Api\Config;
+use TeraLab\Api\Database\BusyRetry;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\System\SettingsService;
 
@@ -177,8 +178,11 @@ final class AuthService
             throw new HttpException(403, 'This account has expired.');
         }
 
-        $update = $this->pdo->prepare('UPDATE sessions SET last_seen_at = :now WHERE id_hash = :id_hash');
-        $update->execute([':now' => time(), ':id_hash' => (string) $row['id_hash']]);
+        // Last-seen bookkeeping is idempotent and must never fail a request.
+        BusyRetry::retry(function () use ($row): void {
+            $update = $this->pdo->prepare('UPDATE sessions SET last_seen_at = :now WHERE id_hash = :id_hash');
+            $update->execute([':now' => time(), ':id_hash' => (string) $row['id_hash']]);
+        });
 
         return [
             'user' => $this->publicUser($row),

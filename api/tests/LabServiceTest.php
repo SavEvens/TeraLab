@@ -315,12 +315,13 @@ final class LabServiceTest extends TestCase
         self::assertSame('teralab-2', $lab['format']);
         $types = array_column($lab['warnings'], 'type');
         self::assertContains('image_unmapped', $types);
-        self::assertContains('network_unsupported', $types);
         self::assertContains('interface_gap', $types);
+        // The unused EVE-NG cloud has no lab endpoints, so link pruning drops it.
+        self::assertNotContains('network_unsupported', $types);
 
         $export = $service->export((string) $lab['id'])['xml'];
         self::assertStringContainsString('<configsets>', $export);
-        self::assertStringContainsString('type="pnet0"', $export);
+        self::assertStringNotContainsString('type="pnet0"', $export);
         self::assertDoesNotMatchRegularExpression('/<node[^>]*type="text"/', $export);
     }
 
@@ -363,7 +364,7 @@ final class LabServiceTest extends TestCase
             $this->calls,
             static fn (array $call): bool => $call['path'] === '/v1/node.start',
         ));
-        self::assertSame('virtio-net-pci', $starts[0]['payload']['nic']);
+        self::assertSame('virtio', $starts[0]['payload']['nic'], 'legacy NIC aliases are canonicalised');
         self::assertSame(3, $starts[0]['payload']['serial']);
     }
 
@@ -414,6 +415,277 @@ final class LabServiceTest extends TestCase
 
         self::assertCount(50, $parsed['node_list']);
         self::assertLessThan(1.5, $elapsed, '50-node lab parse must stay under 1.5s');
+    }
+
+    public function testTemplateQemuOptionsReachTheEngineSpec(): void
+    {
+        $this->template('c8000v', (string) file_get_contents(dirname(__DIR__) . '/templates/builtin/c8000v.yaml'));
+        $service = $this->service();
+        $node = $this->node('1', 'C8K', 'qemu', '', []);
+        $node['template'] = 'c8000v';
+        $lab = $service->create(['name' => 'C8000V Lab', 'nodes' => [$node]]);
+
+        $service->start((string) $lab['id']);
+
+        $payload = $this->startPayload();
+        self::assertSame('vmxnet3', $payload['nic']);
+        self::assertSame('pc', $payload['machine']);
+        self::assertSame('x86_64', $payload['arch']);
+        self::assertSame('host', $payload['cpu_model']);
+        self::assertSame('kvm', $payload['accel']);
+        self::assertArrayNotHasKey('extra_options', $payload);
+    }
+
+    public function testNodeNicOverridesTheTemplate(): void
+    {
+        $this->template('c8000v', (string) file_get_contents(dirname(__DIR__) . '/templates/builtin/c8000v.yaml'));
+        $service = $this->service();
+        $node = $this->node('1', 'C8K', 'qemu', '', []);
+        $node['template'] = 'c8000v';
+        $node['nic'] = 'e1000';
+        $lab = $service->create(['name' => 'C8000V Override', 'nodes' => [$node]]);
+
+        $service->start((string) $lab['id']);
+
+        $payload = $this->startPayload();
+        self::assertSame('e1000', $payload['nic'], 'the node attribute wins over the template');
+        self::assertSame('pc', $payload['machine'], 'other template values still apply');
+    }
+
+    public function testRawQemuOptionsBecomeExtraOptions(): void
+    {
+        $this->template(
+            'legacy-qemu',
+            "schema: 1\nid: legacy-qemu\nname: Legacy\nkind: qemu\noptions:\n  qemu_nic: virtio\n  qemu_options: '-no-acpi'\n",
+        );
+        $service = $this->service();
+        $node = $this->node('1', 'LEG', 'qemu', '', []);
+        $node['template'] = 'legacy-qemu';
+        $lab = $service->create(['name' => 'Legacy QEMU', 'nodes' => [$node]]);
+
+        $service->start((string) $lab['id']);
+
+        $payload = $this->startPayload();
+        self::assertSame('virtio', $payload['nic']);
+        self::assertSame('-no-acpi', $payload['extra_options']);
+    }
+
+    public function testNodeQemuOverridesArePersistedAndReachTheSpec(): void
+    {
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'qemu', '', []);
+        $node['arch'] = 'x86_64';
+        $node['cpu_model'] = 'qemu64,+ssse3';
+        $node['accel'] = 'tcg';
+        $node['disk_interface'] = 'scsi';
+        $lab = $service->create(['name' => 'Node QEMU Overrides', 'nodes' => [$node]]);
+
+        // A save must keep the overrides through the existing attribute mechanism.
+        $lab = $service->save((string) $lab['id'], ['nodes' => [$node]], null);
+
+        $parsed = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        $attributes = $parsed['node_list'][0]['attributes'];
+        self::assertSame('x86_64', $attributes['qemu_arch']);
+        self::assertSame('qemu64,+ssse3', $attributes['qemu_cpu']);
+        self::assertSame('tcg', $attributes['qemu_accel']);
+        self::assertSame('scsi', $attributes['qemu_disk_interface']);
+
+        $service->start((string) $lab['id']);
+        $payload = $this->startPayload();
+        self::assertSame('x86_64', $payload['arch']);
+        self::assertSame('qemu64,+ssse3', $payload['cpu_model']);
+        self::assertSame('tcg', $payload['accel']);
+        self::assertSame('scsi', $payload['disk_interface']);
+    }
+
+    public function testInvalidNodeQemuOverrideIsRejected(): void
+    {
+        $node = $this->node('1', 'R1', 'qemu', '', []);
+        $node['accel'] = 'hax';
+
+        try {
+            $this->service()->create(['name' => 'Bad Override', 'nodes' => [$node]]);
+            self::fail('an invalid node override must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('qemu_accel', $exception->getMessage());
+        }
+    }
+
+    public function testNodeNicIsCanonicalisedForTheEngine(): void
+    {
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'qemu', '', []);
+        $node['nic'] = 'i82559er';
+        $lab = $service->create(['name' => 'Legacy NIC', 'nodes' => [$node]]);
+
+        $service->start((string) $lab['id']);
+
+        self::assertSame('e1000', $this->startPayload()['nic']);
+    }
+
+    public function testCpuModelFeatureListReachesTheEngineSpec(): void
+    {
+        $this->template(
+            'features',
+            "schema: 1\nid: features\nname: Features\nkind: qemu\noptions:\n  qemu_cpu: 'qemu64,+ssse3'\n",
+        );
+        $service = $this->service();
+        $node = $this->node('1', 'FEAT', 'qemu', '', []);
+        $node['template'] = 'features';
+        $lab = $service->create(['name' => 'CPU Features', 'nodes' => [$node]]);
+
+        $service->start((string) $lab['id']);
+
+        $payload = $this->startPayload();
+        self::assertSame('qemu64,+ssse3', $payload['cpu_model']);
+    }
+
+    public function testDeletingANodePrunesTheLinkAndNetwork(): void
+    {
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Prune Link',
+            'networks' => [['id' => '1', 'name' => 'Net-1']],
+            'nodes' => [
+                $this->node('1', 'R1', 'qemu', '', [1]),
+                $this->node('2', 'R2', 'qemu', '', [1]),
+            ],
+        ]);
+
+        $service->save((string) $lab['id'], ['nodes' => [$this->node('1', 'R1', 'qemu', '', [1])]], null);
+
+        $parsed = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertCount(1, $parsed['node_list']);
+        self::assertSame('', $parsed['node_list'][0]['interfaces'][0]['network_id']);
+        self::assertSame([], $parsed['network_list']);
+    }
+
+    public function testSharedSegmentSurvivesANodeDeletion(): void
+    {
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Shared Segment',
+            'networks' => [['id' => '1', 'name' => 'Net-1']],
+            'nodes' => [
+                $this->node('1', 'R1', 'qemu', '', [1]),
+                $this->node('2', 'R2', 'qemu', '', [1]),
+                $this->node('3', 'R3', 'qemu', '', [1]),
+            ],
+        ]);
+
+        $service->save((string) $lab['id'], [
+            'nodes' => [
+                $this->node('1', 'R1', 'qemu', '', [1]),
+                $this->node('2', 'R2', 'qemu', '', [1]),
+            ],
+        ], null);
+
+        $parsed = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertCount(1, $parsed['network_list']);
+        self::assertSame('1', $parsed['node_list'][0]['interfaces'][0]['network_id']);
+        self::assertSame('1', $parsed['node_list'][1]['interfaces'][0]['network_id']);
+    }
+
+    public function testDanglingNetworkReferenceIsDetached(): void
+    {
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'qemu', '', [1]);
+        $node['interfaces'][] = ['id' => 1, 'name' => 'eth1', 'type' => 'ethernet', 'network_id' => '9'];
+        $lab = $service->create([
+            'name' => 'Dangling Link',
+            'networks' => [['id' => '1', 'name' => 'Net-1']],
+            'nodes' => [$node, $this->node('2', 'R2', 'qemu', '', [1])],
+        ]);
+
+        $parsed = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertCount(1, $parsed['network_list']);
+        self::assertSame('1', $parsed['node_list'][0]['interfaces'][0]['network_id']);
+        self::assertSame('', $parsed['node_list'][0]['interfaces'][1]['network_id']);
+    }
+
+    public function testTwoInterfacesOnOneNetworkCountAsTwo(): void
+    {
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Two Ports',
+            'networks' => [['id' => '1', 'name' => 'Net-1']],
+            'nodes' => [$this->node('1', 'R1', 'qemu', '', [1, 1])],
+        ]);
+
+        $parsed = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertCount(1, $parsed['network_list']);
+        self::assertSame('1', $parsed['node_list'][0]['interfaces'][0]['network_id']);
+        self::assertSame('1', $parsed['node_list'][0]['interfaces'][1]['network_id']);
+    }
+
+    public function testPartialSavePrunesAgainstStoredNetworks(): void
+    {
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Partial Save',
+            'networks' => [['id' => '1', 'name' => 'Net-1'], ['id' => '2', 'name' => 'Net-2']],
+            'nodes' => [
+                $this->node('1', 'R1', 'qemu', '', [1]),
+                $this->node('2', 'R2', 'qemu', '', [1]),
+                $this->node('3', 'R3', 'qemu', '', [2]),
+                $this->node('4', 'R4', 'qemu', '', [2]),
+            ],
+        ]);
+
+        // Only "nodes" is sent: the stored network list must still be pruned.
+        $service->save((string) $lab['id'], [
+            'nodes' => [
+                $this->node('1', 'R1', 'qemu', '', [1]),
+                $this->node('3', 'R3', 'qemu', '', [2]),
+                $this->node('4', 'R4', 'qemu', '', [2]),
+            ],
+        ], null);
+
+        $parsed = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertCount(1, $parsed['network_list']);
+        self::assertSame('2', $parsed['network_list'][0]['id']);
+        self::assertSame('', $parsed['node_list'][0]['interfaces'][0]['network_id']);
+        self::assertSame('2', $parsed['node_list'][1]['interfaces'][0]['network_id']);
+    }
+
+    public function testImportPrunesSingleEndedNetworks(): void
+    {
+        $xml = '<?xml version="1.0" encoding="UTF-8"?><lab name="Single End" id="single-end" version="1">'
+            . '<topology><nodes><node id="1" name="R1" type="iol" template="iol" image="l3.bin" ethernet="1">'
+            . '<interface id="0" name="e0/0" type="ethernet" network_id="1"/>'
+            . '</node></nodes><networks><network id="1" type="bridge" name="Net-1"/></networks></topology></lab>';
+
+        $service = $this->service();
+        $lab = $service->import($this->upload($xml, 'single.unl'), 'tester');
+
+        self::assertSame(0, $lab['networks']);
+        $parsed = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertSame([], $parsed['network_list']);
+        self::assertSame('', $parsed['node_list'][0]['interfaces'][0]['network_id']);
+    }
+
+    private function template(string $id, string $yaml): void
+    {
+        $directory = $this->config->templatesDir;
+        if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
+            self::fail('cannot create the templates directory');
+        }
+        file_put_contents($directory . '/' . $id . '.yaml', $yaml);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function startPayload(): array
+    {
+        foreach ($this->calls as $call) {
+            if ($call['path'] === '/v1/node.start') {
+                return $call['payload'];
+            }
+        }
+
+        throw new \RuntimeException('the agent did not receive a node start');
     }
 
     private function registerImage(string $reference): void

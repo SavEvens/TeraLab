@@ -166,6 +166,10 @@ final class Phase1ApiTest extends TestCase
         $ids = array_column($this->json($list)['data'], 'id');
         self::assertContains('linux', $ids);
         self::assertContains('custom1', $ids);
+        $badYaml = "schema: 1\nid: badnic\nname: Bad NIC\nkind: qemu\noptions:\n  qemu_nic: bogus\n";
+        $rejected = $this->request('PUT', '/api/v2/templates/badnic', ['yaml' => $badYaml], [], $editorCookie, $editorCsrf);
+        self::assertSame(422, $rejected->getStatusCode(), (string) $rejected->getBody());
+
         $removed = $this->request('DELETE', '/api/v2/templates/custom1', [], [], $editorCookie, $editorCsrf);
         self::assertSame(200, $removed->getStatusCode());
     }
@@ -198,10 +202,10 @@ final class Phase1ApiTest extends TestCase
     {
         $version = $this->request('GET', '/api/v2/version');
         self::assertSame(200, $version->getStatusCode());
-        self::assertSame('1.5.5', $this->json($version)['version']);
+        self::assertSame('1.5.6', $this->json($version)['version']);
         self::assertSame('AGPL-3.0-or-later', $this->json($version)['license']);
         $health = $this->request('GET', '/api/v2/health');
-        self::assertSame('1.5.5', $this->json($health)['version']);
+        self::assertSame('1.5.6', $this->json($health)['version']);
     }
 
     public function testSnapshotsAndBulkNodeActions(): void

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Derived from UNetLab template html/templates/vwaas.php.
 # Converted to YAML by TeraLab contributors, 2026-11-17.
+# Modified by TeraLab contributors, 2026-11-21: QEMU option normalisation (unescaped quotes).
+# The original file remains BSD-3-Clause; these modifications are AGPL-3.0-or-later.
 schema: 1
 id: vwaas
 name: WAAS
@@ -14,4 +16,4 @@ defaults:
   console: vnc
 options:
   qemu_arch: x86_64
-  qemu_options: '-machine type=pc-1.0,accel=kvm -smbios type=1,manufacturer=\"VMware Inc.\",product=\"VMware Virtual Platform\",serial=\"VMware-12 00 11 22 33 44 55 66-77 88 99 aa bb cc dd ee\"'
+  qemu_options: '-machine type=pc-1.0,accel=kvm -smbios type=1,manufacturer="VMware Inc.",product="VMware Virtual Platform",serial="VMware-12 00 11 22 33 44 55 66-77 88 99 aa bb cc dd ee"'

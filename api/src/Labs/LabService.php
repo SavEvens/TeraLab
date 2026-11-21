@@ -13,6 +13,8 @@ use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Snapshots\SnapshotRepository;
+use TeraLab\Api\Templates\QemuOptions;
+use TeraLab\Api\Templates\TemplateRepository;
 
 final class LabService
 {
@@ -26,8 +28,12 @@ final class LabService
         private readonly LabLocks $locks,
         private readonly ImageReferences $images,
         private readonly ?SnapshotRepository $snapshots = null,
+        private readonly ?TemplateRepository $templates = null,
     ) {
     }
+
+    /** @var array<string, array<string, string>> Template id => resolved QEMU spec fields. */
+    private array $templateOptions = [];
 
     /**
      * @param array<string, mixed> $input
@@ -36,6 +42,10 @@ final class LabService
     public function create(array $input, ?string $author = null, ?string $ownerId = null): array
     {
         $name = $this->labName($input['name'] ?? null);
+        [$nodes, $networks] = $this->pruneLinks(
+            $this->normalizeNodes($input['nodes'] ?? []),
+            $this->normalizeNetworks($input['networks'] ?? []),
+        );
         $lab = [
             'id' => $this->uuid(),
             'name' => $name,
@@ -44,8 +54,8 @@ final class LabService
             'body' => $this->text($input['body'] ?? ''),
             'version' => '1',
             'revision' => 1,
-            'node_list' => $this->normalizeNodes($input['nodes'] ?? []),
-            'network_list' => $this->normalizeNetworks($input['networks'] ?? []),
+            'node_list' => $nodes,
+            'network_list' => $networks,
             'attributes' => array_filter([
                 'owner' => $ownerId,
                 'created_at' => gmdate('c'),
@@ -81,11 +91,18 @@ final class LabService
         $lab['name'] = $this->labName($input['name'] ?? $lab['name']);
         $lab['description'] = $this->text($input['description'] ?? $lab['description']);
         $lab['body'] = $this->text($input['body'] ?? $lab['body']);
-        if (array_key_exists('nodes', $input)) {
-            $lab['node_list'] = $this->normalizeNodes($input['nodes']);
+        $nodes = array_key_exists('nodes', $input)
+            ? $this->normalizeNodes($input['nodes'])
+            : $this->labNodes($lab);
+        $networks = array_key_exists('networks', $input)
+            ? $this->normalizeNetworks($input['networks'])
+            : $this->labNetworks($lab);
+        [$prunedNodes, $prunedNetworks] = $this->pruneLinks($nodes, $networks);
+        if (array_key_exists('nodes', $input) || $prunedNodes !== $nodes) {
+            $lab['node_list'] = $prunedNodes;
         }
-        if (array_key_exists('networks', $input)) {
-            $lab['network_list'] = $this->normalizeNetworks($input['networks']);
+        if (array_key_exists('networks', $input) || $prunedNetworks !== $networks) {
+            $lab['network_list'] = $prunedNetworks;
         }
         $lab['revision'] = $revision + 1;
         $lab['attributes']['updated_at'] = gmdate('c');
@@ -118,6 +135,10 @@ final class LabService
         }
 
         $lab = $this->parser->parseXml($xml);
+        [$lab['node_list'], $lab['network_list']] = $this->pruneLinks(
+            $this->labNodes($lab),
+            $this->labNetworks($lab),
+        );
         $lab['id'] = $this->uuid();
         $lab['author'] = $lab['author'] !== '' ? $lab['author'] : ($author ?? '');
         $lab['revision'] = 1;
@@ -601,9 +622,11 @@ final class LabService
         foreach ($this->engineNodes($lab) as $node) {
             $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
             $state = 'stopped';
+            $ready = false;
             try {
                 $info = $this->agent->nodeStatus($agentID);
                 $state = $this->stringValue($info, 'state') ?: 'unknown';
+                $ready = ($info['ready'] ?? false) === true;
             } catch (HttpException $exception) {
                 if ($exception->status !== 404) {
                     $state = 'unknown';
@@ -615,6 +638,7 @@ final class LabService
                 'name' => $node['name'],
                 'type' => $node['type'],
                 'state' => $state,
+                'ready' => $ready,
             ];
         }
 
@@ -688,6 +712,151 @@ final class LabService
         }
 
         return $nodes;
+    }
+
+    /**
+     * @param array<string, mixed> $lab
+     * @return list<array<string, mixed>>
+     */
+    private function labNetworks(array $lab): array
+    {
+        $networks = [];
+        foreach (($lab['network_list'] ?? []) as $network) {
+            if (is_array($network)) {
+                $networks[] = $network;
+            }
+        }
+
+        return $networks;
+    }
+
+    /**
+     * Enforce the topology invariant: a network is a cable/segment and must
+     * have at least two attached interfaces.
+     *
+     * Rules, in order: `""`/`"0"` without a matching network is unconnected and
+     * left alone; a reference to a missing network is dangling and cleared; a
+     * network with fewer than two attachments is removed and every interface
+     * that pointed at it is detached. All other networks are untouched, so a
+     * shared segment survives a node deletion with its remaining members.
+     *
+     * @param list<array<string, mixed>> $nodes
+     * @param list<array<string, mixed>> $networks
+     * @return array{0: list<array<string, mixed>>, 1: list<array<string, mixed>>}
+     */
+    private function pruneLinks(array $nodes, array $networks): array
+    {
+        $known = [];
+        foreach ($networks as $network) {
+            if (isset($network['id']) && is_string($network['id']) && $network['id'] !== '') {
+                $known[$network['id']] = true;
+            }
+        }
+
+        $counts = [];
+        foreach ($nodes as $index => $node) {
+            if (!is_array($node['interfaces'] ?? null)) {
+                continue;
+            }
+            foreach ($node['interfaces'] as $port => $interface) {
+                if (!is_array($interface)) {
+                    continue;
+                }
+                $networkID = (string) ($interface['network_id'] ?? '');
+                if ($networkID === '') {
+                    continue;
+                }
+                if (!isset($known[$networkID])) {
+                    if ($networkID !== '0') {
+                        $nodes[$index]['interfaces'][$port]['network_id'] = '';
+                    }
+                    continue;
+                }
+                $counts[$networkID] = ($counts[$networkID] ?? 0) + 1;
+            }
+        }
+
+        $kept = [];
+        $removed = [];
+        foreach ($networks as $network) {
+            $networkID = isset($network['id']) && is_string($network['id']) ? $network['id'] : '';
+            if ($networkID !== '' && ($counts[$networkID] ?? 0) < 2) {
+                $removed[$networkID] = true;
+                continue;
+            }
+            $kept[] = $network;
+        }
+        if ($removed === []) {
+            return [$nodes, $networks];
+        }
+        foreach ($nodes as $index => $node) {
+            if (!is_array($node['interfaces'] ?? null)) {
+                continue;
+            }
+            foreach ($node['interfaces'] as $port => $interface) {
+                if (!is_array($interface)) {
+                    continue;
+                }
+                if (isset($removed[(string) ($interface['network_id'] ?? '')])) {
+                    $nodes[$index]['interfaces'][$port]['network_id'] = '';
+                }
+            }
+        }
+
+        return [$nodes, $kept];
+    }
+
+    /**
+     * QEMU parameters for a node: node attribute, then the template `options`
+     * mapping, then nothing (the agent applies its own fallback).
+     *
+     * @param array<string, mixed> $node
+     * @return array<string, string>
+     */
+    private function qemuParameters(array $node): array
+    {
+        $parameters = $this->templateParameters((string) ($node['template'] ?? ''));
+        $attributes = is_array($node['attributes'] ?? null) ? $node['attributes'] : [];
+        foreach (QemuOptions::MAPPING as $option => $field) {
+            $override = $node[$field] ?? null;
+            if (is_string($override) && $override !== '') {
+                // Stored labs may carry legacy values (virtio-net-pci, i386,
+                // …): the engine only ever sees the canonical form.
+                $override = QemuOptions::value($option, $override);
+            } else {
+                $candidate = $attributes[$option] ?? null;
+                $override = is_string($candidate) && trim($candidate) !== ''
+                    ? QemuOptions::value($option, $candidate)
+                    : null;
+            }
+            if (is_string($override) && $override !== '') {
+                $parameters[$field] = $override;
+            }
+        }
+        $raw = $attributes[QemuOptions::RAW_KEY] ?? null;
+        if (is_string($raw) && trim($raw) !== '') {
+            $parameters['extra_options'] = QemuOptions::rawValue($raw);
+        }
+
+        return $parameters;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function templateParameters(string $templateID): array
+    {
+        if ($templateID === '') {
+            return [];
+        }
+        if (isset($this->templateOptions[$templateID])) {
+            return $this->templateOptions[$templateID];
+        }
+        $repository = $this->templates ?? new TemplateRepository($this->config);
+        $template = $repository->find($templateID);
+        $options = $template !== null && is_array($template['options'] ?? null) ? $template['options'] : [];
+
+        return $this->templateOptions[$templateID] = QemuOptions::spec($options);
     }
 
     /**
@@ -767,11 +936,8 @@ final class LabService
         if (($node['platform'] ?? '') !== '') {
             $spec['platform'] = (string) $node['platform'];
         }
-        if (($node['nic'] ?? '') !== '') {
-            $spec['nic'] = (string) $node['nic'];
-        }
-        if (($node['machine'] ?? '') !== '') {
-            $spec['machine'] = (string) $node['machine'];
+        if ($type === 'qemu') {
+            $spec = array_merge($spec, $this->qemuParameters($node));
         }
         $spec['serial'] = (int) ($node['serial'] ?? 0);
         if ((int) ($node['nvram'] ?? 0) > 0) {
@@ -1142,6 +1308,18 @@ final class LabService
                     'attributes' => $this->normalizeAttributes($interface['attributes'] ?? [], ['id', 'name', 'type', 'network_id']),
                 ];
             }
+            $attributes = $this->normalizeAttributes($raw['attributes'] ?? [], [
+                'id', 'name', 'type', 'template', 'icon', 'image', 'iso', 'kernel', 'initrd', 'append',
+                'console', 'cpu', 'ram', 'ethernet', 'nvram', 'serial', 'uuid', 'platform', 'nic',
+                'machine', 'delay', 'sat', 'config', 'left', 'top',
+            ]);
+            foreach (QemuOptions::NODE_FIELDS as $field => $option) {
+                $value = $raw[$field] ?? null;
+                if (!is_string($value) || trim($value) === '') {
+                    continue;
+                }
+                $attributes[$option] = QemuOptions::value($option, $value);
+            }
             $nodes[] = [
                 'id' => $id,
                 'name' => (string) ($raw['name'] ?? $id),
@@ -1170,11 +1348,7 @@ final class LabService
                 'top' => max(0, (int) ($raw['top'] ?? 0)),
                 'interfaces' => $interfaces,
                 'extra_xml' => $this->normalizeFragments($raw['extra_xml'] ?? []),
-                'attributes' => $this->normalizeAttributes($raw['attributes'] ?? [], [
-                    'id', 'name', 'type', 'template', 'icon', 'image', 'iso', 'kernel', 'initrd', 'append',
-                    'console', 'cpu', 'ram', 'ethernet', 'nvram', 'serial', 'uuid', 'platform', 'nic',
-                    'machine', 'delay', 'sat', 'config', 'left', 'top',
-                ]),
+                'attributes' => $attributes,
             ];
         }
 

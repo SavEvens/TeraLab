@@ -7,6 +7,7 @@ declare(strict_types=1);
 namespace TeraLab\Api\Auth;
 
 use PDO;
+use TeraLab\Api\Database\BusyRetry;
 
 final class AuditLogger
 {
@@ -25,11 +26,7 @@ final class AuditLogger
         string $result,
         array $details = [],
     ): void {
-        $statement = $this->pdo->prepare(
-            'INSERT INTO audit_log (id, ts, user_id, ip, action, target, result, details_json) '
-            . 'VALUES (:id, :ts, :user_id, :ip, :action, :target, :result, :details_json)'
-        );
-        $statement->execute([
+        $row = [
             ':id' => bin2hex(random_bytes(16)),
             ':ts' => time(),
             ':user_id' => $userId,
@@ -38,6 +35,14 @@ final class AuditLogger
             ':target' => $target,
             ':result' => $result,
             ':details_json' => json_encode($details, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-        ]);
+        ];
+        // Idempotent append: safe to retry when another writer holds the lock.
+        BusyRetry::retry(function () use ($row): void {
+            $statement = $this->pdo->prepare(
+                'INSERT INTO audit_log (id, ts, user_id, ip, action, target, result, details_json) '
+                . 'VALUES (:id, :ts, :user_id, :ip, :action, :target, :result, :details_json)'
+            );
+            $statement->execute($row);
+        });
     }
 }

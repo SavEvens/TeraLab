@@ -34,6 +34,9 @@ final class LabApiTest extends TestCase
     /** @var list<array<string, mixed>> */
     private array $runningNodes = [];
 
+    /** @var array<string, bool> Agent node id => running. */
+    private array $running = [];
+
     protected function setUp(): void
     {
         $this->root = sys_get_temp_dir() . '/teralab-labapi-' . bin2hex(random_bytes(6));
@@ -46,15 +49,26 @@ final class LabApiTest extends TestCase
                 return [200, '{"ok":true,"result":{"bridges":{"0":"tl-test-bridge-0"}}}'];
             }
             if ($path === '/v1/node.start') {
+                $id = (string) ($payload['id'] ?? '');
+                $this->running[$id] = true;
+
                 return [200, json_encode([
                     'ok' => true,
-                    'result' => ['id' => $payload['id'] ?? '', 'state' => 'running'],
+                    'result' => ['id' => $id, 'state' => 'running', 'ready' => true],
                 ], JSON_THROW_ON_ERROR)];
             }
             if (str_starts_with($path, '/v1/node.status')) {
-                return [200, '{"ok":true,"result":{"id":"node","state":"running"}}'];
+                parse_str((string) parse_url($path, PHP_URL_QUERY), $query);
+                $id = (string) ($query['id'] ?? '');
+                if (!isset($this->running[$id])) {
+                    return [404, '{"ok":false,"error":{"code":"not_found","message":"node not found"}}'];
+                }
+
+                return [200, '{"ok":true,"result":{"id":"node","state":"running","ready":true}}'];
             }
             if ($path === '/v1/node.stop' || $path === '/v1/node.wipe') {
+                unset($this->running[(string) ($payload['id'] ?? '')]);
+
                 return [200, '{"ok":true,"result":{"state":"ok"}}'];
             }
             if ($path === '/v1/system/status') {
@@ -110,6 +124,7 @@ final class LabApiTest extends TestCase
         $nodes = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes');
         self::assertSame(200, $nodes->getStatusCode());
         self::assertSame('running', $this->json($nodes)['data']['nodes'][0]['state']);
+        self::assertTrue($this->json($nodes)['data']['nodes'][0]['ready']);
 
         $export = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/export');
         self::assertSame(200, $export->getStatusCode());
@@ -165,6 +180,30 @@ final class LabApiTest extends TestCase
             'revision' => 1,
         ]);
         self::assertSame(409, $stale->getStatusCode());
+    }
+
+    public function testNodesResponseIncludesReadyFlag(): void
+    {
+        $create = $this->request('POST', '/api/v2/labs', [
+            'name' => 'Ready Lab',
+            'nodes' => [[
+                'id' => '1',
+                'name' => 'PC1',
+                'type' => 'vpcs',
+                'cpu' => 1,
+                'ram' => 64,
+                'interfaces' => [],
+            ]],
+        ]);
+        self::assertSame(201, $create->getStatusCode(), (string) $create->getBody());
+        $lab = $this->json($create)['data'];
+
+        $nodes = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes');
+        self::assertSame(200, $nodes->getStatusCode());
+        $node = $this->json($nodes)['data']['nodes'][0];
+        self::assertArrayHasKey('ready', $node);
+        self::assertFalse($node['ready']);
+        self::assertSame('stopped', $node['state']);
     }
 
     public function testLabListReportsRunningState(): void
