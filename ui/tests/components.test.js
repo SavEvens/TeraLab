@@ -57,14 +57,15 @@ describe('TemplatePicker', () => {
     { id: 'iol', name: 'Cisco IOL', kind: 'iol' },
     { id: 'vpcs', name: 'VPCS', kind: 'vpcs' }
   ]
-  const images = [{ id: 'img1', name: 'base.qcow2', template: 'linux' }]
+  const images = [{ id: 'img1', name: 'Base image', reference: 'base.qcow2', template: 'linux' }]
 
   it('groups templates by image mapping and emits add', async () => {
     const wrapper = mount(TemplatePicker, { props: { templates, images } })
     const ready = wrapper.find('[data-group="ready"]')
     const needsImage = wrapper.find('[data-group="needs-image"]')
     expect(ready.text()).toContain('Linux')
-    expect(ready.text()).toContain('base.qcow2')
+    expect(ready.text()).toContain('Base image')
+    expect(ready.text()).not.toContain('base.qcow2')
     expect(ready.text()).not.toContain('VPCS')
     expect(needsImage.text()).toContain('VPCS')
     expect(needsImage.text()).toContain('Cisco IOL')
@@ -73,6 +74,29 @@ describe('TemplatePicker', () => {
     await vpcs.find('button').trigger('click')
     expect(wrapper.emitted('add')[0][0].template.id).toBe('vpcs')
     expect(wrapper.emitted('add')[0][0].count).toBe(1)
+    expect(wrapper.emitted('add')[0][0].image).toBe('')
+  })
+
+  it('carries the mapped image reference in the add payload', async () => {
+    const wrapper = mount(TemplatePicker, { props: { templates, images } })
+    const linux = wrapper.findAll('[data-group="ready"] li').find((item) => item.text().includes('Linux'))
+    await linux.find('button').trigger('click')
+    expect(wrapper.emitted('add')[0][0]).toMatchObject({ image: 'base.qcow2', count: 1 })
+  })
+
+  it('assigns the first mapped image by name when several are mapped', async () => {
+    const mapped = [
+      { id: 'img2', name: 'Zulu image', reference: 'zeta.qcow2', template: 'linux' },
+      { id: 'img1', name: 'Alpha image', reference: 'alpha.qcow2', template: 'linux' }
+    ]
+    const wrapper = mount(TemplatePicker, { props: { templates, images: mapped } })
+    const ready = wrapper.find('[data-group="ready"]')
+    expect(ready.text()).toContain('Zulu image')
+    expect(ready.text()).toContain('Alpha image')
+    const linux = wrapper.findAll('[data-group="ready"] li').find((item) => item.text().includes('Linux'))
+    await linux.find('button').trigger('click')
+    expect(wrapper.emitted('add')[0][0].image).toBe('alpha.qcow2')
+    expect(wrapper.emitted('add')[0][0].image).not.toBe('zeta.qcow2')
   })
 
   it('clamps the count to 1-20 and forwards it', async () => {
@@ -84,6 +108,7 @@ describe('TemplatePicker', () => {
     await linux().find('button').trigger('click')
     expect(wrapper.emitted('add').at(-1)[0].template.id).toBe('linux')
     expect(wrapper.emitted('add').at(-1)[0].count).toBe(20)
+    expect(wrapper.emitted('add').at(-1)[0].image).toBe('base.qcow2')
 
     await count.setValue('0')
     await linux().find('button').trigger('click')
@@ -155,10 +180,45 @@ describe('Inspector', () => {
     expect(wrapper.text()).not.toContain('unmapped')
   })
 
+  it('lists only the template-mapped images and keeps a stale value visible', () => {
+    const node = {
+      id: '1',
+      position: { x: 0, y: 0 },
+      data: { name: 'R1', template: 'linux', kind: 'qemu', image: 'old.qcow2', console: 'telnet', cpu: 1, ram: 512, serial: 0, interfaces: [{ id: 0 }] }
+    }
+    const images = [
+      { id: 'img1', kind: 'qemu', name: 'Base', reference: 'base.qcow2', format: 'qcow2', template: 'linux' },
+      { id: 'img2', kind: 'qemu', name: 'Other', reference: 'other.qcow2', format: 'qcow2', template: 'vpcs' },
+      { id: 'img3', kind: 'iol', name: 'IOL', reference: 'iol.bin', format: 'bin', template: 'iol' }
+    ]
+    const wrapper = mount(Inspector, { props: { node, templates: [], images } })
+    const imageSelect = wrapper.findAll('label').find((label) => label.text().includes('Image')).find('select')
+    expect(imageSelect.findAll('option').map((option) => option.element.value)).toEqual(['', 'old.qcow2', 'base.qcow2'])
+    expect(imageSelect.text()).toContain('⚠ old.qcow2 (not mapped to this template)')
+    expect(imageSelect.text()).not.toContain('Other')
+    expect(imageSelect.text()).not.toContain('IOL')
+  })
+
+  it('falls back to all images of the kind when the template has no mapping', () => {
+    const node = {
+      id: '1',
+      position: { x: 0, y: 0 },
+      data: { name: 'R1', template: 'unmapped', kind: 'qemu', image: '', console: 'telnet', cpu: 1, ram: 512, serial: 0, interfaces: [{ id: 0 }] }
+    }
+    const images = [
+      { id: 'img1', kind: 'qemu', name: 'Base', reference: 'base.qcow2', format: 'qcow2', template: 'linux' },
+      { id: 'img2', kind: 'qemu', name: 'Other', reference: 'other.qcow2', format: 'qcow2', template: 'vpcs' },
+      { id: 'img3', kind: 'iol', name: 'IOL', reference: 'iol.bin', format: 'bin', template: 'iol' }
+    ]
+    const wrapper = mount(Inspector, { props: { node, templates: [], images } })
+    const imageSelect = wrapper.findAll('label').find((label) => label.text().includes('Image')).find('select')
+    expect(imageSelect.findAll('option').map((option) => option.element.value)).toEqual(['', 'base.qcow2', 'other.qcow2'])
+  })
+
   it('marks an unmapped image and emits nvram', async () => {
     const node = { id: '1', position: { x: 0, y: 0 }, data: { name: 'R1', template: 'iol', kind: 'iol', image: 'missing.bin', console: 'telnet', cpu: 1, ram: 512, serial: 0, nvram: 0, interfaces: [{ id: 0 }] } }
     const wrapper = mount(Inspector, { props: { node, templates: [], images: [] } })
-    expect(wrapper.text()).toContain('missing.bin (unmapped)')
+    expect(wrapper.text()).toContain('missing.bin (not mapped to this template)')
     const nvram = wrapper.findAll('label').find((label) => label.text().includes('NVRAM')).find('input')
     await nvram.setValue('1024')
     expect(wrapper.emitted('update').some((entry) => entry[0].key === 'nvram' && entry[0].value === 1024)).toBe(true)
@@ -315,6 +375,135 @@ describe('ImagesView', () => {
     })
     expect(wrapper.text()).toContain('1 imported · 0 duplicate · 0 skipped · 0 failed')
     expect(wrapper.find('.adopt-results .badge.status-imported').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('renames an image from one dialog with name and reference', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', path: '/var/lib/teralab/images/qemu/base.qcow2', created_at: 0 }]
+    })
+    api.renameImage.mockResolvedValue({ data: { id: 'img1' } })
+    api.setImageReference.mockResolvedValue({ data: { id: 'img1' } })
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Rename').trigger('click')
+    expect(wrapper.find('.rename-modal').exists()).toBe(true)
+    expect(wrapper.find('input[aria-label="Display name"]').element.value).toBe('base')
+    expect(wrapper.find('input[aria-label="Reference"]').element.value).toBe('base.qcow2')
+
+    await wrapper.find('input[aria-label="Display name"]').setValue('Base image')
+    await wrapper.find('input[aria-label="Reference"]').setValue('base-v2.qcow2')
+    await wrapper.find('.rename-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.renameImage).toHaveBeenCalledTimes(1)
+    expect(api.renameImage).toHaveBeenCalledWith('img1', 'Base image')
+    expect(api.setImageReference).toHaveBeenCalledTimes(1)
+    expect(api.setImageReference).toHaveBeenCalledWith('img1', 'base-v2.qcow2')
+    expect(wrapper.find('.rename-modal').exists()).toBe(false)
+    expect(api.images).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('only sends the fields that changed', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
+    })
+    api.setImageReference.mockResolvedValue({ data: { id: 'img1' } })
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Rename').trigger('click')
+    await wrapper.find('input[aria-label="Reference"]').setValue('base-v2.qcow2')
+    await wrapper.find('.rename-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.renameImage).not.toHaveBeenCalled()
+    expect(api.setImageReference).toHaveBeenCalledWith('img1', 'base-v2.qcow2')
+    wrapper.unmount()
+  })
+
+  it('closes without calling the API when nothing changed', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
+    })
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Rename').trigger('click')
+    await wrapper.find('.rename-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.rename-modal').exists()).toBe(false)
+    expect(api.renameImage).not.toHaveBeenCalled()
+    expect(api.setImageReference).not.toHaveBeenCalled()
+    expect(api.images).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('validates both rename fields inline', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
+    })
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Rename').trigger('click')
+    const display = wrapper.find('input[aria-label="Display name"]')
+    const reference = wrapper.find('input[aria-label="Reference"]')
+    await display.setValue('   ')
+    expect(wrapper.text()).toContain('Display name is required.')
+    expect(wrapper.find('.rename-modal button[type="submit"]').element.disabled).toBe(true)
+
+    await display.setValue('é'.repeat(65))
+    expect(wrapper.text()).toContain('Display name must be 128 characters or fewer.')
+    expect(wrapper.find('.rename-modal button[type="submit"]').element.disabled).toBe(true)
+
+    await display.setValue('Base')
+    await reference.setValue('paths/are/not/portable')
+    expect(wrapper.text()).toContain('Reference must be a single name, without slashes.')
+    expect(wrapper.find('.rename-modal button[type="submit"]').element.disabled).toBe(true)
+
+    await reference.setValue('two words')
+    expect(wrapper.text()).toContain('Reference cannot contain spaces.')
+    expect(wrapper.find('.rename-modal button[type="submit"]').element.disabled).toBe(true)
+
+    await reference.setValue('é'.repeat(65))
+    expect(wrapper.text()).toContain('Reference must be 128 characters or fewer.')
+    expect(wrapper.find('.rename-modal button[type="submit"]').element.disabled).toBe(true)
+
+    await reference.setValue('base-v2.qcow2')
+    expect(wrapper.find('.rename-modal button[type="submit"]').element.disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps the dialog open and refreshes when the reference fails after the name', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
+    })
+    api.renameImage.mockResolvedValue({ data: { id: 'img1' } })
+    api.setImageReference.mockRejectedValue(new Error('Another image already uses that reference.'))
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Rename').trigger('click')
+    await wrapper.find('input[aria-label="Display name"]').setValue('Base image')
+    await wrapper.find('input[aria-label="Reference"]').setValue('taken.qcow2')
+    await wrapper.find('.rename-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.renameImage).toHaveBeenCalledWith('img1', 'Base image')
+    expect(api.setImageReference).toHaveBeenCalledWith('img1', 'taken.qcow2')
+    expect(wrapper.find('.rename-modal').exists()).toBe(true)
+    expect(wrapper.find('input[aria-label="Reference"]').element.value).toBe('taken.qcow2')
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('Another image already uses that reference.'))).toBe(true)
+    expect(api.images).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 })

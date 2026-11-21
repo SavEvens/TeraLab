@@ -369,7 +369,7 @@ async function load() {
   }
 }
 
-function appendTemplate(template, position = null) {
+function appendTemplate(template, position = null, image = '') {
   const id = String(nodes.value.reduce((max, node) => Math.max(max, Number(node.id) || 0), 0) + 1)
   if (template.kind === 'text' || template.kind === 'picture') {
     nodes.value.push({
@@ -416,7 +416,7 @@ function appendTemplate(template, position = null) {
       kind: template.kind || 'qemu',
       template: template.id,
       icon: template.icon || '',
-      image: '',
+      image: image || '',
       iso: '',
       console: defaults.console || 'telnet',
       cpu: defaults.cpu || 1,
@@ -447,15 +447,19 @@ function viewportCenter() {
   return screenToFlowCoordinate({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
 }
 
-function addFromPicker({ template, count } = {}) {
+function addFromPicker({ template, count, image } = {}) {
   const base = pickerPosition.value || viewportCenter()
   const total = Math.max(1, Math.min(20, Math.trunc(Number(count) || 1)))
+  const special = template.kind === 'text' || template.kind === 'picture'
+  // The picker resolves the template's mapped image; text and picture nodes
+  // have no image at all.
+  const assignedImage = special ? '' : (image || '')
   record()
   for (let index = 0; index < total; index += 1) {
     appendTemplate(template, {
       x: base.x + (index % 5) * 210,
       y: base.y + Math.floor(index / 5) * 130
-    })
+    }, assignedImage)
   }
   templatePickerOpen.value = false
   pickerPosition.value = null

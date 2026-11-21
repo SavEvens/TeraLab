@@ -1,14 +1,28 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.5.7
+# Upgrading to TeraLab v1.5.8
 
-v1.5.7 is a patch release: `POST /api/v2/maintenance/reconcile` now reclaims the
-run directory of a lab whose nodes have all stopped, which v1.5.6 failed to do
-after the lab was deleted. It keeps `.unl` labs, the v1 and v2 API surface, and
-the `/var/lib/teralab` layout unchanged. There is no database migration and no
-lab-format change. The installer is idempotent and is the supported upgrade
-path; the steps below are the same as for v1.5.6.
+v1.5.8 is a patch release that changes the user interface only. It keeps `.unl`
+labs, the v1 and v2 API surface, and the `/var/lib/teralab` layout unchanged.
+There is no database migration, no lab-format change and no server-side change
+beyond the version string. The installer is idempotent and is the supported
+upgrade path; the steps below are the same as for v1.5.7.
+
+Changes you will notice in the editor and the Images page:
+
+- A node added from a template with mapped images now gets an image prefilled:
+  the only mapping, or the first by display name when several are mapped.
+  Text and picture nodes still get no image, and templates without a mapping
+  still start empty.
+- The Inspector image selector offers only the node template's mapped images
+  when the template has at least one. A current value that is no longer mapped
+  stays visible as `⚠ <reference> (not mapped to this template)`. The ISO
+  selector is unchanged.
+- Images → **Rename** is one dialog for both the display name and the reference,
+  with inline validation and the duplicate-reference 409 shown as a toast. The
+  two prompt-based flows are gone. Existing node image values are not rewritten
+  by the upgrade.
 
 ## Before upgrading
 
@@ -24,7 +38,7 @@ path; the steps below are the same as for v1.5.6.
 
 ```sh
 git fetch --tags
-git checkout v1.5.7
+git checkout v1.5.8
 sudo packaging/teralab/install.sh
 ```
 

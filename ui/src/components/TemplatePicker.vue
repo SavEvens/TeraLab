@@ -74,7 +74,23 @@ function clampCount(value) {
 
 function add(template, fixedCount = null) {
   const selectedCount = fixedCount ?? clampCount(count.value)
-  emit('add', { template, count: selectedCount })
+  emit('add', { template, count: selectedCount, image: assignedImage(template) })
+}
+
+// Templates with mapped images get a usable reference immediately. With more
+// than one mapping the first by display name wins so the result is stable;
+// the Inspector still lets the user pick another mapped image afterwards.
+function assignedImage(template) {
+  const mapped = imagesFor(template)
+  if (!mapped.length) return ''
+  const [first] = [...mapped].sort((left, right) => {
+    const a = String(left.name || '')
+    const b = String(right.name || '')
+
+    return a < b ? -1 : a > b ? 1 : 0
+  })
+
+  return first.reference || ''
 }
 
 const mappedIds = computed(() => new Set(props.images.map((image) => image.template).filter(Boolean)))

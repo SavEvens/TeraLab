@@ -3,6 +3,128 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.8 release notes
+
+- Release date: 2026-11-21
+- Previous release: v1.5.7
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+v1.5.8 changes the user interface only. There is no API change, no database
+migration, no lab-format change and no new dependency. The browser client
+already had every endpoint these changes call; the release wires the editor and
+the Images page to them properly.
+
+## Adding a node starts from the template's image
+
+When a template has at least one mapped image, adding a node from the template
+picker now fills the node's image field immediately:
+
+- With one mapping, the node gets that image's reference.
+- With several mappings, the node gets the mapping whose display name sorts
+  first, so the result is stable across adds; the Inspector still lets you pick
+  another mapped image.
+- A template without a mapping keeps the old behaviour: an empty image field
+  and the usual hint that an image still has to be chosen.
+- Text and picture nodes never receive an image, even if a mapping exists for
+  their template.
+
+The same rule applies to every copy when several nodes are added at once.
+
+## Inspector lists the template's mapped images
+
+The image selector in the Inspector now offers only the images mapped to the
+node's template, as long as the template has at least one mapping. Templates
+without a mapping keep the previous list: every image of the node's engine kind.
+
+- A node value that is not in that list is preserved and still shown as
+  `⚠ <reference> (not mapped to this template)`, so an existing lab does not
+  lose an image silently when a template mapping changes.
+- The ISO selector is unchanged.
+
+## One rename dialog for display name and reference
+
+The Images page no longer uses two `window.prompt` flows. A single **Rename**
+dialog edits both fields:
+
+- The display name and the lab-facing reference are prefilled with the current
+  values.
+- Both fields are validated inline before Save is enabled: the display name
+  must be non-empty, at most 128 characters and free of control characters; the
+  reference must be a single name — no spaces (including non-breaking and
+  other Unicode spaces), no control characters, no `/` or `\`, no `..`, at most
+  128 characters. Both limits are byte lengths, matching the API.
+- Only the fields that actually changed are sent. The dialog calls the existing
+  `PATCH /api/v2/images/{id}` through `renameImage` and `setImageReference`.
+- A 409 "Another image already uses that reference." is shown as an error toast.
+  If the display name was already stored by the first of the two requests, the
+  dialog stays open with the rejected reference and the row behind it is
+  refreshed, so the half-applied rename is visible.
+
+## API changes
+
+None. No endpoint, request field or response shape changed, and no new endpoint
+was added. The rename and template-mapping endpoints pre-date this release.
+
+- `PATCH /api/v2/images/{id}` with `name` or `reference` is API-tested in
+  `api/tests/Phase1ApiTest.php` (`PATCH` rename) and the reference rules in
+  `api/tests/ImageReferenceTest.php`, `ImageReferencesTest.php` and
+  `ImageStoreTest.php`, including the duplicate-reference 409.
+- The template mapping used by the picker and the Inspector is the existing
+  `images.template` field and `PUT /api/v2/images/{id}/template`.
+- Nothing here is a breaking change.
+
+## Upgrade and migration
+
+v1.5.8 is a patch release. There is no database migration, no `.unl` lab-format
+change, no change to the `/var/lib/teralab` layout and no server-side change
+beyond the version string. The normal upgrade path in `docs/UPGRADE.md` — stop
+the agent, back up `/etc/teralab` and `/var/lib/teralab`, check out `v1.5.8`,
+run `packaging/teralab/install.sh`, start the agent — applies unchanged. No
+backup step is added or removed by this release.
+
+Existing labs are unaffected: node image values stay as stored, and the new
+prefill only applies to nodes added after the upgrade.
+
+## Known limitations
+
+- The prefill is deterministic, not "last used": with several mappings the
+  first display name wins. Change the image in the Inspector if another mapping
+  is wanted.
+- All copies of a batch add get the same prefilled image.
+- Inspector scoping relies on the image's `template` field. An image with no
+  template is only offered for templates that have no mapping of their own.
+- The rename dialog is not transactional. When both fields change it sends two
+  `PATCH` requests; if the second fails, the display name is already stored and
+  the dialog stays open on the rejected reference.
+- The `⚠ <reference> (not mapped to this template)` option only exists while
+  the node keeps that value; selecting another image discards it.
+
+## Licensing and provenance
+
+No new dependency, no new upstream-derived code and no modified BSD-3-Clause
+file. `LICENSE`, `NOTICE`, `PROVENANCE.md`, `LICENSES/README.md` and
+`docs/SBOM.md` change only in their version strings.
+
+## Validation
+
+Verified in the release tree:
+
+- UI unit tests: 40 tests in 2 files pass (`npm test`).
+- UI production build: `npm run build` succeeds.
+- Mock-server end-to-end run: `UI_E2E_OK` with no page errors. The run asserts
+  that a node added from the mapped template carries `base.qcow2`, that the
+  Inspector of that node lists only the mapped image (the extra image mapped to
+  another template is absent), that an IOL node from an unmapped template keeps
+  an empty image, and that the rename dialog is prefilled with the current name
+  and reference.
+- PHP suite: 141 tests, 1309 assertions; PHPStan reports no errors. Unchanged
+  by this release.
+- Go: no Go file changed in this release.
+
+The browser checks above run against the mock server in `ui/e2e/`. No live
+installation was validated for this release; the release note claims are
+limited to that harness and the unit tests.
+
 # TeraLab v1.5.7 release notes
 
 - Release date: 2026-11-21
