@@ -54,6 +54,12 @@ final class OpenApiTest extends TestCase
             '/api/v2/images/import',
             '/api/v2/jobs',
             '/api/v2/system/host',
+            // Four path templates cover the six user routes (GET/POST on the
+            // collection, PATCH/DELETE on the item, plus password and revoke).
+            '/api/v2/users',
+            '/api/v2/users/{id}',
+            '/api/v2/users/{id}/password',
+            '/api/v2/users/{id}/sessions/revoke',
         ] as $path) {
             self::assertArrayHasKey($path, $paths, 'missing OpenAPI path ' . $path);
         }
