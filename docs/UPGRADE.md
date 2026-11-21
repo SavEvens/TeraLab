@@ -1,14 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.5.6
+# Upgrading to TeraLab v1.5.7
 
-v1.5.6 is a minor release: IOL embedded-configuration fidelity, QEMU parameters
-taken from templates and nodes, LACP forwarding on the Linux bridge, and
-lifecycle/topology fixes. It keeps `.unl` labs, the v1 and v2 API surface, and
+v1.5.7 is a patch release: `POST /api/v2/maintenance/reconcile` now reclaims the
+run directory of a lab whose nodes have all stopped, which v1.5.6 failed to do
+after the lab was deleted. It keeps `.unl` labs, the v1 and v2 API surface, and
 the `/var/lib/teralab` layout unchanged. There is no database migration and no
 lab-format change. The installer is idempotent and is the supported upgrade
-path.
+path; the steps below are the same as for v1.5.6.
 
 ## Before upgrading
 
@@ -24,7 +24,7 @@ path.
 
 ```sh
 git fetch --tags
-git checkout v1.5.6
+git checkout v1.5.7
 sudo packaging/teralab/install.sh
 ```
 
@@ -123,6 +123,10 @@ or more nodes keeps its remaining members. The `.unl` format is unchanged
 Existing labs are cleaned on their next save or import — there is no bulk sweep
 to run. `GET /api/v2/labs/{id}/nodes` also gains the additive `ready` field,
 true once the console can be driven.
+
+A v1.5.6 defect in run-directory reclaim is fixed in v1.5.7: a lab whose nodes
+had all stopped still pinned its run directory, so reconcile did not reclaim it
+after the lab was deleted — see the v1.5.7 release notes.
 
 ## Editor and console changes in v1.5.5
 
