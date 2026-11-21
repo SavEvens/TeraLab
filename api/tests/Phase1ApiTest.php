@@ -202,10 +202,10 @@ final class Phase1ApiTest extends TestCase
     {
         $version = $this->request('GET', '/api/v2/version');
         self::assertSame(200, $version->getStatusCode());
-        self::assertSame('1.5.7', $this->json($version)['version']);
+        self::assertSame('1.5.8', $this->json($version)['version']);
         self::assertSame('AGPL-3.0-or-later', $this->json($version)['license']);
         $health = $this->request('GET', '/api/v2/health');
-        self::assertSame('1.5.7', $this->json($health)['version']);
+        self::assertSame('1.5.8', $this->json($health)['version']);
     }
 
     public function testSnapshotsAndBulkNodeActions(): void
