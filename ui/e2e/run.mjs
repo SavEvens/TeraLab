@@ -470,6 +470,7 @@ try {
   await page.locator('.add-user-modal select[aria-label="Role"]').selectOption('editor')
   await page.locator('.add-user-modal input[aria-label="Email"]').fill('e2e-editor@example.test')
   await page.locator('.add-user-modal input[aria-label="Display name"]').fill('E2E Editor')
+  await page.locator('.add-user-modal input[aria-label="Expires on"]').fill('2026-12-31')
   await page.locator('.add-user-modal button[type="submit"]').click()
   await page.waitForSelector('.add-user-modal .token-once code', { timeout: 10000 })
   const addGeneratedPassword = (await page.locator('.add-user-modal .token-once code').innerText()).trim()
@@ -477,6 +478,8 @@ try {
   await page.locator('.add-user-modal').getByRole('button', { name: 'Close' }).click()
   await page.waitForFunction(() => !document.querySelector('.add-user-modal'))
   await page.waitForFunction(() => [...document.querySelectorAll('.users-table tbody tr')].some((row) => row.dataset.user === 'e2e-editor'))
+  const createdUsersState = await (await fetch(`http://127.0.0.1:${mockPort}/__users-state`)).json()
+  const createdUserExpiration = createdUsersState.users.find((user) => user.username === 'e2e-editor')?.expiration
   await page.getByRole('button', { name: 'Add user' }).click()
   await page.waitForSelector('.add-user-modal')
   const addPasswordCleared = await page.locator('.add-user-modal .token-once').count()
@@ -487,7 +490,7 @@ try {
   await page.waitForSelector('.edit-user-modal')
   await page.locator('.edit-user-modal input[aria-label="Display name"]').fill('E2E Renamed')
   await page.locator('.edit-user-modal select[aria-label="Role"]').selectOption('user')
-  await page.locator('.edit-user-modal input[aria-label="Expires"]').fill('2027-06-01T12:00')
+  await page.locator('.edit-user-modal input[aria-label="Expires on"]').fill('2027-06-01')
   await page.locator('.edit-user-modal button[type="submit"]').click()
   await page.waitForFunction(() => !document.querySelector('.edit-user-modal'))
   await page.waitForFunction(() => document.querySelector('tr[data-user="e2e-editor"]')?.textContent.includes('E2E Renamed'))
@@ -656,6 +659,7 @@ try {
     usersSelfBadge,
     selfRoleDisabled,
     addGeneratedOnce: addGeneratedPassword.length >= 16,
+    createdUserExpiration,
     addPasswordOnceVisible,
     addPasswordCleared,
     editedUserRole,
@@ -788,6 +792,10 @@ try {
   if (usersSelfBadge !== '(you)') throw new Error(`self marker is wrong: ${usersSelfBadge}`)
   if (!selfRoleDisabled) throw new Error('role select is editable for your own account')
   if (addGeneratedPassword.length < 16) throw new Error('created user did not get a generated one-time password')
+  const expectedCreatedExpiration = Math.floor(new Date('2026-12-31T23:59:59').getTime() / 1000)
+  if (createdUserExpiration !== expectedCreatedExpiration) {
+    throw new Error(`create sent expiration ${createdUserExpiration}, expected end-of-day ${expectedCreatedExpiration}`)
+  }
   if (addPasswordOnceVisible !== 0) throw new Error('create form is still visible after generating a password')
   if (addPasswordCleared !== 0) throw new Error('generated password survived closing the add dialog')
   if (editedUserRole.toLowerCase() !== 'user') throw new Error(`edited user role was not applied: ${editedUserRole}`)
