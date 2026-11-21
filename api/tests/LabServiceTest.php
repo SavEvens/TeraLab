@@ -9,6 +9,7 @@ namespace TeraLab\Api\Tests;
 use PHPUnit\Framework\TestCase;
 use Slim\Psr7\Factory\StreamFactory;
 use Slim\Psr7\UploadedFile;
+use Symfony\Component\Yaml\Yaml;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
@@ -545,6 +546,136 @@ final class LabServiceTest extends TestCase
         self::assertSame('qemu64,+ssse3', $payload['cpu_model']);
     }
 
+    public function testTemplateQemuDisksReachTheEngineSpec(): void
+    {
+        $this->registerImage('catmanager-20.16.1-virtiob.qcow2');
+        $this->registerImage('catmanager-20.16.1-virtiod.qcow2');
+        $this->template('catmanager-disks', $this->qemuDisksTemplateYaml('catmanager-disks', [
+            ['slot' => 'virtiob', 'image' => 'catmanager-20.16.1-virtiob.qcow2'],
+            ['slot' => 'virtioc', 'size_gb' => 40],
+            ['slot' => 'virtiod', 'image' => 'catmanager-20.16.1-virtiod.qcow2'],
+        ]));
+        $service = $this->service();
+        $node = $this->node('1', 'C8K', 'qemu', '', []);
+        $node['template'] = 'catmanager-disks';
+        $lab = $service->create(['name' => 'Disks Lab', 'nodes' => [$node]]);
+
+        $service->start((string) $lab['id']);
+        $payload = $this->startPayload();
+
+        self::assertSame('qemu', $payload['engine']);
+        self::assertSame([
+            [
+                'slot' => 'virtiob',
+                'image' => $this->config->imagesDir . '/qemu/catmanager-20.16.1-virtiob.qcow2',
+            ],
+            ['slot' => 'virtioc', 'size_gb' => 40],
+            [
+                'slot' => 'virtiod',
+                'image' => $this->config->imagesDir . '/qemu/catmanager-20.16.1-virtiod.qcow2',
+            ],
+        ], $payload['disks'], 'the template disk layout reaches the engine with resolved image paths');
+    }
+
+    public function testUnresolvedTemplateDiskImageFailsTheNodeStart(): void
+    {
+        $this->template('missing-disk', $this->qemuDisksTemplateYaml('missing-disk', [
+            ['slot' => 'virtiob', 'image' => 'absent-virtiob.qcow2'],
+        ]));
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'qemu', '', []);
+        $node['template'] = 'missing-disk';
+        $lab = $service->create(['name' => 'Missing Disk Image', 'nodes' => [$node]]);
+
+        try {
+            $service->start((string) $lab['id']);
+            self::fail('an unresolved template disk image must fail the node start');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'Node R1: template "missing-disk" disk virtiob references image "absent-virtiob.qcow2",'
+                    . ' which is not available in the image store.',
+                $exception->getMessage(),
+                'the disk error names the node once and the template, slot and reference',
+            );
+        }
+
+        $starts = array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => $call['path'] === '/v1/node.start',
+        ));
+        self::assertSame([], $starts, 'the node must not reach the agent without its disks');
+    }
+
+    public function testDeletedTemplateDiskImageFileFailsTheNodeStart(): void
+    {
+        $this->registerImage('pruned-virtiob.qcow2');
+        $path = $this->config->imagesDir . '/qemu/pruned-virtiob.qcow2';
+        self::assertFileExists($path);
+        unlink($path);
+        $this->template('pruned-disk', $this->qemuDisksTemplateYaml('pruned-disk', [
+            ['slot' => 'virtioc', 'image' => 'pruned-virtiob.qcow2'],
+        ]));
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'qemu', '', []);
+        $node['template'] = 'pruned-disk';
+        $lab = $service->create(['name' => 'Pruned Disk Image', 'nodes' => [$node]]);
+
+        try {
+            $service->start((string) $lab['id']);
+            self::fail('a stored reference whose backing file is gone must fail the node start');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'Node R1: template "pruned-disk" disk virtioc references image "pruned-virtiob.qcow2",'
+                    . ' which is not available in the image store.',
+                $exception->getMessage(),
+                'a stale image-store row is rejected like an unknown reference',
+            );
+        }
+
+        $starts = array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => $call['path'] === '/v1/node.start',
+        ));
+        self::assertSame([], $starts, 'the node must not reach the agent without its disks');
+    }
+
+    public function testTemplateWithoutQemuDisksEmitsNoDisksKey(): void
+    {
+        $this->template(
+            'plain-qemu',
+            "schema: 1\nid: plain-qemu\nname: Plain\nkind: qemu\noptions:\n  qemu_nic: virtio\n",
+        );
+        $service = $this->service();
+        $node = $this->node('1', 'PLAIN', 'qemu', '', []);
+        $node['template'] = 'plain-qemu';
+        $lab = $service->create(['name' => 'No Disks', 'nodes' => [$node]]);
+
+        $service->start((string) $lab['id']);
+        $payload = $this->startPayload();
+
+        self::assertSame('virtio', $payload['nic']);
+        self::assertArrayNotHasKey('disks', $payload, 'a template without qemu_disks keeps the payload unchanged');
+    }
+
+    public function testNonQemuNodesIgnoreTemplateDisks(): void
+    {
+        $this->template('vpcs-disks', $this->qemuDisksTemplateYaml('vpcs-disks', [
+            ['slot' => 'virtiob', 'size_gb' => 5],
+        ], 'vpcs'));
+        $service = $this->service();
+        $node = $this->node('1', 'PC1', 'vpcs', '', []);
+        $node['template'] = 'vpcs-disks';
+        $lab = $service->create(['name' => 'VPCS Disks', 'nodes' => [$node]]);
+
+        $service->start((string) $lab['id']);
+        $payload = $this->startPayload();
+
+        self::assertSame('vpcs', $payload['engine']);
+        self::assertArrayNotHasKey('disks', $payload, 'only qemu specs carry the disk layout');
+    }
+
     public function testDeletingANodePrunesTheLinkAndNetwork(): void
     {
         $service = $this->service();
@@ -869,6 +1000,20 @@ final class LabServiceTest extends TestCase
         file_put_contents($directory . '/' . $id . '.yaml', $yaml);
     }
 
+    /**
+     * @param list<array<string, mixed>> $disks
+     */
+    private function qemuDisksTemplateYaml(string $id, array $disks, string $kind = 'qemu'): string
+    {
+        return Yaml::dump([
+            'schema' => 1,
+            'id' => $id,
+            'name' => 'QEMU disks',
+            'kind' => $kind,
+            'options' => ['qemu_disks' => $disks],
+        ], 8, 2);
+    }
+
     private function dockerTemplateYaml(string $id, string $image): string
     {
         return "schema: 1\nid: " . $id . "\nname: Docker\nkind: docker\noptions:\n  docker:\n"
@@ -892,6 +1037,7 @@ final class LabServiceTest extends TestCase
 
     private function registerImage(string $reference): void
     {
+        $path = $this->config->imagesDir . '/qemu/' . $reference;
         $statement = $this->pdo->prepare(
             'INSERT INTO images (id, kind, name, reference, path, sha256, size, virtual_size, format, created_at) '
             . 'VALUES (:id, :kind, :name, :reference, :path, :sha256, :size, :virtual_size, :format, :created_at)'
@@ -901,13 +1047,18 @@ final class LabServiceTest extends TestCase
             ':kind' => 'qemu',
             ':name' => $reference,
             ':reference' => $reference,
-            ':path' => $this->config->imagesDir . '/qemu/' . $reference,
+            ':path' => $path,
             ':sha256' => hash('sha256', $reference),
             ':size' => 1,
             ':virtual_size' => 1,
             ':format' => 'qcow2',
             ':created_at' => time(),
         ]);
+        $directory = dirname($path);
+        if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
+            self::fail('cannot create the image directory');
+        }
+        file_put_contents($path, "QFI\xfb" . str_repeat("\0", 32));
     }
 
     /**

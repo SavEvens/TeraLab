@@ -93,7 +93,7 @@ func TestBuildQEMUArgs(t *testing.T) {
 	spec, _ := testSpec(t)
 	taps := []string{spec.TapName(0)}
 
-	args, err := BuildQEMUArgs(spec, taps, "/tmp/overlay.qcow2", nil, false)
+	args, err := BuildQEMUArgs(spec, taps, "/tmp/overlay.qcow2", nil, nil, false)
 	if err != nil {
 		t.Fatalf("build args failed: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestBuildQEMUArgsRejectsTapMismatch(t *testing.T) {
 	spec.Ethernet = 2
 	spec.Networks = []string{"br0", "br1"}
 
-	if _, err := BuildQEMUArgs(spec, []string{"tl1"}, "", nil, false); err == nil {
+	if _, err := BuildQEMUArgs(spec, []string{"tl1"}, "", nil, nil, false); err == nil {
 		t.Fatal("expected tap mismatch to be rejected")
 	}
 }
@@ -138,7 +138,7 @@ func TestBuildQEMUArgsUsesISO(t *testing.T) {
 		t.Fatalf("validation failed: %v", err)
 	}
 
-	args, err := BuildQEMUArgs(spec, nil, "", nil, false)
+	args, err := BuildQEMUArgs(spec, nil, "", nil, nil, false)
 	if err != nil {
 		t.Fatalf("build args failed: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestBuildQEMUArgsForVNC(t *testing.T) {
 	spec.Console = "vnc"
 	vnc := &VNCConfig{Display: 7, MonitorPath: "/tmp/monitor.sock"}
 
-	args, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "/tmp/overlay.qcow2", vnc, false)
+	args, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "/tmp/overlay.qcow2", nil, vnc, false)
 	if err != nil {
 		t.Fatalf("build args failed: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestBuildQEMUArgsRequiresVNCConfigForVNC(t *testing.T) {
 	spec, _ := testSpec(t)
 	spec.Console = "vnc"
 
-	if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", nil, false); err == nil {
+	if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", nil, nil, false); err == nil {
 		t.Fatal("expected missing vnc configuration to be rejected")
 	}
 }
@@ -187,7 +187,7 @@ func TestBuildQEMUArgsRequiresVNCConfigForVNC(t *testing.T) {
 func TestBuildQEMUArgsRejectsVNCConfigForSerial(t *testing.T) {
 	spec, _ := testSpec(t)
 
-	if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", &VNCConfig{Display: 1}, false); err == nil {
+	if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", nil, &VNCConfig{Display: 1}, false); err == nil {
 		t.Fatal("expected vnc configuration on a serial node to be rejected")
 	}
 }

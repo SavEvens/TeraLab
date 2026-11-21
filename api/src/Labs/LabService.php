@@ -14,6 +14,7 @@ use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Snapshots\SnapshotRepository;
 use TeraLab\Api\Templates\DockerOptions;
+use TeraLab\Api\Templates\QemuDisks;
 use TeraLab\Api\Templates\QemuOptions;
 use TeraLab\Api\Templates\TemplateRepository;
 
@@ -41,6 +42,16 @@ final class LabService
 
     /** @var array<string, array{image: string, docker: array<string, mixed>}> Template id => docker spec. */
     private array $templateDockerOptions = [];
+
+    /**
+     * Template id => validated `qemu_disks` entries (image references unresolved).
+     *
+     * @var array<string, list<array{slot: string, image: string}|array{slot: string, size_gb: int}>>
+     */
+    private array $templateDiskEntries = [];
+
+    /** @var array<string, list<array<string, string|int>>> Template id => resolved disk spec entries. */
+    private array $resolvedTemplateDisks = [];
 
     /**
      * @param array<string, mixed> $input
@@ -867,6 +878,67 @@ final class LabService
     }
 
     /**
+     * Extra QEMU disks declared by the node's template, with image references
+     * resolved to absolute store paths.
+     *
+     * @param array<string, mixed> $node
+     * @return list<array<string, string|int>>
+     */
+    private function nodeDisks(array $node): array
+    {
+        $templateID = (string) ($node['template'] ?? '');
+        if ($templateID === '') {
+            return [];
+        }
+        $entries = $this->templateDisks($templateID);
+        if ($entries === []) {
+            return [];
+        }
+        if (isset($this->resolvedTemplateDisks[$templateID])) {
+            return $this->resolvedTemplateDisks[$templateID];
+        }
+
+        $disks = [];
+        foreach ($entries as $entry) {
+            if (isset($entry['image'])) {
+                $path = $this->imagePath($entry['image']);
+                // A store row may outlive its backing file; the extra disks
+                // must exist before the engine is asked to attach them. The
+                // lab-start caller prefixes the node name, so it is not
+                // repeated here.
+                if ($path === '' || !is_file($path)) {
+                    throw new HttpException(
+                        422,
+                        'template "' . $templateID . '" disk ' . $entry['slot']
+                            . ' references image "' . $entry['image']
+                            . '", which is not available in the image store.',
+                    );
+                }
+                $disks[] = ['slot' => $entry['slot'], 'image' => $path];
+                continue;
+            }
+            $disks[] = ['slot' => $entry['slot'], 'size_gb' => $entry['size_gb']];
+        }
+
+        return $this->resolvedTemplateDisks[$templateID] = $disks;
+    }
+
+    /**
+     * @return list<array{slot: string, image: string}|array{slot: string, size_gb: int}>
+     */
+    private function templateDisks(string $templateID): array
+    {
+        if (isset($this->templateDiskEntries[$templateID])) {
+            return $this->templateDiskEntries[$templateID];
+        }
+        $repository = $this->templates ?? new TemplateRepository($this->config);
+        $template = $repository->find($templateID);
+        $options = $template !== null && is_array($template['options'] ?? null) ? $template['options'] : [];
+
+        return $this->templateDiskEntries[$templateID] = QemuDisks::disks($options);
+    }
+
+    /**
      * Docker templates contribute a raw container reference (never an image
      * store lookup) and the bounded `docker` agent block. The console is always
      * telnet, because the agent exposes a `docker exec` PTY.
@@ -1030,6 +1102,14 @@ final class LabService
         }
         if (($node['append'] ?? '') !== '') {
             $spec['append'] = (string) $node['append'];
+        }
+        if ($type === 'qemu') {
+            // Template-level extra disks; a template without `qemu_disks`
+            // leaves the payload exactly as before.
+            $disks = $this->nodeDisks($node);
+            if ($disks !== []) {
+                $spec['disks'] = $disks;
+            }
         }
 
         return $spec;

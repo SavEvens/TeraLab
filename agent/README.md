@@ -77,9 +77,13 @@ best-effort and never delays a start; a guest that never shows a prompt is left
 - **QEMU:** qcow2/ISO/kernel boot, VNC or serial console. The node spec selects
   `arch`, `machine`, `nic`, `cpu_model`, `accel` and `disk_interface`; the agent
   falls back to `x86_64`/`pc`/`e1000`/`virtio`, and to the detected KVM
-  accelerator, only when a field is empty. `nic` accepts `virtio`, `vmxnet3`,
-  `e1000` and `rtl8139`; the legacy lab values `virtio-net-pci` and `i82559er`
-  normalise to `virtio` and `e1000` so stored labs keep starting. A legacy
+  accelerator, only when a field is empty. `disks` optionally adds extra disks
+  as `[{slot, image | size_gb}]`: slots `virtiob`–`virtiod`, `image` an absolute
+  agent-resolved qcow2 path, or `size_gb` 1–100 for a per-node blank disk.
+  Extras attach as virtio-blk after the primary in slot order; absent means no
+  extra disks. `nic` accepts `virtio`, `vmxnet3`, `e1000` and `rtl8139`; the
+  legacy lab values `virtio-net-pci` and `i82559er` normalise to `virtio` and
+  `e1000` so stored labs keep starting. A legacy
   `qemu_options` string is
   parsed before validation: known flags fill empty fields, engine-owned flags
   (console, boot order, memory, image and kernel paths) are dropped, and only a

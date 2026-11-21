@@ -110,6 +110,67 @@ There are no default accounts, no telemetry, and no `setcap` usage.
   supported C8000V vNIC). With nothing configured, `e1000` remains the fallback
   so existing guests keep their model; PAN-OS stays explicitly on `e1000`.
 
+### Multi-disk QEMU nodes
+
+A QEMU template may declare up to three extra disks with `options.qemu_disks`.
+The primary disk stays the node image (`virtioa`); the block only adds
+`virtiob`, `virtioc` and `virtiod`:
+
+```yaml
+schema: 1
+id: catmanager-2disk
+name: Catalyst SD-WAN Manager (2 disks)
+kind: qemu
+license: AGPL-3.0-or-later
+defaults: { cpu: 4, ram: 32768, ethernet: 2, console: telnet }
+options:
+  qemu_disks:
+    - slot: virtiob
+      image: catmanager-20.16.1-virtiob.qcow2   # image-store reference
+    - slot: virtioc
+      size_gb: 40                               # generated blank disk
+```
+
+- The list holds at most three entries. Slots must be unique and one of
+  `virtiob`, `virtioc`, `virtiod`; `virtioa` cannot be declared here because it
+  remains the node's image.
+- Each entry sets exactly one of `image` or `size_gb`; unknown keys, duplicate
+  slots, and malformed blocks are rejected with 422 when a custom template is
+  saved or imported. Discovery skips a malformed template instead: it is not
+  listed, and for a custom template `GET /api/v2/templates/{id}` returns 404.
+  A malformed builtin still fails when loaded by id.
+- `image` is an image-store reference (the file name shown on the Images page),
+  not a path: a single portable name, and the stored file must be a qcow2. The
+  reference is resolved when the node starts, so a template may be imported
+  before its images. A reference that is not in the store, or whose stored file
+  is missing, fails the node start with 422 naming the template, slot and
+  reference (the lab start prefixes the node name). Each start gives the node
+  its own overlay on top of the stored image, so the stored image is never
+  modified. As with the primary disk, the overlay is recreated on every start,
+  so guest writes to an image-backed extra disk do not survive stop → start.
+  Use `size_gb` for data that must persist across stop → start.
+- `size_gb` (an integer from 1 to 100) creates a sparse qcow2 in the node's run
+  directory on first start. It is created once and reused, so its contents
+  survive stop → start; `wipe` removes it with the rest of the node state. The
+  file lives under `/var/lib/teralab/run`, not in the image store, so it does
+  not count against the image quota.
+- Disk files are create-only. Changing `size_gb`, or switching a slot between
+  `image` and `size_gb`, does not migrate or resize the file already in the
+  node's run directory. Wipe the node after changing a template's disk layout
+  so the node starts from the new definition.
+- Extra disks attach as virtio-blk after the primary disk, in slot order
+  (`virtiob`, `virtioc`, `virtiod`) regardless of the order the template lists
+  them. Boot order is unchanged: the primary disk remains the boot disk.
+- A template without `qemu_disks` behaves exactly as before. This is a
+  template-level option only: it is never stored in the lab (`.unl`) format, so
+  the format, EVE-NG round-trip, and per-node image field are unchanged.
+
+The Catalyst SD-WAN Manager image archive ships two disks
+(`…-virtioa.qcow2` and `…-virtiob.qcow2`). Upload both to the image store, set
+the node image to the virtioa file, and declare virtiob in the template's
+`qemu_disks` as shown. TeraLab references the images you supply; it never
+bundles or redistributes vendor images.
+
 ### Docker nodes
 
 `kind: docker` nodes run containers through the agent. They start, stop, wipe

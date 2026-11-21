@@ -123,6 +123,15 @@ for VNC the generated password.
   `options.docker.image`. `daemons` is a list of at most 12 unique names from
   a fixed FRR allowlist; `config_path` is an absolute container path
   (`^/[A-Za-z0-9_./-]{1,200}$`) with no `..` segment.
+- The same endpoints validate `options.qemu_disks` for every template kind: a
+  list of at most three `{slot, …}` entries with unique slots `virtiob`,
+  `virtioc`, `virtiod` (the primary disk stays the node image, `virtioa`), each
+  setting exactly one of `image` (an image-store reference) or `size_gb`
+  (integer 1–100). The block is *used* only by `kind: qemu` nodes: those agent
+  specs carry it, other engines ignore it, and a template without the block is
+  unchanged. Image references resolve at node start; a reference that is not
+  in the store, or whose stored file is missing, fails the node start with
+  422.
 - `DELETE /api/v2/templates/{id}` removes a custom template.
 - `PUT /api/v2/images/{id}/template` maps an image to a template.
 - `GET /api/v2/jobs`, `GET /api/v2/jobs/{id}` report job records; lab

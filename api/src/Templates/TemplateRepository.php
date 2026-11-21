@@ -258,6 +258,7 @@ final class TemplateRepository
             throw new HttpException(422, 'Template options must be a mapping.');
         }
         QemuOptions::validate($options);
+        QemuDisks::validate($options);
         DockerOptions::validate($options, $template['kind'] === 'docker');
     }
 }
