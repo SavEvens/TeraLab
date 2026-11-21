@@ -131,8 +131,36 @@ export function startMockServer(port = 8099) {
       nodeStates.lab1 = {}
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.5' })
-    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.5', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
+    // Two IOL nodes linked by a single cable network, used to prove that
+    // deleting one node detaches the peer and removes the network.
+    if (request.method === 'POST' && path === '/__linked') {
+      lab = {
+        ...lab,
+        name: 'Linked Lab',
+        revision: 1,
+        running: false,
+        running_nodes: 0,
+        nodes: 2,
+        networks: 1,
+        network_list: [{ id: '1', name: 'Net-1', type: 'bridge' }],
+        node_list: [
+          {
+            id: '1', name: 'IOL_1', type: 'iol', template: 'iol', image: '',
+            console: 'telnet', cpu: 1, ram: 256, uuid: '', platform: '', left: 120, top: 100,
+            interfaces: [{ id: 0, name: 'Ethernet0/0', type: 'ethernet', network_id: '1' }]
+          },
+          {
+            id: '2', name: 'IOL_2', type: 'iol', template: 'iol', image: '',
+            console: 'telnet', cpu: 1, ram: 256, uuid: '', platform: '', left: 480, top: 100,
+            interfaces: [{ id: 0, name: 'Ethernet0/0', type: 'ethernet', network_id: '1' }]
+          }
+        ]
+      }
+      nodeStates.lab1 = {}
+      return send(response, 200, { ok: true })
+    }
+    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.6' })
+    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.6', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       return send(response, 200, {

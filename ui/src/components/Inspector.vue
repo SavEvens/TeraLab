@@ -31,9 +31,10 @@
         <label>CPU <input type="number" min="1" :value="node.data.cpu" @input="update('cpu', Number($event.target.value))" /></label>
         <label>RAM (MiB) <input type="number" min="64" :value="node.data.ram" @input="update('ram', Number($event.target.value))" /></label>
         <label>NIC driver
-          <select :value="node.data.nic || 'e1000'" @change="update('nic', $event.target.value)">
+          <select :value="canonicalNic(node.data.nic)" @change="update('nic', $event.target.value)">
+            <option value="virtio">virtio</option>
+            <option value="vmxnet3">vmxnet3</option>
             <option value="e1000">e1000</option>
-            <option value="virtio-net-pci">virtio-net-pci</option>
             <option value="rtl8139">rtl8139</option>
           </select>
         </label>
@@ -89,6 +90,17 @@ const props = defineProps({
   images: { type: Array, default: () => [] }
 })
 const emit = defineEmits(['update', 'delete', 'console', 'config', 'ports', 'template'])
+
+// The agent only accepts these four drivers. Legacy labs may still carry an
+// older alias; show the canonical equivalent without rewriting the stored
+// value (any other value is left untouched too).
+const LEGACY_NIC_ALIASES = { 'virtio-net-pci': 'virtio', i82559er: 'e1000' }
+
+function canonicalNic(value) {
+  const nic = value || 'e1000'
+
+  return LEGACY_NIC_ALIASES[nic] || nic
+}
 
 function imagesFor(kind) {
   return props.images.filter((image) => image.kind === kind)

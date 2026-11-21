@@ -191,6 +191,55 @@ export function usedNetworks(nodes) {
   return used
 }
 
+// A network is a cable/segment: it only exists while at least two interfaces
+// use it. Interfaces whose network_id names a missing network are dangling and
+// are detached too. Returns copies so the editor's arrays stay reactive; the
+// inputs are never mutated. `''` (and `'0'` when no network id 0 exists) are
+// the lab format's unconnected values and are left alone.
+export function pruneLinks(nodes, networks) {
+  const networkIds = new Set(networks.map((network) => String(network.id)))
+  // "0" is written for an empty network_id, but it is a real attachment when
+  // the lab actually contains a network with id 0.
+  const hasZeroNetwork = networkIds.has('0')
+  const isAttached = (value) => value !== null && value !== undefined && String(value) !== '' && (String(value) !== '0' || hasZeroNetwork)
+  const attachments = new Map()
+
+  const prunedNodes = nodes.map((node) => ({
+    ...node,
+    data: {
+      ...(node.data || {}),
+      interfaces: (Array.isArray(node.data?.interfaces) ? node.data.interfaces : []).map((iface) => ({ ...iface }))
+    }
+  }))
+
+  // Dangling network ids are detached first so they are never counted.
+  for (const node of prunedNodes) {
+    for (const iface of node.data.interfaces) {
+      if (!isAttached(iface.network_id)) continue
+      const networkId = String(iface.network_id)
+      if (!networkIds.has(networkId)) {
+        iface.network_id = ''
+        continue
+      }
+      attachments.set(networkId, (attachments.get(networkId) || 0) + 1)
+    }
+  }
+
+  // A network with fewer than two attachments is not a link: detach every
+  // remaining interface that points at it. Interfaces on shared segments are
+  // untouched.
+  for (const node of prunedNodes) {
+    for (const iface of node.data.interfaces) {
+      if (!isAttached(iface.network_id)) continue
+      if ((attachments.get(String(iface.network_id)) || 0) < 2) iface.network_id = ''
+    }
+  }
+
+  const keptNetworks = networks.filter((network) => (attachments.get(String(network.id)) || 0) >= 2)
+
+  return { nodes: prunedNodes, networks: keptNetworks }
+}
+
 // Runtime controls that make sense for a node in the given state. An
 // unknown or absent state keeps every control so the user is never blocked.
 export function nodeControls(state) {

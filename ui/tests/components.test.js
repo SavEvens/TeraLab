@@ -164,6 +164,41 @@ describe('Inspector', () => {
     expect(wrapper.emitted('update').some((entry) => entry[0].key === 'nvram' && entry[0].value === 1024)).toBe(true)
   })
 
+  it('offers the agent NIC drivers and maps legacy aliases', () => {
+    const node = {
+      id: '1',
+      position: { x: 0, y: 0 },
+      data: {
+        name: 'R1', template: 'linux', kind: 'qemu', image: '', console: 'telnet',
+        cpu: 1, ram: 512, serial: 0, nic: 'virtio-net-pci', interfaces: [{ id: 0 }]
+      }
+    }
+    const wrapper = mount(Inspector, { props: { node, templates: [], images: [] } })
+    const nicSelect = wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'vmxnet3'))
+    expect(nicSelect.findAll('option').map((option) => option.element.value)).toEqual(['virtio', 'vmxnet3', 'e1000', 'rtl8139'])
+    expect(nicSelect.element.value).toBe('virtio')
+    expect(node.data.nic).toBe('virtio-net-pci')
+
+    const legacy = {
+      id: '2',
+      position: { x: 0, y: 0 },
+      data: {
+        name: 'R2', template: 'linux', kind: 'qemu', image: '', console: 'telnet',
+        cpu: 1, ram: 512, serial: 0, nic: 'i82559er', interfaces: [{ id: 0 }]
+      }
+    }
+    const legacyWrapper = mount(Inspector, { props: { node: legacy, templates: [], images: [] } })
+    const legacySelect = legacyWrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'vmxnet3'))
+    expect(legacySelect.element.value).toBe('e1000')
+    expect(legacy.data.nic).toBe('i82559er')
+
+    const custom = { ...legacy, data: { ...legacy.data, nic: 'ne2k_pci' } }
+    const customWrapper = mount(Inspector, { props: { node: custom, templates: [], images: [] } })
+    const customSelect = customWrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'vmxnet3'))
+    expect(customSelect.element.value).toBe('')
+    expect(custom.data.nic).toBe('ne2k_pci')
+  })
+
   it('emits updates and actions', async () => {
     const node = { id: '1', position: { x: 0, y: 0 }, data: { name: 'R1', template: 'linux', kind: 'qemu', image: '', console: 'telnet', cpu: 1, ram: 512, serial: 0, interfaces: [{ id: 0 }] } }
     const wrapper = mount(Inspector, {
@@ -172,8 +207,8 @@ describe('Inspector', () => {
     await wrapper.findAll('input')[0].setValue('R2')
     expect(wrapper.emitted('update')[0][0]).toEqual({ key: 'name', value: 'R2' })
     const nic = wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'e1000'))
-    await nic.setValue('virtio-net-pci')
-    expect(wrapper.emitted('update').some((entry) => entry[0].key === 'nic' && entry[0].value === 'virtio-net-pci')).toBe(true)
+    await nic.setValue('virtio')
+    expect(wrapper.emitted('update').some((entry) => entry[0].key === 'nic' && entry[0].value === 'virtio')).toBe(true)
     const template = wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'vpcs'))
     await template.setValue('vpcs')
     expect(wrapper.emitted('template')[0][0]).toBe('vpcs')
