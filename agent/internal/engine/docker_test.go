@@ -72,6 +72,16 @@ func callsContain(calls []string, want string) bool {
 
 func newDockerTestManager(t *testing.T, binary string) *Manager {
 	t.Helper()
+
+	return newDockerTestManagerWithLogger(
+		t,
+		binary,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+}
+
+func newDockerTestManagerWithLogger(t *testing.T, binary string, logger *slog.Logger) *Manager {
+	t.Helper()
 	cfg := config.Config{
 		RunDir:         t.TempDir(),
 		ImagesDir:      t.TempDir(),
@@ -82,7 +92,7 @@ func newDockerTestManager(t *testing.T, binary string) *Manager {
 		DockerBinary:   binary,
 		AllowRootVM:    true,
 	}
-	manager := NewManager(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	manager := NewManager(cfg, logger)
 	manager.net.SysClassNet = t.TempDir()
 	manager.net.Run = func(name string, args ...string) ([]byte, error) { return nil, nil }
 	// Close console clients and stop fake containers before TempDir cleanup.

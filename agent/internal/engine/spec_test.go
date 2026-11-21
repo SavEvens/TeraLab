@@ -583,3 +583,195 @@ func TestDockerPullDefaultsToEnabled(t *testing.T) {
 		t.Fatal("pull=false must disable pulling")
 	}
 }
+
+func TestDockerSpecAcceptsFRRInjectionOptions(t *testing.T) {
+	cases := []struct {
+		name    string
+		daemons []string
+		path    string
+	}{
+		{
+			name:    "FRR template shape",
+			daemons: []string{"zebra", "ospfd", "bgpd"},
+			path:    "/etc/frr/frr.conf",
+		},
+		{
+			name:    "selection order is irrelevant",
+			daemons: []string{"pathd", "zebra", "bgpd"},
+			path:    "/etc/frr/frr.conf",
+		},
+		{
+			name:    "twelve daemons",
+			daemons: dockerDaemonAllowlist[:maxDockerDaemons],
+			path:    "/etc/frr/frr.conf",
+		},
+		{
+			name:    "maximum length path",
+			daemons: []string{"zebra"},
+			path:    "/" + strings.Repeat("a", 200),
+		},
+		{
+			name:    "dots inside a segment are allowed",
+			daemons: []string{"zebra"},
+			path:    "/etc/frr..d/frr.conf",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			spec := dockerValidationSpec("quay.io/frrouting/frr:10.7.1")
+			spec.Docker = &DockerOptions{
+				ConsoleCommand: "/usr/bin/vtysh",
+				CapAdd:         []string{"NET_ADMIN"},
+				Daemons:        testCase.daemons,
+				ConfigPath:     testCase.path,
+			}
+			spec.Normalize()
+			if err := spec.Validate(nil); err != nil {
+				t.Fatalf("expected the options to validate: %v", err)
+			}
+		})
+	}
+}
+
+func TestDockerSpecRejectsInvalidInjectionOptions(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Spec)
+		want   string
+	}{
+		{
+			name: "unknown daemon",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{Daemons: []string{"zebra", "zebrad"}}
+			},
+			want: "unsupported docker daemon",
+		},
+		{
+			name: "uppercase daemon",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{Daemons: []string{"Zebra"}}
+			},
+			want: "unsupported docker daemon",
+		},
+		{
+			name: "duplicate daemon",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{Daemons: []string{"zebra", "ospfd", "zebra"}}
+			},
+			want: "duplicate docker daemon",
+		},
+		{
+			name: "too many daemons",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{
+					Daemons: dockerDaemonAllowlist[:maxDockerDaemons+1],
+				}
+			},
+			want: "more than 12",
+		},
+		{
+			name: "relative config path",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConfigPath: "etc/frr/frr.conf"}
+			},
+			want: "config_path",
+		},
+		{
+			name: "parent segment",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConfigPath: "/etc/frr/../frr.conf"}
+			},
+			want: "parent directory",
+		},
+		{
+			name: "leading parent segment",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConfigPath: "/../etc/frr.conf"}
+			},
+			want: "parent directory",
+		},
+		{
+			name: "newline in config path",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConfigPath: "/etc/frr/frr.conf\n"}
+			},
+			want: "control characters",
+		},
+		{
+			name: "NUL in config path",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConfigPath: "/etc/frr/frr\x00.conf"}
+			},
+			want: "control characters",
+		},
+		{
+			name: "space in config path",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConfigPath: "/etc/frr/frr conf"}
+			},
+			want: "config_path",
+		},
+		{
+			name: "oversized config path",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConfigPath: "/" + strings.Repeat("a", 201)}
+			},
+			want: "config_path",
+		},
+		{
+			name: "startup config too large",
+			mutate: func(spec *Spec) {
+				spec.Config = strings.Repeat("a", maxDockerConfigLen+1)
+			},
+			want: "invalid startup configuration",
+		},
+		{
+			name: "NUL in startup config",
+			mutate: func(spec *Spec) {
+				spec.Config = "hostname teralab\x00"
+			},
+			want: "invalid startup configuration",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			spec := dockerValidationSpec("quay.io/frrouting/frr:10.7.1")
+			testCase.mutate(&spec)
+			err := spec.Validate(nil)
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected error containing %q, got %v", testCase.want, err)
+			}
+		})
+	}
+}
+
+func TestDockerSpecAcceptsMaximumStartupConfig(t *testing.T) {
+	spec := dockerValidationSpec("quay.io/frrouting/frr:10.7.1")
+	spec.Docker = &DockerOptions{ConfigPath: "/etc/frr/frr.conf"}
+	spec.Config = strings.Repeat("a", maxDockerConfigLen)
+	if err := spec.Validate(nil); err != nil {
+		t.Fatalf("a 64 KiB startup config must validate: %v", err)
+	}
+}
+
+func TestDockerDaemonAllowlistIsFrozen(t *testing.T) {
+	want := []string{
+		"zebra", "bgpd", "ospfd", "ospf6d", "ripd", "ripngd", "isisd", "pimd",
+		"pim6d", "ldpd", "nhrpd", "eigrpd", "babeld", "sharpd", "pbrd", "bfdd",
+		"fabricd", "vrrpd", "pathd",
+	}
+	if len(dockerDaemonAllowlist) != len(want) {
+		t.Fatalf("allowlist = %v, want %v", dockerDaemonAllowlist, want)
+	}
+	for index := range want {
+		if dockerDaemonAllowlist[index] != want[index] {
+			t.Fatalf("allowlist order changed at %d: got %q, want %q", index, dockerDaemonAllowlist[index], want[index])
+		}
+	}
+	if maxDockerDaemons != 12 {
+		t.Fatalf("maxDockerDaemons = %d, want 12", maxDockerDaemons)
+	}
+}

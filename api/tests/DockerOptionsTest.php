@@ -167,6 +167,127 @@ final class DockerOptionsTest extends TestCase
         yield 'separators' => [['image' => 'my-org/my_repo/sub.name:edge_1']];
     }
 
+    /**
+     * @param list<string> $daemons
+     */
+    #[DataProvider('frrTemplateShapes')]
+    public function testBuiltinFrrTemplatesEmitTheDaemonBlock(string $id, array $daemons, int $ram): void
+    {
+        $config = Config::forTests(dirname(__DIR__, 2), $this->root . '/data');
+        $template = (new TemplateRepository($config))->find($id);
+
+        self::assertIsArray($template, $id . ' must load');
+        self::assertSame('docker', $template['kind']);
+        self::assertSame('AGPL-3.0-or-later', $template['license']);
+        self::assertSame('Router.png', $template['icon']);
+        self::assertSame($ram, $template['defaults']['ram'] ?? null);
+        self::assertSame('quay.io/frrouting/frr:10.7.1', DockerOptions::image($template['options']));
+        self::assertSame([
+            'console_command' => '/usr/bin/vtysh',
+            'cap_add' => ['NET_ADMIN', 'SYS_ADMIN'],
+            'daemons' => $daemons,
+            'config_path' => '/etc/frr/frr.conf',
+            'pull' => true,
+        ], DockerOptions::spec($template['options']));
+    }
+
+    /**
+     * @return iterable<string, array{0: string, 1: list<string>, 2: int}>
+     */
+    public static function frrTemplateShapes(): iterable
+    {
+        yield 'frr' => ['frr', ['zebra', 'ospfd', 'bgpd'], 256];
+        yield 'frr-ospf' => ['frr-ospf', ['zebra', 'ospfd'], 128];
+        yield 'frr-bgp' => ['frr-bgp', ['zebra', 'bgpd'], 128];
+    }
+
+    public function testDaemonsAndConfigPathAreOmittedWhenEmptyOrAbsent(): void
+    {
+        self::assertSame(['pull' => true], DockerOptions::spec([
+            'docker' => ['image' => 'alpine:3.20', 'daemons' => [], 'config_path' => ''],
+        ]));
+        self::assertSame(
+            ['pull' => true],
+            DockerOptions::spec(['docker' => ['image' => 'alpine:3.20']]),
+            'a template without the FRR options behaves as before',
+        );
+    }
+
+    public function testDaemonsAndConfigPathRoundTripThroughTheTemplateRepository(): void
+    {
+        $docker = [
+            'image' => 'quay.io/frrouting/frr:10.7.1',
+            'console_command' => '/usr/bin/vtysh',
+            'cap_add' => ['NET_ADMIN', 'SYS_ADMIN'],
+            'daemons' => ['zebra', 'ospfd', 'bgpd'],
+            'config_path' => '/etc/frr/frr.conf',
+            'pull' => true,
+        ];
+
+        $template = $this->repository()->saveCustom('frr-custom', $this->templateYaml('frr-custom', $docker));
+
+        self::assertSame($docker, $template['options']['docker']);
+        self::assertSame([
+            'console_command' => '/usr/bin/vtysh',
+            'cap_add' => ['NET_ADMIN', 'SYS_ADMIN'],
+            'daemons' => ['zebra', 'ospfd', 'bgpd'],
+            'config_path' => '/etc/frr/frr.conf',
+            'pull' => true,
+        ], DockerOptions::spec($template['options']));
+    }
+
+    /**
+     * @param array<string, mixed> $docker
+     */
+    #[DataProvider('invalidFrrBlocks')]
+    public function testInvalidDaemonsAndConfigPathsAreRejected(array $docker): void
+    {
+        $exception = $this->saveFailure($docker);
+        self::assertSame(422, $exception->status);
+    }
+
+    /**
+     * @return iterable<string, array{0: array<string, mixed>}>
+     */
+    public static function invalidFrrBlocks(): iterable
+    {
+        yield 'unknown daemon' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'daemons' => ['zebra', 'made-upd']]];
+        yield 'uppercase daemon' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'daemons' => ['OSPFd']]];
+        yield 'non-string daemon' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'daemons' => [1]]];
+        yield 'daemons not a list' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'daemons' => ['zebra' => true]]];
+        yield 'daemons not an array' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'daemons' => 'zebra']];
+        yield 'duplicate daemon' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'daemons' => ['zebra', 'ospfd', 'zebra']]];
+        yield 'too many daemons' => [[
+            'image' => 'quay.io/frrouting/frr:10.7.1',
+            'daemons' => array_slice(DockerOptions::DAEMONS, 0, 13),
+        ]];
+        yield 'relative config path' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'config_path' => 'etc/frr/frr.conf']];
+        yield 'parent traversal' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'config_path' => '/etc/../frr.conf']];
+        yield 'trailing traversal' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'config_path' => '/etc/frr/..']];
+        yield 'control character' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'config_path' => "/etc/frr/frr.conf\n"]];
+        yield 'space in config path' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'config_path' => '/etc/frr/frr conf']];
+        yield 'shell metacharacter' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'config_path' => '/etc/frr/$(id).conf']];
+        yield 'over-long config path' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'config_path' => '/' . str_repeat('a', 201)]];
+        yield 'config path not a string' => [['image' => 'quay.io/frrouting/frr:10.7.1', 'config_path' => 42]];
+    }
+
+    public function testConfigPathsMustBeAbsoluteContainerPaths(): void
+    {
+        foreach (['/etc/frr/frr.conf', '/config/frr.conf', '/opt/app-1.2/etc/router.conf', '/a'] as $path) {
+            self::assertSame(
+                $path,
+                DockerOptions::spec(['docker' => ['image' => 'alpine:3.20', 'config_path' => $path]])['config_path'],
+            );
+        }
+    }
+
+    public function testConfigPathPatternIsReusable(): void
+    {
+        self::assertSame(1, preg_match(DockerOptions::CONFIG_PATH_PATTERN, '/etc/frr/frr.conf'));
+        self::assertSame(0, preg_match(DockerOptions::CONFIG_PATH_PATTERN, 'etc/frr/frr.conf'));
+        self::assertSame(0, preg_match(DockerOptions::CONFIG_PATH_PATTERN, "/etc/frr/frr.conf\n"));
+    }
+
     public function testImagePatternIsReusable(): void
     {
         self::assertSame(

@@ -61,13 +61,15 @@ Import accepts all three. Save always writes v2.
 - **Interface ids**: IOL uses Cisco's encoding `slot | port << 4`
   (`e0/0` = 0, `e0/1` = 16, `e1/0` = 1); other engines use the port index.
 - **Startup configs** live in `<objects><configs>` as base64, keyed by node id.
-  `config="1"` marks a node that has one.
+  `config="1"` marks a node that has one. On a `kind: docker` node the decoded
+  config is copied into the container at the template's `config_path` before
+  every start; the `.unl` format is unchanged.
 - **Images are references, never paths.** `image`, `iso`, `kernel` and
   `initrd` hold a single name that matches an image's *reference* in TeraLab
   (editable on the Images page). Absolute paths are never written. On a
   `kind: docker` node, `image` is the container reference (for example
-  `frrouting/frr:10.0.1`) and is stored verbatim; it is not an image-store
-  reference.
+  `quay.io/frrouting/frr:10.7.1`) and is stored verbatim; it is not an
+  image-store reference.
 - **Text and picture nodes** are not written as `<node>` entries: text becomes
   an EVE-NG `<textobject>`; pictures live in `<extensions>`.
 - **`<extensions>`** is TeraLab-only, versioned JSON. EVE-NG ignores it. It is

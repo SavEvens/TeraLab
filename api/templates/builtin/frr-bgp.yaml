@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# TeraLab-authored template. FRRouting is GPLv2 upstream software that runs as
+# a separate container image; it is referenced here, never bundled or linked.
+# This preset runs zebra and bgpd only (lower memory footprint).
+schema: 1
+id: frr-bgp
+name: FRR (BGP only)
+kind: docker
+license: AGPL-3.0-or-later
+icon: Router.png
+defaults:
+  cpu: 1
+  ram: 128
+  ethernet: 3
+  console: telnet
+options:
+  description: FRRouting with zebra and bgpd only - BGP labs.
+  docker:
+    image: quay.io/frrouting/frr:10.7.1
+    console_command: /usr/bin/vtysh
+    cap_add: [NET_ADMIN, SYS_ADMIN]
+    daemons: [zebra, bgpd]
+    config_path: /etc/frr/frr.conf
+    pull: true

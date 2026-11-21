@@ -149,23 +149,63 @@ defaults: { cpu: 1, ram: 256, ethernet: 3, console: telnet }
 options:
   description: Free Range Routing appliance container.
   docker:
-    image: frrouting/frr:v8.4.1          # node image may override
+    image: quay.io/frrouting/frr:10.7.1  # node image may override
     console_command: /usr/bin/vtysh
     cap_add: [NET_ADMIN, SYS_ADMIN]
+    daemons: [zebra, ospfd, bgpd]
+    config_path: /etc/frr/frr.conf
     pull: true
 ```
 
-The stock FRR image starts `zebra` and `staticd`; enable the routing daemons
-you need inside the image or a derived image (`ospfd=yes` in
-`/etc/frr/daemons`) before building the lab.
+`daemons` and `config_path` tell the agent what to write into the container at
+start. Both are optional and come from the node template (the Inspector has no
+per-node field for them). A template that sets neither is untouched: the
+generic `docker` template stays a plain shell container.
+
+- **`daemons`** selects routing daemons from a fixed allowlist. At every start
+  the agent renders a complete `/etc/frr/daemons` file — each allowlisted
+  daemon set to `yes` when selected and `no` otherwise, plus
+  `vtysh_enable=yes` and each allowlisted daemon's stock `<daemon>_options=`
+  line — and copies it into the container before `docker start`. The rendering
+  depends only on the template, not on the image's own file or the order of
+  the list. Upstream FRR always starts `watchfrr`, `mgmtd`, `zebra` and
+  `staticd`, and the stock image ships every other selectable daemon
+  disabled: selecting `zebra` is allowed for readability but not required, and
+  an empty list injects no file at all (image defaults apply). Every
+  allowlisted daemon's `_options` line is emitted, plus the stock
+  `mgmtd_options` and `staticd_options` of the always-started daemons.
+- **`config_path`** is the absolute container path that receives the node's
+  startup configuration. When the lab or node has a config, it is copied there
+  before every start; after start the agent runs a best-effort
+  `chown frr:frr <config_path>` so `write memory` in vtysh can rewrite the
+  file. Because both steps run on every start, a config edit applies on
+  stop → start; `wipe` removes the container and its run directory, so the
+  next start begins from the template image again. A startup config larger
+  than 64 KiB is rejected by the node-start endpoint and by the agent.
+  Consequently, changes saved in the container with `write memory` are
+  overwritten on the next stop → start (the lab/template config wins); persist
+  changes in the lab's node config instead.
+
+The `daemons` file is always written to `/etc/frr/daemons`; a template cannot
+redirect it.
+
+Three built-in templates use `quay.io/frrouting/frr:10.7.1`, differing in
+daemon set and RAM: `frr` (zebra, ospfd, bgpd; 256 MB), `frr-ospf` (zebra,
+ospfd; 128 MB) and `frr-bgp` (zebra, bgpd; 128 MB). All three set
+`config_path: /etc/frr/frr.conf` and grant `NET_ADMIN` and `SYS_ADMIN` (zebra
+requires `SYS_ADMIN` in the published image). FRRouting is GPLv2 upstream
+software: TeraLab references the published container image and never bundles
+or links FRR.
 
 `options.docker` is strict: unknown keys are rejected.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `image` | string, required | Container reference such as `frrouting/frr:v8.4.1`; digest references (`@sha256:…`) are accepted. A node's `image` attribute overrides it. It is not an image-store file. |
+| `image` | string, required | Container reference such as `quay.io/frrouting/frr:10.7.1`; digest references (`@sha256:…`) are accepted. A node's `image` attribute overrides it. It is not an image-store file. |
 | `console_command` | absolute path, optional | Command for the console tab; default `/bin/sh`. |
 | `cap_add` | list, optional | Only `NET_ADMIN`, `NET_RAW` or `SYS_ADMIN`, at most 8 entries. `SYS_ADMIN` is opt-in and weakens isolation inside the container. |
+| `daemons` | list, optional | FRR daemons to enable: `zebra`, `bgpd`, `ospfd`, `ospf6d`, `ripd`, `ripngd`, `isisd`, `pimd`, `pim6d`, `ldpd`, `nhrpd`, `eigrpd`, `babeld`, `sharpd`, `pbrd`, `bfdd`, `fabricd`, `vrrpd`, `pathd`. At most 12 entries, no duplicates; every start rewrites `/etc/frr/daemons` as described above. |
+| `config_path` | absolute path, optional | Where the node startup config is copied before each start, e.g. `/etc/frr/frr.conf`. Must match `^/[A-Za-z0-9_./-]{1,200}$` with no `..` segment. |
 | `pull` | bool, optional | Default `true`. When `false`, a missing local image fails with a message telling the operator to `docker pull` it. |
 
 Templates saved by earlier TeraLab versions with `kind: docker` and no

@@ -67,6 +67,11 @@ The Docker CLI is executed by the agent as a separate program; it is not
 linked into TeraLab and is not distributed with it, so it is not a bundled
 dependency.
 
+FRR container images (for example `quay.io/frrouting/frr`) are pulled by the
+agent at runtime on the operator's instruction. FRRouting is GPLv2 upstream
+software and runs as a separate container process; it is never bundled or
+linked into TeraLab, and no image is redistributed with it.
+
 ## Notices and source offer
 
 - `NOTICE`, `PROVENANCE.md`, `LICENSES/` in the repository.
