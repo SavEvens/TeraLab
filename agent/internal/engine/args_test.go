@@ -107,7 +107,7 @@ func TestBuildQEMUArgsForPaloAltoStyleTemplate(t *testing.T) {
 	args := buildGoldenArgs(t, spec, true)
 	joined := strings.Join(args, " ")
 	for _, expected := range []string{
-		"-machine pc-1.0",
+		"-machine pc",
 		"-accel kvm",
 		"-cpu host",
 		"-device e1000,netdev=net0,mac=" + spec.MAC(0),
@@ -117,6 +117,36 @@ func TestBuildQEMUArgsForPaloAltoStyleTemplate(t *testing.T) {
 			t.Fatalf("expected %q in %s", expected, joined)
 		}
 	}
+}
+
+// TestBuildQEMUArgsCanonicalizesLegacyRawMachine follows the Start order: the
+// raw legacy qemu_options are parsed first, Normalize then maps pc-1.0 onto the
+// generic alias, so QEMU 10 never receives the removed machine type.
+func TestBuildQEMUArgsCanonicalizesLegacyRawMachine(t *testing.T) {
+	spec := goldenSpec(t)
+	spec.ExtraOptions = "-machine type=pc-1.0,accel=kvm"
+
+	merged, err := spec.withExtraOptions()
+	if err != nil {
+		t.Fatalf("parse qemu options: %v", err)
+	}
+	merged.Normalize()
+
+	args := buildGoldenArgs(t, merged, true)
+	for index, arg := range args {
+		if arg != "-machine" {
+			continue
+		}
+		if index+1 >= len(args) || args[index+1] != "pc" {
+			t.Fatalf("legacy machine alias must render as pc: %q", args)
+		}
+		if !strings.Contains(strings.Join(args, " "), "-accel kvm") {
+			t.Fatalf("expected the kvm accelerator in %q", args)
+		}
+
+		return
+	}
+	t.Fatalf("expected -machine in %q", args)
 }
 
 func TestBuildQEMUArgsForBareQEMUTemplate(t *testing.T) {

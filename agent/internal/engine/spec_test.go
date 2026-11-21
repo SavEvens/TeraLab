@@ -50,6 +50,32 @@ func TestSpecNormalizeAndValidate(t *testing.T) {
 	}
 }
 
+func TestSpecNormalizeCanonicalizesLegacyMachines(t *testing.T) {
+	cases := []struct {
+		name    string
+		machine string
+		want    string
+	}{
+		{name: "generic pc alias", machine: "pc-1.0", want: "pc"},
+		{name: "generic q35 alias", machine: "q35-1.0", want: "q35"},
+		{name: "explicit i440fx pre 2.0", machine: "pc-i440fx-1.0", want: "pc"},
+		{name: "explicit q35 pre 2.0", machine: "pc-q35-1.9", want: "q35"},
+		{name: "explicit i440fx 2.0", machine: "pc-i440fx-2.0", want: "pc-i440fx-2.0"},
+		{name: "explicit i440fx 7.2", machine: "pc-i440fx-7.2", want: "pc-i440fx-7.2"},
+		{name: "generic pc", machine: "pc", want: "pc"},
+		{name: "generic q35", machine: "q35", want: "q35"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			spec := Spec{Machine: testCase.machine}
+			spec.Normalize()
+			if spec.Machine != testCase.want {
+				t.Fatalf("machine: got %q want %q", spec.Machine, testCase.want)
+			}
+		})
+	}
+}
+
 func TestSpecRejectsImageOutsideRoot(t *testing.T) {
 	_, images := testSpec(t)
 	outside := filepath.Join(t.TempDir(), "outside.qcow2")

@@ -191,6 +191,32 @@ final class QemuOptions
     }
 
     /**
+     * Collapse legacy machine aliases onto the engine's default machine.
+     *
+     * QEMU's generic `pc`/`q35` aliases follow the newest machine of the
+     * family, so a pinned legacy name such as `pc-1.0` is not meaningful on a
+     * current host (and may not exist there at all). Explicit `pc-i440fx-*`
+     * and `pc-q35-*` names from the 1.x era collapse the same way; 2.x and
+     * newer explicit names are preserved. The agent applies the same rule at
+     * Normalize, so templates and node overrides emit one canonical value.
+     */
+    public static function canonicalMachine(string $value): string
+    {
+        if (preg_match('~^(pc|q35)(?:-[0-9]+(?:\.[0-9]+)*)?$~', $value, $matches) === 1) {
+            return $matches[1];
+        }
+        if (preg_match('~^(pc-i440fx|pc-q35)-([0-9]+)(?:\.[0-9]+)*$~', $value, $matches) === 1) {
+            if ((int) $matches[2] >= 2) {
+                return $value;
+            }
+
+            return $matches[1] === 'pc-i440fx' ? 'pc' : 'q35';
+        }
+
+        return $value;
+    }
+
+    /**
      * Validate a raw `qemu_options` string used as a node override.
      *
      * @throws HttpException 422 when the value is unsafe
@@ -230,6 +256,10 @@ final class QemuOptions
             }
 
             return $replacement;
+        }
+
+        if ($field === 'machine') {
+            return self::canonicalMachine($value);
         }
 
         return $value;

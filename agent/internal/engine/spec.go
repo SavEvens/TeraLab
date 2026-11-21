@@ -25,6 +25,13 @@ var (
 	// used by migrated UNetLab templates (pc-1.0) and the canonical versioned
 	// names (pc-i440fx-7.2, pc-q35-7.2).
 	machinePattern = regexp.MustCompile(`^((pc|q35)(-[0-9]+(\.[0-9]+)*)?|(pc-i440fx|pc-q35)-[0-9]+(\.[0-9]+)*)$`)
+	// machineGenericAliasPattern matches the generic versioned aliases
+	// (pc-1.0, q35-1.0) that migrated UNetLab templates carry. QEMU 10 no
+	// longer ships them, so Normalize maps them onto the generic alias.
+	machineGenericAliasPattern = regexp.MustCompile(`^(pc|q35)-[0-9]+(\.[0-9]+)*$`)
+	// machineVersionedPattern matches the explicit versioned names
+	// (pc-i440fx-1.9, pc-q35-1.9) that QEMU 10 dropped as well.
+	machineVersionedPattern = regexp.MustCompile(`^(pc-i440fx|pc-q35)-([0-9]+)(\.[0-9]+)*$`)
 	// cpuModelPattern covers "host", "max", named models and feature lists
 	// such as "qemu64,+ssse3,+sse4.2" found in the shipped templates.
 	cpuModelPattern = regexp.MustCompile(`^[A-Za-z0-9_.+,-]{1,64}$`)
@@ -100,6 +107,11 @@ const (
 	defaultNIC           = "e1000"
 	defaultDiskInterface = "virtio"
 )
+
+// firstShippedMachineMajor is the oldest explicit pc-i440fx/pc-q35 version
+// QEMU 10 still provides. Older names cannot start and fall back to the
+// generic alias during Normalize.
+const firstShippedMachineMajor = 2
 
 // Extra disk bounds. The primary disk keeps Image/virtioa; template options
 // may add one disk per remaining virtio slot.
@@ -234,6 +246,10 @@ func (s *Spec) Normalize() {
 	if s.Machine == "" {
 		s.Machine = defaultMachine
 	}
+	// Generic and pre-2.0 versioned aliases are no longer shipped by QEMU 10.
+	// Canonicalizing here covers templates, node machine overrides and the raw
+	// qemu_options that Start parses into Machine before validation.
+	s.Machine = canonicalMachine(s.Machine)
 	if s.DiskInterface == "" {
 		s.DiskInterface = defaultDiskInterface
 	}
@@ -710,6 +726,30 @@ func dedupeDockerCaps(values []string) []string {
 	}
 
 	return result
+}
+
+// canonicalMachine maps a legacy machine alias to the generic alias that
+// current QEMU ships. Generic aliases (pc-1.0, q35-1.0) and explicit
+// pc-i440fx/pc-q35 names older than 2.0 were dropped by QEMU 10; newer
+// explicit names and every other value pass through so validation can accept
+// or reject them unchanged.
+func canonicalMachine(machine string) string {
+	if matches := machineGenericAliasPattern.FindStringSubmatch(machine); matches != nil {
+		return matches[1]
+	}
+	matches := machineVersionedPattern.FindStringSubmatch(machine)
+	if matches == nil {
+		return machine
+	}
+	major, err := strconv.Atoi(matches[2])
+	if err != nil || major >= firstShippedMachineMajor {
+		return machine
+	}
+	if matches[1] == "pc-i440fx" {
+		return "pc"
+	}
+
+	return "q35"
 }
 
 // canonicalNIC maps a legacy NIC value to its canonical short name. Unknown

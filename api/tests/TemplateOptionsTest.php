@@ -174,8 +174,9 @@ final class TemplateOptionsTest extends TestCase
 
     public function testMachineValuesUseTheEngineGrammar(): void
     {
-        self::assertSame('pc-1.0', QemuOptions::value('qemu_machine', 'pc-1.0'));
-        self::assertSame('pc-i440fx-7.2', QemuOptions::value('qemu_machine', 'pc-i440fx-7.2'));
+        foreach (['pc', 'q35', 'pc-1.0', 'q35-1.0', 'pc-i440fx-1.0', 'pc-i440fx-2.0', 'pc-i440fx-7.2'] as $machine) {
+            self::assertNotSame('', QemuOptions::value('qemu_machine', $machine), $machine . ' must be accepted');
+        }
 
         foreach (['bogus', 'pc 1.0', 'microvm'] as $machine) {
             try {
@@ -185,6 +186,39 @@ final class TemplateOptionsTest extends TestCase
                 self::assertSame(422, $exception->status);
             }
         }
+    }
+
+    public function testLegacyMachineAliasesAreCanonicalised(): void
+    {
+        $canonical = [
+            'pc' => 'pc',
+            'q35' => 'q35',
+            'pc-1.0' => 'pc',
+            'q35-1.0' => 'q35',
+            'pc-i440fx-1.0' => 'pc',
+            'pc-q35-1.0' => 'q35',
+            'pc-i440fx-2.0' => 'pc-i440fx-2.0',
+            'pc-i440fx-7.2' => 'pc-i440fx-7.2',
+            'pc-q35-7.2' => 'pc-q35-7.2',
+        ];
+
+        foreach ($canonical as $machine => $expected) {
+            self::assertSame($expected, QemuOptions::canonicalMachine($machine), $machine);
+            self::assertSame($expected, QemuOptions::value('qemu_machine', $machine), $machine);
+        }
+    }
+
+    public function testLegacyMachineInTemplateSpecIsCanonicalised(): void
+    {
+        $repository = new TemplateRepository($this->config);
+        $template = $repository->saveCustom('legacy-machine', $this->yaml('legacy-machine', [
+            'qemu_machine' => 'pc-1.0',
+        ]));
+
+        // The stored template keeps the legacy value; only the engine spec is
+        // canonicalised, so the raw YAML round-trips unchanged.
+        self::assertSame('pc-1.0', $template['options']['qemu_machine']);
+        self::assertSame('pc', QemuOptions::spec($template['options'])['machine']);
     }
 
     public function testVwaasQemuOptionsHaveNoEscapedQuotes(): void
