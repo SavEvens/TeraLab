@@ -130,20 +130,29 @@ defaults: { cpu: 1, ram: 256, ethernet: 3, console: telnet }
 options:
   description: Free Range Routing appliance container.
   docker:
-    image: frrouting/frr:10.0.1          # node image may override
+    image: frrouting/frr:v8.4.1          # node image may override
     console_command: /usr/bin/vtysh
     cap_add: [NET_ADMIN, SYS_ADMIN]
     pull: true
 ```
 
+The stock FRR image starts `zebra` and `staticd`; enable the routing daemons
+you need inside the image or a derived image (`ospfd=yes` in
+`/etc/frr/daemons`) before building the lab.
+
 `options.docker` is strict: unknown keys are rejected.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `image` | string, required | Container reference such as `frrouting/frr:10.0.1`; digest references (`@sha256:…`) are accepted. A node's `image` attribute overrides it. It is not an image-store file. |
+| `image` | string, required | Container reference such as `frrouting/frr:v8.4.1`; digest references (`@sha256:…`) are accepted. A node's `image` attribute overrides it. It is not an image-store file. |
 | `console_command` | absolute path, optional | Command for the console tab; default `/bin/sh`. |
 | `cap_add` | list, optional | Only `NET_ADMIN`, `NET_RAW` or `SYS_ADMIN`, at most 8 entries. `SYS_ADMIN` is opt-in and weakens isolation inside the container. |
 | `pull` | bool, optional | Default `true`. When `false`, a missing local image fails with a message telling the operator to `docker pull` it. |
+
+Templates saved by earlier TeraLab versions with `kind: docker` and no
+`options.docker.image` are ignored by the current validator; add an `image` to
+such a template to keep using it. The old builtin placeholder was the only
+shipped case and has been updated.
 
 Containers are created with `--network=none`, `--cap-drop=ALL` followed by a
 fixed baseline of Docker's default capabilities, plus only the extras a
@@ -162,6 +171,11 @@ lines.
 An image that expects a capability outside this baseline must have it added to
 the template's `cap_add` (the allowlist is bounded); `SYS_ADMIN` weakens
 isolation inside the container even though the container remains namespaced.
+
+Template editors can author templates and call the node-start endpoint, so they
+are trusted to grant the allowlisted container capabilities (`NET_ADMIN`,
+`NET_RAW`, `SYS_ADMIN`). Capability grants are not admin-gated; use `SYS_ADMIN`
+only for images that genuinely need it, such as FRR zebra.
 
 A missing image is pulled during start, bounded to 45 s (the API call times
 out at 60 s). The agent runs `docker` as root, but its service has no access to
