@@ -125,6 +125,9 @@ There are no default accounts, no telemetry, and no `setcap` usage.
   them. `vmxnet3` is what the Catalyst 8000V template uses (e1000 is not a
   supported C8000V vNIC). With nothing configured, `e1000` remains the fallback
   so existing guests keep their model; PAN-OS stays explicitly on `e1000`.
+  Legacy machine aliases from older templates and `qemu_options`
+  (`pc-1.0`, `q35-1.0`, and pre-2.0 `pc-i440fx-*`/`pc-q35-*`) are canonicalised
+  to `pc`/`q35`, because current QEMU no longer ships those machine types.
 
 ### Multi-disk QEMU nodes
 
