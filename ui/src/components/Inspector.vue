@@ -20,17 +20,21 @@
             <option value="vpcs">vpcs</option>
             <option value="iol">iol</option>
             <option value="dynamips">dynamips</option>
+            <option value="docker">docker</option>
           </select>
         </label>
         <label>Console
           <select :value="node.data.console" @change="update('console', $event.target.value)">
             <option value="telnet">telnet</option>
-            <option value="vnc">vnc</option>
+            <option v-if="!isDocker" value="vnc">vnc</option>
+            <!-- Older labs may still store vnc for a docker node: keep the
+                 value visible so it can be switched to telnet, never rewrite it. -->
+            <option v-else-if="node.data.console === 'vnc'" value="vnc">vnc (docker uses telnet)</option>
           </select>
         </label>
         <label>CPU <input type="number" min="1" :value="node.data.cpu" @input="update('cpu', Number($event.target.value))" /></label>
         <label>RAM (MiB) <input type="number" min="64" :value="node.data.ram" @input="update('ram', Number($event.target.value))" /></label>
-        <label>NIC driver
+        <label v-if="!isDocker">NIC driver
           <select :value="canonicalNic(node.data.nic)" @change="update('nic', $event.target.value)">
             <option value="virtio">virtio</option>
             <option value="vmxnet3">vmxnet3</option>
@@ -41,14 +45,20 @@
         <label>Ethernet
           <input type="number" min="0" max="16" :value="node.data.interfaces.length" @change="updatePorts(Number($event.target.value))" />
         </label>
-        <label>Serial ports
+        <label v-if="!isDocker">Serial ports
           <input type="number" min="0" max="8" :value="node.data.serial || 0" @input="update('serial', Number($event.target.value))" />
         </label>
         <label v-if="node.data.kind === 'iol'">NVRAM (KiB)
           <input type="number" min="64" max="4096" :value="node.data.nvram || 512" @input="update('nvram', Number($event.target.value))" />
         </label>
       </div>
-      <label>Image
+      <template v-if="isDocker">
+        <label>Image
+          <input :value="node.data.image" list="docker-image-options" :placeholder="dockerImagePlaceholder" @input="update('image', $event.target.value)" />
+        </label>
+        <p class="hint">{{ dockerImageHint }}</p>
+      </template>
+      <label v-else>Image
         <select :value="node.data.image" @change="update('image', $event.target.value)">
           <option value="">—</option>
           <option v-if="node.data.image && !hasNodeImage(node)" :value="node.data.image">
@@ -59,6 +69,11 @@
           </option>
         </select>
       </label>
+      <datalist v-if="isDocker" id="docker-image-options">
+        <option v-for="image in dockerImages" :key="image.reference" :value="image.reference">
+          {{ image.size ? `${image.reference} (${image.size})` : image.reference }}
+        </option>
+      </datalist>
       <label v-if="node.data.kind === 'qemu'">ISO
         <select :value="node.data.iso" @change="update('iso', $event.target.value)">
           <option value="">—</option>
@@ -70,7 +85,7 @@
           </option>
         </select>
       </label>
-      <label>Startup config (IOL)
+      <label v-if="!isDocker">Startup config (IOL)
         <textarea :value="node.data.config || ''" rows="6" placeholder="hostname R1&#10;interface Ethernet0/0" @input="update('config', $event.target.value)" />
       </label>
       <div class="row">
@@ -84,12 +99,29 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
+
 const props = defineProps({
   node: { type: Object, default: null },
   templates: { type: Array, default: () => [] },
-  images: { type: Array, default: () => [] }
+  images: { type: Array, default: () => [] },
+  dockerImages: { type: Array, default: () => [] }
 })
 const emit = defineEmits(['update', 'delete', 'console', 'config', 'ports', 'template'])
+
+// Docker nodes start a container reference, not an image-store file, so the
+// image row becomes a free-text field with the locally pulled images offered
+// as suggestions and the template default used when the field is empty.
+const isDocker = computed(() => props.node?.data?.kind === 'docker')
+const dockerTemplateImage = computed(() => {
+  const template = props.templates.find((item) => item.id === props.node?.data?.template)
+
+  return template?.options?.docker?.image || ''
+})
+const dockerImagePlaceholder = computed(() => dockerTemplateImage.value || 'e.g. frrouting/frr:v8.4.1')
+const dockerImageHint = computed(() => (dockerTemplateImage.value
+  ? `Empty uses the template default (${dockerTemplateImage.value}). Pulled images are offered as you type.`
+  : 'No container image set — enter a container reference. Pulled images are offered as you type.'))
 
 // The agent only accepts these four drivers. Legacy labs may still carry an
 // older alias; show the canonical equivalent without rewriting the stored

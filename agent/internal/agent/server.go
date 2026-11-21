@@ -130,6 +130,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/cleanup.stale", s.requireAuth(s.handleCleanupStale))
 	mux.HandleFunc("GET /v1/engines", s.requireAuth(s.handleEngines))
 	mux.HandleFunc("POST /v1/image.inspect", s.requireAuth(s.handleImageInspect))
+	mux.HandleFunc("GET /v1/docker/images", s.requireAuth(s.handleDockerImages))
 
 	return mux
 }

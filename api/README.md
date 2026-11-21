@@ -76,6 +76,7 @@ privileged Go agent. The web tier never launches QEMU itself.
 | `POST` | `/api/v2/labs/{id}/networks/cleanup` | Remove lab bridges |
 | `POST` | `/api/v2/maintenance/reconcile` | Reconcile orphaned resources |
 | `GET` | `/api/v2/engines` | Engine availability |
+| `GET` | `/api/v2/docker/images` | Locally pulled container images (Inspector suggestions) |
 | `GET` | `/api/v2/images` | List images |
 | `POST` | `/api/v2/images` | Upload an image (multipart `file`) |
 | `POST` | `/api/v2/images/import` | Admin: scan/adopt a legacy addons tree (`/opt/unetlab/addons`) |

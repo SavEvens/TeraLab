@@ -91,6 +91,26 @@ components:
           enum: [0, 1]
           description: "1 when the store entry is a symlink to a file that stays outside the store (adopted legacy addon)"
         created_at: { type: integer }
+    DockerImage:
+      type: object
+      description: |
+        A container image already pulled on the agent host, as displayed by
+        `docker image ls`. All values are display strings; the API never parses
+        them back into a reference or a byte count.
+      required: [reference, id, size, created]
+      properties:
+        reference:
+          type: string
+          description: "Container reference (`repository:tag`) usable as a docker node image"
+        id:
+          type: string
+          description: "Local image id, for example `sha256:…`"
+        size:
+          type: string
+          description: "Human-readable size from docker, for example `158MB`"
+        created:
+          type: string
+          description: "Creation timestamp as reported by docker"
     Lab:
       type: object
       required: [id, name, revision]
@@ -479,6 +499,29 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Duplicated }
+  /api/v2/docker/images:
+    get:
+      tags: [images]
+      summary: List locally pulled Docker images
+      description: |
+        Read-only suggestions for the node Inspector. Docker images already
+        present on the agent host are returned with their reference, local id,
+        display size and creation time; dangling images are skipped and
+        duplicate references are merged. The API never pulls, inspects or
+        deletes a container image, and the image store is not involved.
+      responses:
+        '200':
+          description: Locally pulled container images, sorted by reference
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/DockerImage' }
+        '401': { description: Authentication required }
+        '502': { description: "Docker is unavailable, the agent cannot be reached, or the agent returned an invalid image list" }
   /api/v2/images:
     get:
       tags: [images]

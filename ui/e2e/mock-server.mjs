@@ -278,7 +278,15 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { data: [
         { id: 'linux', name: 'Linux', kind: 'qemu', source: 'builtin', defaults: { cpu: 1, ram: 512, ethernet: 4, console: 'telnet' } },
         { id: 'iol', name: 'Cisco IOL', kind: 'iol', source: 'builtin', icon: 'Router.png', defaults: { ethernet: 2, serial: 2, console: 'telnet' } },
-        { id: 'vpcs', name: 'VPCS', kind: 'vpcs', source: 'builtin', defaults: { ethernet: 1, console: 'telnet' } }
+        { id: 'vpcs', name: 'VPCS', kind: 'vpcs', source: 'builtin', defaults: { ethernet: 1, console: 'telnet' } },
+        { id: 'frr', name: 'FRR Router', kind: 'docker', options: { docker: { image: 'frrouting/frr:v8.4.1' } }, defaults: { cpu: 1, ram: 256, ethernet: 1, console: 'telnet' }, icon: 'Router.png', source: 'builtin' }
+      ] })
+    }
+    // Locally pulled container images; docker nodes suggest these as they type.
+    if (path === '/api/v2/docker/images' && request.method === 'GET') {
+      return send(response, 200, { data: [
+        { reference: 'frrouting/frr:v8.4.1', id: 'sha256:1111111111111111111111111111111111111111111111111111111111111111', size: '91.2MB', created: '2026-11-01T10:00:00Z' },
+        { reference: 'alpine:3.20', id: 'sha256:2222222222222222222222222222222222222222222222222222222222222222', size: '7.81MB', created: '2026-11-02T10:00:00Z' }
       ] })
     }
     if (path === '/api/v2/labs/lab1/snapshots' && request.method === 'GET') return send(response, 200, { data: snapshots })

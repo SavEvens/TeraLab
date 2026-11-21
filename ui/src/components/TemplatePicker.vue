@@ -11,18 +11,18 @@
         <button class="ghost" aria-label="Close" @click="$emit('close')">✕</button>
       </div>
 
-      <p class="hint">Templates are grouped by whether an image is already mapped to them.</p>
+      <p class="hint">Templates are grouped by whether they still need an image.</p>
 
       <section v-if="ready.length" class="template-group" data-group="ready">
         <h3>Ready to deploy <span class="badge">{{ ready.length }}</span></h3>
-        <p class="hint">An image is mapped to these templates.</p>
+        <p class="hint">An image is mapped, or the template supplies a container image.</p>
         <ul class="template-grid">
           <li v-for="template in ready" :key="template.id">
             <img v-if="template.icon" :src="`/images/icons/${template.icon}`" alt="" />
             <span v-else class="template-dot" aria-hidden="true"></span>
             <span class="template-copy">
               <strong>{{ template.name || template.id }}</strong>
-              <small>{{ template.kind }} · {{ imagesFor(template).map((image) => image.name).join(', ') }}</small>
+              <small>{{ detail(template) }}</small>
             </span>
             <button @click="add(template)">Add</button>
           </li>
@@ -77,10 +77,17 @@ function add(template, fixedCount = null) {
   emit('add', { template, count: selectedCount, image: assignedImage(template) })
 }
 
+// Docker templates carry their own container reference (or rely on the
+// template default), so they never need an image-store mapping.
+function isDocker(template) {
+  return template.kind === 'docker'
+}
+
 // Templates with mapped images get a usable reference immediately. With more
 // than one mapping the first by display name wins so the result is stable;
 // the Inspector still lets the user pick another mapped image afterwards.
 function assignedImage(template) {
+  if (isDocker(template)) return template.options?.docker?.image || ''
   const mapped = imagesFor(template)
   if (!mapped.length) return ''
   const [first] = [...mapped].sort((left, right) => {
@@ -99,11 +106,18 @@ const matching = computed(() => {
 
   return props.templates.filter((template) => `${template.id} ${template.name} ${template.kind}`.toLowerCase().includes(needle))
 })
-const ready = computed(() => matching.value.filter((template) => mappedIds.value.has(template.id)))
-const needsImage = computed(() => matching.value.filter((template) => !mappedIds.value.has(template.id)))
+const ready = computed(() => matching.value.filter((template) => isDocker(template) || mappedIds.value.has(template.id)))
+const needsImage = computed(() => matching.value.filter((template) => !isDocker(template) && !mappedIds.value.has(template.id)))
 
 function imagesFor(template) {
   return props.images.filter((image) => image.template === template.id)
+}
+
+// Docker tiles name the container reference the template will start; other
+// kinds keep listing the mapped image names.
+function detail(template) {
+  if (isDocker(template)) return `docker · ${template.options?.docker?.image || 'no default image'}`
+  return `${template.kind} · ${imagesFor(template).map((image) => image.name).join(', ')}`
 }
 
 onMounted(async () => {

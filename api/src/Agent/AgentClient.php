@@ -149,6 +149,40 @@ final class AgentClient
     }
 
     /**
+     * Docker images available to the agent.
+     *
+     * The agent reports them under "images". A missing key means no image has
+     * been pulled yet and is not an error; malformed entries are.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function dockerImages(): array
+    {
+        $result = $this->request('GET', '/v1/docker/images');
+        $images = $result['images'] ?? [];
+        if (!is_array($images)) {
+            throw new HttpException(502, 'The agent returned an unexpected Docker image list.');
+        }
+
+        $list = [];
+        foreach ($images as $image) {
+            if (!is_array($image)) {
+                throw new HttpException(502, 'The agent returned an unexpected Docker image entry.');
+            }
+
+            $reference = $image['reference'] ?? null;
+            if (!is_string($reference) || trim($reference) === '') {
+                throw new HttpException(502, 'The agent returned a Docker image entry without a reference.');
+            }
+
+            /** @var array<string, mixed> $image */
+            $list[] = $image;
+        }
+
+        return $list;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function inspectImage(string $path): array

@@ -58,6 +58,7 @@ All endpoints require the bearer secret and an allowed peer UID.
 - `POST /v1/cleanup.stale` → reconcile orphaned processes, links, cgroups,
   run directories (optional body `{"lab_ids": ["<uuid>", ...]}`)
 - `POST /v1/image.inspect` → checksum, format, virtual size, backing file
+- `GET /v1/docker/images` → locally pulled container images (reference, id, size, created)
 
 The console gateway listens on loopback and bridges WebSocket binary frames to
 the QEMU serial pty (`/ws`), the loopback VNC server (`/vnc`), or an engine's

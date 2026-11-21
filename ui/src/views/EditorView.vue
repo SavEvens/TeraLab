@@ -72,6 +72,7 @@
           :node="selected"
           :templates="templates"
           :images="images"
+          :docker-images="dockerImages"
           @update="updateNode"
           @delete="deleteNode"
           @console="openNodeConsole"
@@ -204,6 +205,7 @@ const edges = ref([])
 const networks = ref([])
 const templates = ref([])
 const images = ref([])
+const dockerImages = ref([])
 const selected = ref(null)
 const revision = ref(1)
 const labName = ref('')
@@ -331,6 +333,16 @@ function rebuildEdges() {
   for (const [id, networkId] of built.networks) edgeNetworks.set(id, networkId)
 }
 
+// Local container images are only suggestions for the Inspector. Docker may be
+// unavailable on this host, which must not stop the lab from opening.
+async function loadDockerImages() {
+  try {
+    return (await api.dockerImages())?.data || []
+  } catch {
+    return []
+  }
+}
+
 async function loadNodeStates() {
   try {
     const response = await api.labNodes(props.id)
@@ -356,6 +368,7 @@ async function load() {
     rebuildEdges()
     templates.value = (await api.templates()).data
     images.value = (await api.images()).data
+    dockerImages.value = await loadDockerImages()
     await loadNodeStates()
     savedAt.value = new Date()
     dirty.value = false
@@ -406,6 +419,7 @@ function appendTemplate(template, position = null, image = '') {
     network_id: '',
     attributes: {}
   }))
+  const docker = template.kind === 'docker'
   const node = {
     id,
     type: 'lab',
@@ -418,13 +432,14 @@ function appendTemplate(template, position = null, image = '') {
       icon: template.icon || '',
       image: image || '',
       iso: '',
-      console: defaults.console || 'telnet',
+      // Docker consoles are telnet only and there are no serial ports.
+      console: docker ? 'telnet' : (defaults.console || 'telnet'),
       cpu: defaults.cpu || 1,
       ram: defaults.ram || 512,
       uuid: '',
       platform: '',
       nic: defaults.nic || '',
-      serial: defaults.serial || 0,
+      serial: docker ? 0 : (defaults.serial || 0),
       config: '',
       interfaces
     }
@@ -572,7 +587,20 @@ function selectNode(event) {
 
 function updateNode({ key, value }) {
   if (!selected.value) return
+  const previousKind = selected.value.data.kind
   selected.value.data[key] = value
+  if (key === 'kind' && value !== previousKind) {
+    if (value === 'docker') {
+      // A container reference is not a store image, and docker is telnet only.
+      selected.value.data.image = ''
+      selected.value.data.iso = ''
+      selected.value.data.console = 'telnet'
+      selected.value.data.serial = 0
+    } else if (previousKind === 'docker') {
+      // Never let a container reference leak into a store-image field.
+      selected.value.data.image = ''
+    }
+  }
   dirty.value = true
 }
 
@@ -582,6 +610,7 @@ function applyTemplate(templateId) {
   if (!template) return
   record()
   const defaults = template.defaults || {}
+  const previousKind = selected.value.data.kind
   selected.value.data.template = template.id
   selected.value.data.icon = template.icon || selected.value.data.icon
   if (template.kind) selected.value.data.kind = template.kind
@@ -591,6 +620,14 @@ function applyTemplate(templateId) {
   if (defaults.nic) selected.value.data.nic = defaults.nic
   if (defaults.serial) selected.value.data.serial = defaults.serial
   if (Number.isInteger(defaults.ethernet)) updatePorts(defaults.ethernet)
+  if (selected.value.data.kind === 'docker') {
+    selected.value.data.image = template.options?.docker?.image || ''
+    selected.value.data.console = 'telnet'
+    selected.value.data.iso = ''
+    selected.value.data.serial = 0
+  } else if (previousKind === 'docker') {
+    selected.value.data.image = ''
+  }
   // A template change can drop ports; never leave a half link behind.
   pruneLinks()
   dirty.value = true
