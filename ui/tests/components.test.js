@@ -641,6 +641,15 @@ const usersFixture = () => [
   }
 ]
 
+// Mirror the view's rule: a date-only value expires at 23:59:59 local time.
+const endOfDayUnix = (value) => Math.floor(new Date(`${value}T23:59:59`).getTime() / 1000)
+
+const dateInputValue = (unix) => {
+  const when = new Date(unix * 1000)
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`
+}
+
 async function mountSystemView() {
   const wrapper = mount(SystemView)
   await flushPromises()
@@ -691,6 +700,9 @@ describe('SystemView users', () => {
     expect(cells[3]).toBe('2')
     expect(cells[5]).toBe('1')
 
+    const editorRow = wrapper.find('tr[data-user="editor"]')
+    expect(editorRow.findAll('td')[2].text()).toBe(new Date(1800000000 * 1000).toLocaleDateString())
+
     const viewerRow = wrapper.find('tr[data-user="viewer"]')
     expect(viewerRow.text()).toContain('Vera Viewer')
     expect(viewerRow.findAll('td')[4].text()).toBe('never')
@@ -709,8 +721,10 @@ describe('SystemView users', () => {
     await wrapper.find('select[aria-label="Role"]').setValue('editor')
     await wrapper.find('input[aria-label="Email"]').setValue('new@example.test')
     await wrapper.find('input[aria-label="Display name"]').setValue('New User')
-    const expiration = '2027-01-02T03:04'
-    await wrapper.find('input[aria-label="Expires"]').setValue(expiration)
+    const expiration = '2027-01-02'
+    const expiryInput = wrapper.find('input[aria-label="Expires on"]')
+    expect(expiryInput.element.type).toBe('date')
+    await expiryInput.setValue(expiration)
     await wrapper.find('input[aria-label="Password"]').setValue('Typed-Password-123!')
     await wrapper.find('.add-user-modal form').trigger('submit')
     await flushPromises()
@@ -720,7 +734,7 @@ describe('SystemView users', () => {
       role: 'editor',
       email: 'new@example.test',
       name: 'New User',
-      expiration: Math.floor(new Date(expiration).getTime() / 1000),
+      expiration: endOfDayUnix(expiration),
       password: 'Typed-Password-123!'
     })
     expect(wrapper.find('.add-user-modal').exists()).toBe(false)
@@ -746,19 +760,37 @@ describe('SystemView users', () => {
 
     await rowButton(wrapper, 'editor', 'Edit').trigger('click')
     expect(wrapper.find('.edit-user-modal input[aria-label="Email"]').element.value).toBe('editor@example.test')
+    const expiryInput = wrapper.find('.edit-user-modal input[aria-label="Expires on"]')
+    expect(expiryInput.element.type).toBe('date')
+    expect(expiryInput.element.value).toBe(dateInputValue(1800000000))
     await wrapper.find('.edit-user-modal input[aria-label="Display name"]').setValue('Edited Editor')
-    await wrapper.find('.edit-user-modal input[aria-label="Expires"]').setValue('')
+    await expiryInput.setValue('2027-03-04')
     await wrapper.find('.edit-user-modal select[aria-label="Role"]').setValue('admin')
     await wrapper.find('.edit-user-modal form').trigger('submit')
     await flushPromises()
 
-    expect(api.updateUser).toHaveBeenCalledWith('user2', {
+    expect(api.updateUser).toHaveBeenNthCalledWith(1, 'user2', {
       email: 'editor@example.test',
       name: 'Edited Editor',
-      expiration: -1,
+      expiration: endOfDayUnix('2027-03-04'),
       role: 'admin'
     })
     expect(wrapper.find('.edit-user-modal').exists()).toBe(false)
+
+    // Clearing the date resets the account to never expiring.
+    await rowButton(wrapper, 'editor', 'Edit').trigger('click')
+    await wrapper.find('.edit-user-modal input[aria-label="Expires on"]').setValue('2027-03-04')
+    await wrapper.find('.edit-user-modal button[aria-label="Clear expiration"]').trigger('click')
+    expect(wrapper.find('.edit-user-modal input[aria-label="Expires on"]').element.value).toBe('')
+    await wrapper.find('.edit-user-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.updateUser).toHaveBeenNthCalledWith(2, 'user2', {
+      email: 'editor@example.test',
+      name: '',
+      expiration: -1,
+      role: 'editor'
+    })
 
     await rowButton(wrapper, 'admin', 'Edit').trigger('click')
     expect(wrapper.find('.edit-user-modal select[aria-label="Role"]').element.disabled).toBe(true)

@@ -207,10 +207,13 @@
               <input v-model="addUser.form.name" aria-label="Display name" autocomplete="off" />
             </label>
           </div>
-          <label>Expires (optional)
-            <input v-model="addUser.form.expiration" type="datetime-local" aria-label="Expires" />
+          <label>Expires on (optional)
+            <span class="expiry-field">
+              <input v-model="addUser.form.expiration" type="date" aria-label="Expires on" />
+              <button type="button" class="ghost" aria-label="Clear expiration" @click="addUser.form.expiration = ''">Clear</button>
+            </span>
           </label>
-          <p class="hint">Leave the expiration empty for an account that never expires.</p>
+          <p class="hint">Empty means never. The account expires at the end of the selected day in local time.</p>
           <label>Password (optional)
             <input v-model="addUser.form.password" type="password" aria-label="Password" autocomplete="new-password" />
           </label>
@@ -237,10 +240,13 @@
               <input v-model="editUser.form.name" aria-label="Display name" autocomplete="off" />
             </label>
           </div>
-          <label>Expires
-            <input v-model="editUser.form.expiration" type="datetime-local" aria-label="Expires" />
+          <label>Expires on
+            <span class="expiry-field">
+              <input v-model="editUser.form.expiration" type="date" aria-label="Expires on" />
+              <button type="button" class="ghost" aria-label="Clear expiration" @click="editUser.form.expiration = ''">Clear</button>
+            </span>
           </label>
-          <p class="hint">Empty means never. Expiration is enforced at login and on every session check.</p>
+          <p class="hint">Empty means never. The account expires at the end of the selected day in local time.</p>
           <label>Role
             <select v-model="editUser.form.role" aria-label="Role" :disabled="editingSelf">
               <option value="admin">admin</option>
@@ -378,20 +384,24 @@ function userDetails(user) {
 }
 
 function expirationLabel(value) {
-  if (value === null || value === undefined || Number(value) < 0) return 'never'
-  return date(Number(value))
+  const seconds = Number(value)
+  if (value === null || value === undefined || value === '' || !Number.isFinite(seconds) || seconds < 0) return 'never'
+  return new Date(seconds * 1000).toLocaleDateString()
 }
 
-function toDateTimeLocal(value) {
+function toDateInput(value) {
   const seconds = Number(value)
-  if (!Number.isFinite(seconds) || seconds < 0) return ''
+  if (value === null || value === undefined || value === '' || !Number.isFinite(seconds) || seconds < 0) return ''
   const when = new Date(seconds * 1000)
   const pad = (part) => String(part).padStart(2, '0')
-  return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}T${pad(when.getHours())}:${pad(when.getMinutes())}`
+  return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`
 }
 
 function toUnixSeconds(value) {
-  const milliseconds = new Date(value).getTime()
+  const text = String(value ?? '').trim()
+  if (!text) return -1
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text) ? `${text}T23:59:59` : text
+  const milliseconds = Date.parse(normalized)
   return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : -1
 }
 
@@ -545,7 +555,7 @@ function openEditUser(user) {
     form: {
       email: user.email || '',
       name: user.name || '',
-      expiration: toDateTimeLocal(user.expiration),
+      expiration: toDateInput(user.expiration),
       role: user.role
     }
   }
