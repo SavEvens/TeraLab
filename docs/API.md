@@ -118,8 +118,11 @@ for VNC the generated password.
 - `POST /api/v2/templates/{id}/duplicate` creates a custom copy.
 - `PUT /api/v2/templates/{id}` creates/updates a custom YAML template (editor).
 - The `PUT`/`POST` template endpoints validate a bounded `options.docker`
-  block (`image`, `console_command`, `cap_add`, `pull`); unknown keys are
-  rejected, and `kind: docker` requires `options.docker.image`.
+  block (`image`, `console_command`, `cap_add`, `pull`, `daemons`,
+  `config_path`); unknown keys are rejected, and `kind: docker` requires
+  `options.docker.image`. `daemons` is a list of at most 12 unique names from
+  a fixed FRR allowlist; `config_path` is an absolute container path
+  (`^/[A-Za-z0-9_./-]{1,200}$`) with no `..` segment.
 - `DELETE /api/v2/templates/{id}` removes a custom template.
 - `PUT /api/v2/images/{id}/template` maps an image to a template.
 - `GET /api/v2/jobs`, `GET /api/v2/jobs/{id}` report job records; lab
