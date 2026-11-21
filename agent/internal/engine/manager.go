@@ -206,6 +206,13 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 			return NodeInfo{}, err
 		}
 	}
+	// Prepare every extra disk before touching the network so a failed overlay
+	// or create aborts the start and the caller's run-dir cleanup removes the
+	// partial files.
+	disks, err := m.prepareExtraDisks(spec, runDir)
+	if err != nil {
+		return NodeInfo{}, err
+	}
 
 	taps := make([]string, 0, spec.Ethernet)
 	for index := 0; index < spec.Ethernet; index++ {
@@ -264,7 +271,7 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 			m.logger.Warn("kvm is unavailable; using the max cpu model", "id", spec.ID)
 		}
 	}
-	args, err := BuildQEMUArgs(spec, taps, overlay, vnc, kvm)
+	args, err := BuildQEMUArgs(spec, taps, overlay, disks, vnc, kvm)
 	if err != nil {
 		_ = logFile.Close()
 		_ = ptmx.Close()
@@ -751,6 +758,56 @@ func (m *Manager) createOverlay(image, overlay string) error {
 		return fmt.Errorf("create overlay: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	m.chown(overlay)
+
+	return nil
+}
+
+// prepareExtraDisks materialises one file per template-declared extra disk and
+// returns the paths in slot order. Attached images get a fresh per-node
+// overlay, exactly like the primary image; generated disks are created once
+// and reused across stop and start. Both live in the run dir, so Wipe removes
+// them with the rest of the node state.
+func (m *Manager) prepareExtraDisks(spec Spec, runDir string) ([]string, error) {
+	if len(spec.Disks) == 0 {
+		return nil, nil
+	}
+	for _, disk := range spec.Disks {
+		if !validDiskSlot(disk.Slot) {
+			return nil, fmt.Errorf("invalid disk slot %q", disk.Slot)
+		}
+	}
+	disks := orderedDisks(spec.Disks)
+	paths := make([]string, 0, len(disks))
+	for _, disk := range disks {
+		path := filepath.Join(runDir, "disk-"+disk.Slot+".qcow2")
+		if disk.Image != "" {
+			if err := m.createOverlay(disk.Image, path); err != nil {
+				return nil, err
+			}
+		} else if err := m.createGeneratedDisk(path, disk.SizeGB); err != nil {
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+
+	return paths, nil
+}
+
+// createGeneratedDisk creates a blank qcow2 file only when it is absent, so a
+// stop/start cycle keeps the guest's data. Validation bounds the size before
+// this runs; qemu-img still owns the actual sparse allocation.
+func (m *Manager) createGeneratedDisk(path string, sizeGB int) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat generated disk: %w", err)
+	}
+	command := exec.Command(m.cfg.QEMUImg, "create", "-f", "qcow2", path, strconv.Itoa(sizeGB)+"G")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create disk %s: %s: %w", filepath.Base(path), strings.TrimSpace(string(output)), err)
+	}
+	m.chown(path)
 
 	return nil
 }

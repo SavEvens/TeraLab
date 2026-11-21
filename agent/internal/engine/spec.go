@@ -101,6 +101,18 @@ const (
 	defaultDiskInterface = "virtio"
 )
 
+// Extra disk bounds. The primary disk keeps Image/virtioa; template options
+// may add one disk per remaining virtio slot.
+const (
+	maxExtraDisks = 3
+	minDiskSizeGB = 1
+	maxDiskSizeGB = 100
+)
+
+// diskSlotOrder is the attachment order for extra disks. It is fixed here so
+// neither the template's list order nor map iteration can reorder drives.
+var diskSlotOrder = []string{"virtiob", "virtioc", "virtiod"}
+
 // supportedNICs lists the canonical short NIC names accepted from the API.
 // nicDevices maps them to the QEMU -device model; "virtio" is a TeraLab
 // shorthand and not a QEMU device name. nicAliases keeps the values stored in
@@ -151,6 +163,16 @@ func (d *DockerOptions) PullEnabled() bool {
 	return *d.Pull
 }
 
+// DiskSpec is one template-declared extra disk. Slot selects the virtio
+// device (virtiob..virtiod); exactly one of Image (a stored image, resolved to
+// an absolute path under the image roots by the API) or SizeGB (a blank disk
+// generated per node) is set.
+type DiskSpec struct {
+	Slot   string `json:"slot"`
+	Image  string `json:"image,omitempty"`
+	SizeGB int    `json:"size_gb,omitempty"`
+}
+
 type Spec struct {
 	ID       string   `json:"id"`
 	LabID    string   `json:"lab_id"`
@@ -171,6 +193,9 @@ type Spec struct {
 	Arch     string   `json:"arch,omitempty"`
 	CPUModel string   `json:"cpu_model,omitempty"`
 	Accel    string   `json:"accel,omitempty"`
+	// Disks declares extra QEMU disks beyond the primary Image. The primary
+	// disk keeps its Image/virtioa semantics; extras are attached after it.
+	Disks []DiskSpec `json:"disks,omitempty"`
 	// DiskInterface is the QEMU -drive if= value; ExtraOptions is the raw
 	// legacy qemu_options string, parsed before validation; Extra holds the
 	// allow-listed extras after parsing.
@@ -273,6 +298,11 @@ func (s Spec) Validate(imageRoots []string) error {
 	if !uuidPattern.MatchString(s.UUID) {
 		return errors.New("invalid uuid")
 	}
+	// Extra disks are a QEMU-only concept; reject them before dispatching so
+	// no other engine silently ignores a template disk layout.
+	if len(s.Disks) > 0 && s.Engine != "" && s.Engine != "qemu" {
+		return errors.New("extra disks are only supported for qemu nodes")
+	}
 
 	switch s.Engine {
 	case "qemu", "":
@@ -326,6 +356,11 @@ func (s Spec) validateQEMU(imageRoots []string) error {
 			return err
 		}
 	}
+	if len(s.Disks) > 0 {
+		if err := validateExtraDisks(s.Disks, imageRoots); err != nil {
+			return err
+		}
+	}
 	if s.ISO != "" {
 		if err := validateImagePath(s.ISO, imageRoots, ".iso"); err != nil {
 			return err
@@ -349,6 +384,85 @@ func (s Spec) validateQEMU(imageRoots []string) error {
 	}
 
 	return nil
+}
+
+// validateExtraDisks checks the template-declared extra disks. Input order is
+// irrelevant: attachment order is fixed by diskSlotOrder. An image disk goes
+// through the same containment and .qcow2 rules as the primary image; a
+// generated disk is bounded so a template cannot request a huge sparse file.
+func validateExtraDisks(disks []DiskSpec, imageRoots []string) error {
+	if len(disks) > maxExtraDisks {
+		return fmt.Errorf("at most %d extra disks are allowed", maxExtraDisks)
+	}
+	seen := make(map[string]bool, len(disks))
+	for _, disk := range disks {
+		if !validDiskSlot(disk.Slot) {
+			return fmt.Errorf(
+				"invalid disk slot %q: must be one of %s",
+				disk.Slot,
+				strings.Join(diskSlotOrder, ", "),
+			)
+		}
+		if seen[disk.Slot] {
+			return fmt.Errorf("duplicate disk slot %q", disk.Slot)
+		}
+		seen[disk.Slot] = true
+
+		hasImage := disk.Image != ""
+		hasSize := disk.SizeGB != 0
+		if hasImage == hasSize {
+			return fmt.Errorf(
+				"disk %q must set exactly one of image or size_gb",
+				disk.Slot,
+			)
+		}
+		if hasImage {
+			if err := validateImagePath(disk.Image, imageRoots, ".qcow2"); err != nil {
+				return fmt.Errorf("disk %q: %w", disk.Slot, err)
+			}
+			continue
+		}
+		if disk.SizeGB < minDiskSizeGB || disk.SizeGB > maxDiskSizeGB {
+			return fmt.Errorf(
+				"disk %q size_gb must be between %d and %d",
+				disk.Slot,
+				minDiskSizeGB,
+				maxDiskSizeGB,
+			)
+		}
+	}
+
+	return nil
+}
+
+// validDiskSlot reports whether slot is one of the extra virtio disk names.
+func validDiskSlot(slot string) bool {
+	for _, supported := range diskSlotOrder {
+		if slot == supported {
+			return true
+		}
+	}
+
+	return false
+}
+
+// orderedDisks returns the disks in attachment order regardless of the order
+// the template declared them in. Unknown slots are dropped; validation has
+// already rejected them on every path that reaches the engine.
+func orderedDisks(disks []DiskSpec) []DiskSpec {
+	if len(disks) == 0 {
+		return nil
+	}
+	ordered := make([]DiskSpec, 0, len(disks))
+	for _, slot := range diskSlotOrder {
+		for _, disk := range disks {
+			if disk.Slot == slot {
+				ordered = append(ordered, disk)
+			}
+		}
+	}
+
+	return ordered
 }
 
 func (s Spec) validateVPCS() error {

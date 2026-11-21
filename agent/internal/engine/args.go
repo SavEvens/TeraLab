@@ -18,8 +18,9 @@ type VNCConfig struct {
 
 // BuildQEMUArgs renders the QEMU command line. Structured parameters come from
 // the spec and fall back only when empty; console, tap, kernel and boot policy
-// stay engine-owned.
-func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig, kvm bool) ([]string, error) {
+// stay engine-owned. disks holds the prepared extra disk paths, already in slot
+// order (virtiob, virtioc, virtiod) by the manager.
+func BuildQEMUArgs(spec Spec, taps []string, overlay string, disks []string, vnc *VNCConfig, kvm bool) ([]string, error) {
 	if spec.ExtraOptions != "" {
 		merged, err := spec.withExtraOptions()
 		if err != nil {
@@ -102,6 +103,12 @@ func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig, kvm
 
 	if spec.Image != "" {
 		args = append(args, "-drive", "file="+overlay+",if="+diskInterface+",format=qcow2,cache=none")
+	}
+	// Extra disks are always virtio-blk: their slots name virtio devices even
+	// when the primary disk uses another interface. Their order is the slot
+	// order supplied by the manager, not the template's list order.
+	for _, disk := range disks {
+		args = append(args, "-drive", "file="+disk+",if=virtio,format=qcow2,cache=none")
 	}
 	if spec.Kernel != "" {
 		args = append(args, "-kernel", spec.Kernel)

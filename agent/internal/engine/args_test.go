@@ -35,7 +35,7 @@ func goldenSpec(t *testing.T) Spec {
 
 func buildGoldenArgs(t *testing.T, spec Spec, kvm bool) []string {
 	t.Helper()
-	args, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "/run/overlay.qcow2", nil, kvm)
+	args, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "/run/overlay.qcow2", nil, nil, kvm)
 	if err != nil {
 		t.Fatalf("build args: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestBuildQEMUArgsRejectsUnsafeExtrasBeforeRendering(t *testing.T) {
 			spec.ExtraOptions = raw
 			spec.Normalize()
 
-			if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", nil, false); err == nil {
+			if _, err := BuildQEMUArgs(spec, []string{spec.TapName(0)}, "", nil, nil, false); err == nil {
 				t.Fatalf("expected %q to be rejected", raw)
 			}
 		})
