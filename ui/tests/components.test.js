@@ -115,6 +115,31 @@ describe('TemplatePicker', () => {
     expect(wrapper.emitted('add').at(-1)[0].count).toBe(1)
   })
 
+  it('treats docker templates as ready and carries the container image', async () => {
+    const dockerTemplates = [
+      { id: 'frr', name: 'FRR Router', kind: 'docker', options: { docker: { image: 'frrouting/frr:v8.4.1' } } },
+      { id: 'busybox', name: 'Busybox docker', kind: 'docker' }
+    ]
+    const wrapper = mount(TemplatePicker, { props: { templates: [...templates, ...dockerTemplates], images } })
+    const ready = wrapper.find('[data-group="ready"]')
+    const needsImage = wrapper.find('[data-group="needs-image"]')
+
+    expect(ready.text()).toContain('FRR Router')
+    expect(ready.text()).toContain('docker · frrouting/frr:v8.4.1')
+    expect(ready.text()).toContain('docker · no default image')
+    expect(ready.text()).toContain('container image')
+    expect(needsImage.text()).not.toContain('FRR Router')
+    expect(needsImage.text()).not.toContain('Busybox')
+
+    const add = async (name) => {
+      const tile = wrapper.findAll('[data-group="ready"] li').find((item) => item.text().includes(name))
+      await tile.find('button').trigger('click')
+      return wrapper.emitted('add').at(-1)[0]
+    }
+    expect(await add('FRR Router')).toMatchObject({ image: 'frrouting/frr:v8.4.1', count: 1 })
+    expect((await add('Busybox')).image).toBe('')
+  })
+
   it('filters across both groups', async () => {
     const wrapper = mount(TemplatePicker, { props: { templates, images } })
     await wrapper.find('input').setValue('vpcs')
@@ -257,6 +282,79 @@ describe('Inspector', () => {
     const customSelect = customWrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'vmxnet3'))
     expect(customSelect.element.value).toBe('')
     expect(custom.data.nic).toBe('ne2k_pci')
+  })
+
+  it('edits a docker container reference with pulled-image suggestions', async () => {
+    const templates = [{ id: 'frr', name: 'FRR Router', kind: 'docker', options: { docker: { image: 'frrouting/frr:v8.4.1' } } }]
+    const node = {
+      id: '7',
+      position: { x: 0, y: 0 },
+      data: {
+        name: 'FRR7', template: 'frr', kind: 'docker', image: '', iso: '', console: 'telnet',
+        cpu: 1, ram: 256, serial: 0, interfaces: [{ id: 0 }]
+      }
+    }
+    const dockerImages = [
+      { reference: 'frrouting/frr:v8.4.1', id: 'sha256:a', size: '1MB', created: '' },
+      { reference: 'alpine:3.20', id: 'sha256:b', size: '7.81MB', created: '' }
+    ]
+    const wrapper = mount(Inspector, { props: { node, templates, images: [], dockerImages } })
+
+    const input = wrapper.find('input[list="docker-image-options"]')
+    expect(input.exists()).toBe(true)
+    expect(input.element.value).toBe('')
+    expect(input.attributes('placeholder')).toBe('frrouting/frr:v8.4.1')
+    expect(wrapper.findAll('datalist#docker-image-options option').map((option) => option.element.value))
+      .toEqual(['frrouting/frr:v8.4.1', 'alpine:3.20'])
+    expect(wrapper.text()).toContain('Empty uses the template default (frrouting/frr:v8.4.1)')
+    expect(wrapper.text()).toContain('Pulled images are offered as you type')
+
+    await input.setValue('alpine:3.20')
+    expect(wrapper.emitted('update')).toContainEqual([{ key: 'image', value: 'alpine:3.20' }])
+
+    const typeSelect = wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'docker'))
+    expect(typeSelect.element.value).toBe('docker')
+    const consoleSelect = wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'telnet'))
+    expect(consoleSelect.findAll('option').map((option) => option.element.value)).toEqual(['telnet'])
+
+    const labels = wrapper.findAll('label').map((label) => label.text())
+    expect(labels.some((text) => text.includes('NIC driver'))).toBe(false)
+    expect(labels.some((text) => text.includes('Serial ports'))).toBe(false)
+    expect(labels.some((text) => text.includes('ISO'))).toBe(false)
+    expect(labels.some((text) => text.includes('Startup config'))).toBe(false)
+  })
+
+  it('falls back to a generic container placeholder without a template image', () => {
+    const node = {
+      id: '8',
+      position: { x: 0, y: 0 },
+      data: { name: 'C8', template: 'custom', kind: 'docker', image: '', console: 'telnet', cpu: 1, ram: 128, serial: 0, interfaces: [{ id: 0 }] }
+    }
+    const wrapper = mount(Inspector, { props: { node, templates: [{ id: 'custom', name: 'Custom', kind: 'docker' }], images: [] } })
+
+    expect(wrapper.find('input[list="docker-image-options"]').attributes('placeholder')).toBe('e.g. frrouting/frr:v8.4.1')
+    expect(wrapper.text()).toContain('No container image set — enter a container reference. Pulled images are offered as you type.')
+    expect(wrapper.text()).not.toContain('Empty uses the template default')
+    expect(wrapper.findAll('datalist#docker-image-options option')).toHaveLength(0)
+  })
+
+  it('keeps a stored vnc console visible on a docker node', async () => {
+    const node = {
+      id: '9',
+      position: { x: 0, y: 0 },
+      data: { name: 'D9', template: 'frr', kind: 'docker', image: '', console: 'vnc', cpu: 1, ram: 128, serial: 0, interfaces: [{ id: 0 }] }
+    }
+    const templates = [{ id: 'frr', name: 'FRR Router', kind: 'docker', options: { docker: { image: 'frrouting/frr:v8.4.1' } } }]
+    const wrapper = mount(Inspector, { props: { node, templates, images: [] } })
+
+    const consoleSelect = wrapper.findAll('select').find((select) => select.findAll('option').some((option) => option.element.value === 'telnet'))
+    expect(consoleSelect.findAll('option').map((option) => option.element.value)).toEqual(['telnet', 'vnc'])
+    expect(consoleSelect.element.value).toBe('vnc')
+    expect(consoleSelect.text()).toContain('vnc (docker uses telnet)')
+    expect(node.data.console).toBe('vnc')
+
+    await consoleSelect.setValue('telnet')
+    expect(wrapper.emitted('update')).toContainEqual([{ key: 'console', value: 'telnet' }])
   })
 
   it('emits updates and actions', async () => {

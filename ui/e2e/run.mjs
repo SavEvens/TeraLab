@@ -264,6 +264,49 @@ try {
   await page.waitForTimeout(400)
   await page.screenshot({ path: `${outDir}/links.png` })
 
+  // Docker nodes: the ready group always lists them, the picker seeds the
+  // node's container reference from the template, and the Inspector offers the
+  // locally pulled images while the store image row disappears.
+  await page.locator('.add-node').click()
+  await page.waitForSelector('.template-picker')
+  const dockerTile = page.locator('[data-group="ready"] li').filter({ hasText: 'FRR Router' })
+  const dockerTileText = (await dockerTile.innerText()).replace(/\s+/g, ' ').trim()
+  await dockerTile.getByRole('button', { name: 'Add' }).click()
+  await page.waitForFunction((count) => document.querySelectorAll('.lab-node').length > count, batchNodes)
+  await page.locator('.lab-node').last().evaluate((element) => element.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  await page.waitForFunction(() => document.querySelector('.inspector input')?.value === 'FRR Router7', null, { timeout: 10000 })
+  const dockerImageInput = page.locator('.inspector input[list="docker-image-options"]')
+  const dockerImageValue = await dockerImageInput.inputValue()
+  const dockerImagePlaceholder = await dockerImageInput.getAttribute('placeholder')
+  const dockerImageHint = (await page.locator('.inspector p.hint').first().innerText()).replace(/\s+/g, ' ').trim()
+  const dockerImageOptions = await page.locator('datalist#docker-image-options option').evaluateAll((options) => options.map((option) => option.value))
+  const dockerTypeValue = await page.locator('.inspector label').filter({ hasText: 'Type' }).locator('select').inputValue()
+  const dockerConsoleOptions = await page.locator('.inspector label').filter({ hasText: 'Console' }).locator('select option').evaluateAll((options) => options.map((option) => option.value))
+  const dockerHiddenRows = {
+    nic: await page.locator('.inspector label').filter({ hasText: 'NIC driver' }).count(),
+    serial: await page.locator('.inspector label').filter({ hasText: 'Serial ports' }).count(),
+    iso: await page.locator('.inspector label').filter({ hasText: 'ISO' }).count(),
+    config: await page.locator('.inspector label').filter({ hasText: 'Startup config' }).count()
+  }
+  await dockerImageInput.fill('alpine:3.20')
+  await page.waitForTimeout(1800)
+  const dockerLab = (await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()).lab
+  const dockerNode = dockerLab.node_list.find((node) => node.id === '7')
+
+  // Switching an existing qemu node to docker clears the store image and swaps
+  // the image row to the free-text container field; switching back clears it
+  // so no container reference can leak into the store-image select.
+  await page.locator('.lab-node').filter({ hasText: 'Linux4' }).evaluate((element) => element.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  await page.waitForFunction(() => document.querySelector('.inspector input')?.value === 'Linux4', null, { timeout: 10000 })
+  const kindSelect = page.locator('.inspector label').filter({ hasText: 'Type' }).locator('select')
+  await kindSelect.selectOption('docker')
+  await page.waitForSelector('.inspector input[list="docker-image-options"]')
+  const switchedDockerImage = await page.locator('.inspector input[list="docker-image-options"]').inputValue()
+  const switchedConsoleOptions = await page.locator('.inspector label').filter({ hasText: 'Console' }).locator('select option').evaluateAll((options) => options.map((option) => option.value))
+  await kindSelect.selectOption('qemu')
+  await page.waitForSelector('.inspector label:has-text("Image") select')
+  const switchedBackImage = await page.locator('.inspector label').filter({ hasText: 'Image' }).locator('select').inputValue()
+
   // Inspector edit triggers autosave.
   await page.locator('.lab-node').first().click()
   const imageSelect = page.locator('.inspector label').filter({ hasText: 'Image' }).locator('select')
@@ -420,6 +463,20 @@ try {
     linkTagsAfterRecreate,
     pickerReady: pickerReady.replace(/\s+/g, ' ').trim(),
     pickerNeedsImage: pickerNeedsImage.replace(/\s+/g, ' ').trim(),
+    dockerTileText,
+    dockerImageValue,
+    dockerImagePlaceholder,
+    dockerImageHint,
+    dockerImageOptions,
+    dockerTypeValue,
+    dockerConsoleOptions,
+    dockerHiddenRows,
+    dockerNodeImage: dockerNode?.image,
+    dockerNodeType: dockerNode?.type,
+    dockerNodeConsole: dockerNode?.console,
+    switchedDockerImage,
+    switchedConsoleOptions,
+    switchedBackImage,
     iolOptions,
     linkSummary: linkSummary.replace(/\s+/g, ' ').trim(),
     linkTags,
@@ -516,6 +573,34 @@ try {
   if (!linkInterfaceOptions.some((option) => option.includes('eth0'))) throw new Error(`link dialog missing interfaces: ${linkInterfaceOptions}`)
   if (!pickerReady.includes('Linux') || pickerReady.includes('Cisco IOL')) throw new Error('template picker ready group is wrong')
   if (!pickerNeedsImage.includes('Cisco IOL') || pickerNeedsImage.includes('Linux')) throw new Error('template picker needs-image group is wrong')
+  if (!pickerReady.includes('FRR Router') || !pickerReady.includes('frrouting/frr:v8.4.1')) {
+    throw new Error(`docker template is not in the ready group: ${pickerReady}`)
+  }
+  if (pickerNeedsImage.includes('FRR Router')) throw new Error(`docker template asked for an image mapping: ${pickerNeedsImage}`)
+  if (!dockerTileText.includes('docker · frrouting/frr:v8.4.1')) {
+    throw new Error(`docker tile does not name the container image: ${dockerTileText}`)
+  }
+  if (dockerImageValue !== 'frrouting/frr:v8.4.1') throw new Error(`added docker node has the wrong image: ${dockerImageValue}`)
+  if (dockerImagePlaceholder !== 'frrouting/frr:v8.4.1') throw new Error(`docker image placeholder is wrong: ${dockerImagePlaceholder}`)
+  if (!/frrouting\/frr:v8\.4\.1/.test(dockerImageHint) || !/Pulled images are offered/.test(dockerImageHint)) {
+    throw new Error(`docker image hint is wrong: ${dockerImageHint}`)
+  }
+  if (!dockerImageOptions.includes('frrouting/frr:v8.4.1') || !dockerImageOptions.includes('alpine:3.20')) {
+    throw new Error(`docker datalist is missing pulled images: ${JSON.stringify(dockerImageOptions)}`)
+  }
+  if (dockerTypeValue !== 'docker') throw new Error(`docker node type is wrong: ${dockerTypeValue}`)
+  if (dockerConsoleOptions.includes('vnc') || !dockerConsoleOptions.includes('telnet')) {
+    throw new Error(`docker console offers the wrong kinds: ${JSON.stringify(dockerConsoleOptions)}`)
+  }
+  if (dockerHiddenRows.nic || dockerHiddenRows.serial || dockerHiddenRows.iso || dockerHiddenRows.config) {
+    throw new Error(`docker node still shows qemu-only rows: ${JSON.stringify(dockerHiddenRows)}`)
+  }
+  if (dockerNode?.image !== 'alpine:3.20' || dockerNode?.type !== 'docker' || dockerNode?.console !== 'telnet') {
+    throw new Error(`docker node was not saved correctly: ${JSON.stringify(dockerNode)}`)
+  }
+  if (switchedDockerImage !== '') throw new Error(`container image was not cleared on kind switch: ${switchedDockerImage}`)
+  if (switchedConsoleOptions.includes('vnc')) throw new Error(`switched docker console offers vnc: ${JSON.stringify(switchedConsoleOptions)}`)
+  if (switchedBackImage !== '') throw new Error(`container reference leaked into the store image: ${switchedBackImage}`)
   if (!iolOptions.some((option) => option.startsWith('e0/0'))) throw new Error(`IOL interface labels missing: ${iolOptions}`)
   if (!iolOptions.some((option) => option.startsWith('e0/1'))) throw new Error(`IOL interface labels missing: ${iolOptions}`)
   if (!linkSummary.includes('creates a new link')) throw new Error(`link summary wrong: ${linkSummary}`)
