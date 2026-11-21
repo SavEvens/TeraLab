@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -613,10 +614,13 @@ func (m *Manager) attachDockerInterface(
 // dockerSandboxKey accepts only the netns paths docker itself manages. A
 // value from container metadata is never passed to nsenter otherwise; callers
 // fall back to entering by init PID.
+var dockerSandboxKeyPattern = regexp.MustCompile(
+	`^(/var/run/docker/netns/|/run/docker/netns/)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`,
+)
+
 func dockerSandboxKey(inspect *dockerInspect) string {
 	key := inspect.NetworkSettings.SandboxKey
-	if strings.HasPrefix(key, "/var/run/docker/netns/") ||
-		strings.HasPrefix(key, "/run/docker/netns/") {
+	if dockerSandboxKeyPattern.MatchString(key) {
 		return key
 	}
 
@@ -653,14 +657,23 @@ func (m *Manager) startDockerConsole(spec Spec, containerID, runDir string) (*os
 // pump fan-out ends. It never touches the container.
 func (m *Manager) reapDockerConsole(node *Node, command *exec.Cmd) {
 	_ = command.Wait()
-	if node.PTY != nil {
-		_ = node.PTY.Close()
+	m.mu.Lock()
+	ptyFile := node.PTY
+	m.mu.Unlock()
+	if ptyFile != nil {
+		_ = ptyFile.Close()
 	}
 }
 
+// stopDockerConsole terminates the optional docker exec client. Callers must
+// not hold m.mu: the console fields are swapped under the lock, but process
+// signalling and the pty close happen outside it.
 func (m *Manager) stopDockerConsole(node *Node) {
+	m.mu.Lock()
 	command := node.ExecCmd
 	node.ExecCmd = nil
+	ptyFile := node.PTY
+	m.mu.Unlock()
 	if command != nil && command.Process != nil {
 		pid := command.Process.Pid
 		if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
@@ -678,8 +691,8 @@ func (m *Manager) stopDockerConsole(node *Node) {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	}
-	if node.PTY != nil {
-		_ = node.PTY.Close()
+	if ptyFile != nil {
+		_ = ptyFile.Close()
 	}
 }
 
@@ -776,9 +789,15 @@ func (m *Manager) wipeDocker(id string, node *Node) error {
 // not report a container that already exited as running.
 func (m *Manager) refreshDockerNode(node *Node) {
 	m.mu.Lock()
-	container := node.ContainerID
 	nodeID := node.Spec.ID
+	snapshotContainer := node.ContainerID
+	container := snapshotContainer
+	state := node.State
+	current, tracked := m.nodes[nodeID]
 	m.mu.Unlock()
+	if !tracked || current != node {
+		return
+	}
 	if container == "" {
 		container = dockerContainerName(nodeID)
 	}
@@ -789,6 +808,13 @@ func (m *Manager) refreshDockerNode(node *Node) {
 		return
 	}
 	m.mu.Lock()
+	// A concurrent stop or wipe must win: do not resurrect a node whose state
+	// or container changed while the inspect was in flight.
+	current, tracked = m.nodes[nodeID]
+	if !tracked || current != node || node.State != state || node.ContainerID != snapshotContainer {
+		m.mu.Unlock()
+		return
+	}
 	node.ContainerID = inspect.ID
 	node.ContainerPID = inspect.State.Pid
 	if inspect.State.Running {

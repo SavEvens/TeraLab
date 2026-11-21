@@ -884,33 +884,67 @@ func TestDockerBinaryAvailableHonoursPATH(t *testing.T) {
 	}
 }
 
-func TestDockerVethRejectsUntrustedSandboxKey(t *testing.T) {
-	manager := newDockerTestManager(t, "/bin/true")
-	netCalls := captureNetworkRun(manager)
-	spec := dockerTestSpec(t)
-	spec.Ethernet = 1
-	spec.Networks = []string{""}
-	spec.Normalize()
-	inspect := &dockerInspect{ID: "cid"}
-	inspect.State.Pid = 77
-	inspect.NetworkSettings.SandboxKey = "/tmp/not-docker/netns/cid"
+func TestDockerSandboxKeyValidation(t *testing.T) {
+	cases := []struct {
+		key  string
+		want string
+	}{
+		{key: "/var/run/docker/netns/abc", want: "/var/run/docker/netns/abc"},
+		{key: "/run/docker/netns/a.b_c-1", want: "/run/docker/netns/a.b_c-1"},
+		{key: ""},
+		{key: "/tmp/not-docker/netns/cid"},
+		{key: "/var/run/docker/netns/"},
+		{key: "/var/run/docker/netns/.."},
+		{key: "/var/run/docker/netns/../../etc"},
+		{key: "/var/run/docker/netns/a/b"},
+		{key: "/var/run/docker/netns/a b"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.key, func(t *testing.T) {
+			inspect := &dockerInspect{ID: "cid"}
+			inspect.NetworkSettings.SandboxKey = testCase.key
+			if got := dockerSandboxKey(inspect); got != testCase.want {
+				t.Fatalf("dockerSandboxKey(%q) = %q, want %q", testCase.key, got, testCase.want)
+			}
+		})
+	}
+}
 
-	if err := manager.attachDockerInterface(spec, 0, spec.TapName(0), inspect); err != nil {
-		t.Fatalf("attach interface: %v", err)
+func TestDockerVethRejectsUntrustedSandboxKey(t *testing.T) {
+	keys := []string{
+		"/tmp/not-docker/netns/cid",
+		"/var/run/docker/netns/../../etc",
 	}
-	peer := dockerPeerName(spec.LabID, spec.ID, 0)
-	for _, expected := range []string{
-		"ip link set " + peer + " netns 77",
-		"nsenter -t 77 -n ip link set " + peer + " name eth0",
-	} {
-		if !callsContain(*netCalls, expected) {
-			t.Fatalf("expected %q in %v", expected, *netCalls)
-		}
-	}
-	for _, call := range *netCalls {
-		if strings.Contains(call, inspect.NetworkSettings.SandboxKey) {
-			t.Fatalf("untrusted sandbox key reached the veth move or nsenter: %v", *netCalls)
-		}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			manager := newDockerTestManager(t, "/bin/true")
+			netCalls := captureNetworkRun(manager)
+			spec := dockerTestSpec(t)
+			spec.Ethernet = 1
+			spec.Networks = []string{""}
+			spec.Normalize()
+			inspect := &dockerInspect{ID: "cid"}
+			inspect.State.Pid = 77
+			inspect.NetworkSettings.SandboxKey = key
+
+			if err := manager.attachDockerInterface(spec, 0, spec.TapName(0), inspect); err != nil {
+				t.Fatalf("attach interface: %v", err)
+			}
+			peer := dockerPeerName(spec.LabID, spec.ID, 0)
+			for _, expected := range []string{
+				"ip link set " + peer + " netns 77",
+				"nsenter -t 77 -n ip link set " + peer + " name eth0",
+			} {
+				if !callsContain(*netCalls, expected) {
+					t.Fatalf("expected %q in %v", expected, *netCalls)
+				}
+			}
+			for _, call := range *netCalls {
+				if strings.Contains(call, key) {
+					t.Fatalf("untrusted sandbox key reached the veth move or nsenter: %v", *netCalls)
+				}
+			}
+		})
 	}
 }
 
