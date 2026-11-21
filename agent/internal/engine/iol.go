@@ -134,7 +134,17 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 	}
 
 	if spec.Config != "" {
-		if err := os.WriteFile(filepath.Join(runDir, "startup-config"), []byte(spec.Config), 0o640); err != nil {
+		startupConfig := spec.Config
+		// The L2 build keeps VLAN definitions in vlan.dat unless the
+		// configuration itself makes VTP transparent. Only the inserted
+		// line changes; the rest of the user's file stays byte-identical.
+		if isIOLSwitchImage(spec.Image) {
+			if fixed, changed := EnsureVlanDatabaseMode(startupConfig); changed {
+				m.logger.Info("iol: enable vtp transparent for L2 startup config", "node", spec.ID)
+				startupConfig = fixed
+			}
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "startup-config"), []byte(startupConfig), 0o640); err != nil {
 			cleanup()
 			return NodeInfo{}, fmt.Errorf("write iol startup configuration: %w", err)
 		}
@@ -204,7 +214,15 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 	}
 	go m.pumpPTY(node)
 
-	return m.register(node)
+	info, err := m.register(node)
+	if err != nil {
+		return info, err
+	}
+	// The probe only runs once the node is registered: it attaches through
+	// the same console session as a client. It never fails the start.
+	m.startIOLPostBoot(node)
+
+	return info, nil
 }
 
 // prepareIOLFiles places the licence and interface map where IOL expects them.

@@ -51,6 +51,13 @@ type labCleanupRequest struct {
 	LabID string `json:"lab_id"`
 }
 
+// cleanupStaleRequest carries the keep-set of labs that still exist. The body
+// is optional: an absent or empty body leaves LabIDs nil, which keeps the
+// node-level cleanup but leaves lab run directories alone.
+type cleanupStaleRequest struct {
+	LabIDs []string `json:"lab_ids"`
+}
+
 type imageInspectRequest struct {
 	Path string `json:"path"`
 }
@@ -189,7 +196,23 @@ func (s *Server) handleLabCleanup(writer http.ResponseWriter, request *http.Requ
 }
 
 func (s *Server) handleCleanupStale(writer http.ResponseWriter, request *http.Request) {
-	result, err := s.manager.Reconcile()
+	serveCleanupStale(writer, request, s.manager.Reconcile)
+}
+
+// serveCleanupStale decodes the optional lab keep-set and reconciles. It takes
+// the reconcile function so the decoding contract can be tested without a real
+// run directory.
+func serveCleanupStale(
+	writer http.ResponseWriter,
+	request *http.Request,
+	reconcile func([]string) (engine.ReconcileResult, error),
+) {
+	var payload cleanupStaleRequest
+	if err := readOptionalJSON(request, &payload); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	result, err := reconcile(payload.LabIDs)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "reconcile_failed", err.Error())
 		return
@@ -286,6 +309,19 @@ func readJSON(request *http.Request, destination any) error {
 	decoder := json.NewDecoder(reader)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// readOptionalJSON is readJSON for endpoints whose body may be omitted. An
+// empty body leaves destination untouched instead of failing with io.EOF.
+func readOptionalJSON(request *http.Request, destination any) error {
+	reader := io.LimitReader(request.Body, maxRequestBody+1)
+	decoder := json.NewDecoder(reader)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 

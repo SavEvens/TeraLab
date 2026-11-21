@@ -20,13 +20,49 @@ import (
 )
 
 var (
-	idPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
-	nicPattern      = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
-	machinePattern  = regexp.MustCompile(`^(pc|q35|pc-i440fx-[0-9.]+|pc-q35-[0-9.]+)$`)
+	idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+	// machinePattern accepts the generic aliases, the versioned pc/q35 aliases
+	// used by migrated UNetLab templates (pc-1.0) and the canonical versioned
+	// names (pc-i440fx-7.2, pc-q35-7.2).
+	machinePattern = regexp.MustCompile(`^((pc|q35)(-[0-9]+(\.[0-9]+)*)?|(pc-i440fx|pc-q35)-[0-9]+(\.[0-9]+)*)$`)
+	// cpuModelPattern covers "host", "max", named models and feature lists
+	// such as "qemu64,+ssse3,+sse4.2" found in the shipped templates.
+	cpuModelPattern = regexp.MustCompile(`^[A-Za-z0-9_.+,-]{1,64}$`)
 	bridgePattern   = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
 	uuidPattern     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	platformPattern = regexp.MustCompile(`^(c7200|c3600|c2691|c3725|c3745|c1700|c2600)$`)
 	slotPattern     = regexp.MustCompile(`^[0-9]{1,2}:[0-9]{1,2}:(tap|linux|unix)$`)
+)
+
+// QEMU fallbacks, applied only when the node spec leaves a field empty. The
+// e1000 default is deliberate: most built-in templates declare no NIC, PAN-OS
+// is untested on virtio, and templates opt into vmxnet3/virtio explicitly.
+const (
+	defaultArch          = "x86_64"
+	defaultMachine       = "pc"
+	defaultNIC           = "e1000"
+	defaultDiskInterface = "virtio"
+)
+
+// supportedNICs lists the canonical short NIC names accepted from the API.
+// nicDevices maps them to the QEMU -device model; "virtio" is a TeraLab
+// shorthand and not a QEMU device name. nicAliases keeps the values stored in
+// older labs and used by the shipped Inspector working: they normalise to a
+// canonical name before validation and rendering.
+var (
+	supportedNICs = []string{"virtio", "vmxnet3", "e1000", "rtl8139"}
+	nicAliases    = map[string]string{
+		"virtio-net-pci": "virtio",
+		"i82559er":       "e1000",
+	}
+	nicDevices = map[string]string{
+		"virtio":  "virtio-net-pci",
+		"vmxnet3": "vmxnet3",
+		"e1000":   "e1000",
+		"rtl8139": "rtl8139",
+	}
+	supportedAccels         = []string{"kvm", "tcg", "kvm:tcg"}
+	supportedDiskInterfaces = []string{"virtio", "scsi", "ide", "sata"}
 )
 
 // Engines lists the supported node engines.
@@ -49,13 +85,22 @@ type Spec struct {
 	Networks []string `json:"networks,omitempty"`
 	NIC      string   `json:"nic,omitempty"`
 	Machine  string   `json:"machine,omitempty"`
-	Console  string   `json:"console,omitempty"`
-	UUID     string   `json:"uuid,omitempty"`
-	Platform string   `json:"platform,omitempty"`
-	NVRAM    int      `json:"nvram,omitempty"`
-	Slots    []string `json:"slots,omitempty"`
-	Iourc    string   `json:"iourc,omitempty"`
-	Config   string   `json:"config,omitempty"`
+	Arch     string   `json:"arch,omitempty"`
+	CPUModel string   `json:"cpu_model,omitempty"`
+	Accel    string   `json:"accel,omitempty"`
+	// DiskInterface is the QEMU -drive if= value; ExtraOptions is the raw
+	// legacy qemu_options string, parsed before validation; Extra holds the
+	// allow-listed extras after parsing.
+	DiskInterface string   `json:"disk_interface,omitempty"`
+	ExtraOptions  string   `json:"extra_options,omitempty"`
+	Extra         []string `json:"extra,omitempty"`
+	Console       string   `json:"console,omitempty"`
+	UUID          string   `json:"uuid,omitempty"`
+	Platform      string   `json:"platform,omitempty"`
+	NVRAM         int      `json:"nvram,omitempty"`
+	Slots         []string `json:"slots,omitempty"`
+	Iourc         string   `json:"iourc,omitempty"`
+	Config        string   `json:"config,omitempty"`
 }
 
 func (s *Spec) Normalize() {
@@ -68,11 +113,19 @@ func (s *Spec) Normalize() {
 	if s.RAM == 0 {
 		s.RAM = 512
 	}
+	if s.Arch == "" {
+		s.Arch = defaultArch
+	}
 	if s.NIC == "" {
-		s.NIC = "e1000"
+		s.NIC = defaultNIC
+	} else {
+		s.NIC = canonicalNIC(s.NIC)
 	}
 	if s.Machine == "" {
-		s.Machine = "pc"
+		s.Machine = defaultMachine
+	}
+	if s.DiskInterface == "" {
+		s.DiskInterface = defaultDiskInterface
 	}
 	if s.Console == "" {
 		s.Console = "telnet"
@@ -148,11 +201,35 @@ func (s Spec) Validate(imageRoots []string) error {
 }
 
 func (s Spec) validateQEMU(imageRoots []string) error {
-	if !nicPattern.MatchString(s.NIC) {
-		return errors.New("invalid nic driver")
+	if s.Arch != "" && s.Arch != defaultArch {
+		return fmt.Errorf("unsupported architecture %q: this agent only runs x86_64 guests", s.Arch)
+	}
+	if s.NIC != "" && nicDevices[canonicalNIC(s.NIC)] == "" {
+		return fmt.Errorf("invalid nic driver %q: must be one of %s", s.NIC, strings.Join(supportedNICs, ", "))
 	}
 	if !machinePattern.MatchString(s.Machine) {
 		return errors.New("invalid machine type")
+	}
+	if s.CPUModel != "" && !cpuModelPattern.MatchString(s.CPUModel) {
+		return errors.New("invalid cpu model")
+	}
+	if !validAccel(s.Accel) {
+		return fmt.Errorf("invalid accelerator %q: must be one of %s", s.Accel, strings.Join(supportedAccels, ", "))
+	}
+	if s.DiskInterface != "" && !validDiskInterface(s.DiskInterface) {
+		return fmt.Errorf(
+			"invalid disk interface %q: must be one of %s",
+			s.DiskInterface,
+			strings.Join(supportedDiskInterfaces, ", "),
+		)
+	}
+	if len(s.ExtraOptions) > maxExtraOptionsLength || hasControlChars(s.ExtraOptions) {
+		return errors.New("invalid extra qemu options")
+	}
+	if len(s.Extra) > 0 {
+		if err := validateExtraTokens(s, s.Extra); err != nil {
+			return err
+		}
 	}
 	if s.Image != "" {
 		if err := validateImagePath(s.Image, imageRoots, ".qcow2"); err != nil {
@@ -185,6 +262,9 @@ func (s Spec) validateQEMU(imageRoots []string) error {
 }
 
 func (s Spec) validateVPCS() error {
+	if s.ExtraOptions != "" || len(s.Extra) > 0 {
+		return errors.New("qemu options are only supported for qemu nodes")
+	}
 	if s.Ethernet != 1 {
 		return errors.New("vpcs nodes require exactly one ethernet interface")
 	}
@@ -199,6 +279,9 @@ func (s Spec) validateVPCS() error {
 }
 
 func (s Spec) validateDynamips(imageRoots []string) error {
+	if s.ExtraOptions != "" || len(s.Extra) > 0 {
+		return errors.New("qemu options are only supported for qemu nodes")
+	}
 	if !platformPattern.MatchString(s.Platform) {
 		return errors.New("invalid dynamips platform")
 	}
@@ -227,6 +310,9 @@ func (s Spec) validateDynamips(imageRoots []string) error {
 }
 
 func (s Spec) validateIOL(imageRoots []string) error {
+	if s.ExtraOptions != "" || len(s.Extra) > 0 {
+		return errors.New("qemu options are only supported for qemu nodes")
+	}
 	if s.Console != "telnet" {
 		return errors.New("iol supports only a telnet console")
 	}
@@ -246,6 +332,46 @@ func (s Spec) validateIOL(imageRoots []string) error {
 	}
 
 	return nil
+}
+
+// canonicalNIC maps a legacy NIC value to its canonical short name. Unknown
+// values pass through so validation can reject them.
+func canonicalNIC(nic string) string {
+	if canonical, ok := nicAliases[nic]; ok {
+		return canonical
+	}
+
+	return nic
+}
+
+func validAccel(accel string) bool {
+	for _, supported := range supportedAccels {
+		if accel == supported {
+			return true
+		}
+	}
+
+	return accel == ""
+}
+
+func validDiskInterface(iface string) bool {
+	for _, supported := range supportedDiskInterfaces {
+		if iface == supported {
+			return true
+		}
+	}
+
+	return false
+}
+
+func hasControlChars(value string) bool {
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s Spec) TapName(index int) string {

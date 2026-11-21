@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -78,7 +79,7 @@ func TestReconcileKillsOrphansAndRemovesResources(t *testing.T) {
 		}
 	}
 
-	result, err := manager.Reconcile()
+	result, err := manager.Reconcile(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestReconcileLeavesLiveNodesAlone(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cfg.RunDir, "lab1", "node1"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	result, err := manager.Reconcile()
+	result, err := manager.Reconcile(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -137,6 +138,132 @@ func TestReconcileLeavesLiveNodesAlone(t *testing.T) {
 	}
 	if len(result.RemovedDirs) != 0 {
 		t.Fatalf("live node directory was removed: %+v", result)
+	}
+}
+
+// mkdirLab creates one lab run directory the way runDir() names it.
+func mkdirLab(t *testing.T, runRoot, labID string) string {
+	t.Helper()
+	dir := filepath.Join(runRoot, shortPathComponent(labID))
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("create lab directory: %v", err)
+	}
+
+	return dir
+}
+
+// writeNodeStateFile writes one node.json under a lab directory.
+func writeNodeStateFile(t *testing.T, labDir, nodeID, labID string) string {
+	t.Helper()
+	nodeDir := filepath.Join(labDir, shortPathComponent(nodeID))
+	if err := os.MkdirAll(nodeDir, 0o750); err != nil {
+		t.Fatalf("create node directory: %v", err)
+	}
+	data, err := json.Marshal(nodeState{ID: nodeID, LabID: labID, Engine: "qemu"})
+	if err != nil {
+		t.Fatalf("marshal node state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeDir, stateFileName), data, 0o640); err != nil {
+		t.Fatalf("write node state: %v", err)
+	}
+
+	return nodeDir
+}
+
+func TestReconcilePrunesStaleLabDirectories(t *testing.T) {
+	manager, deleted := newCleanupTestManager(t)
+	runRoot := manager.cfg.RunDir
+
+	// A lab id longer than 32 bytes exercises the hashed run-directory
+	// component, so the keep-set must use the same derivation as runDir().
+	keepLab := strings.Repeat("a", 40)
+	keepDir := mkdirLab(t, runRoot, keepLab)
+
+	// This lab is not in the keep-set but still holds a live node marker.
+	liveLab := "lab-live"
+	liveDir := mkdirLab(t, runRoot, liveLab)
+	liveNodeDir := writeNodeStateFile(t, liveDir, "node-live", liveLab)
+	manager.nodes["node-live"] = &Node{
+		Spec:  Spec{ID: "node-live", LabID: liveLab},
+		State: "running",
+	}
+
+	staleDir := mkdirLab(t, runRoot, "lab-stale")
+
+	result, err := manager.Reconcile([]string{keepLab})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
+		t.Fatalf("stale lab directory not removed: %v", err)
+	}
+	kept := map[string]string{
+		"keep lab":  keepDir,
+		"live lab":  liveDir,
+		"live node": liveNodeDir,
+	}
+	for name, dir := range kept {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("%s directory was removed: %v", name, err)
+		}
+	}
+	if len(result.RemovedDirs) != 1 || result.RemovedDirs[0] != staleDir {
+		t.Fatalf("removed dirs = %v, want [%s]", result.RemovedDirs, staleDir)
+	}
+	if len(*deleted) != 0 {
+		t.Fatalf("unexpected link deletions: %v", *deleted)
+	}
+}
+
+// A tracked node whose state file still names an older lab must keep the lab
+// directory it lives in, even when that directory is not in the keep-set.
+func TestReconcileKeepsLabDirectoryWithLiveNodeState(t *testing.T) {
+	manager, _ := newCleanupTestManager(t)
+	runRoot := manager.cfg.RunDir
+
+	dir := mkdirLab(t, runRoot, "lab-renamed")
+	writeNodeStateFile(t, dir, "node-live", "lab-old")
+	manager.nodes["node-live"] = &Node{
+		Spec:  Spec{ID: "node-live"},
+		State: "running",
+	}
+
+	result, err := manager.Reconcile([]string{})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("lab directory holding live node state was removed: %v", err)
+	}
+	if len(result.RemovedDirs) != 0 {
+		t.Fatalf("removed dirs = %v, want none", result.RemovedDirs)
+	}
+}
+
+func TestReconcileLeavesLabDirectoriesWithoutKeepSet(t *testing.T) {
+	manager, _ := newCleanupTestManager(t)
+	runRoot := manager.cfg.RunDir
+
+	keepDir := mkdirLab(t, runRoot, "lab-keep")
+	unknownDir := mkdirLab(t, runRoot, "lab-unknown")
+	liveDir := mkdirLab(t, runRoot, "lab-live")
+	writeNodeStateFile(t, liveDir, "node-live", "lab-live")
+	manager.nodes["node-live"] = &Node{
+		Spec:  Spec{ID: "node-live", LabID: "lab-live"},
+		State: "running",
+	}
+
+	result, err := manager.Reconcile(nil)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	for _, dir := range []string{keepDir, unknownDir, liveDir} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("lab directory %s must survive a nil keep-set: %v", dir, err)
+		}
+	}
+	if len(result.RemovedDirs) != 0 {
+		t.Fatalf("nil keep-set removed directories: %v", result.RemovedDirs)
 	}
 }
 

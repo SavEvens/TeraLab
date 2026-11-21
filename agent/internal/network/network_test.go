@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -268,5 +269,93 @@ func TestBridgeNamesStayShort(t *testing.T) {
 		if len(name) > 15 {
 			t.Fatalf("bridge name too long: %s", name)
 		}
+	}
+}
+
+func TestEnsureBridgeAppliesPerPortGroupForwardMask(t *testing.T) {
+	manager, _ := testManager(t)
+	bridge := BridgeName("lab-1", "0")
+	taps := []string{TapName("lab-1", "node-1", 0), TapName("lab-1", "node-2", 0)}
+	if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge, "bridge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tap := range taps {
+		if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge, "brif", tap), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := manager.EnsureBridge(bridge); err != nil {
+		t.Fatalf("ensure bridge: %v", err)
+	}
+	for _, tap := range taps {
+		mask, err := os.ReadFile(filepath.Join(manager.SysClassNet, bridge, "brif", tap, "group_fwd_mask"))
+		if err != nil || string(mask) != "0x5" {
+			t.Fatalf("per-port group_fwd_mask for %s: %q %v", tap, mask, err)
+		}
+	}
+}
+
+func TestCreateTapAppliesPerPortGroupForwardMask(t *testing.T) {
+	manager, _ := testManager(t)
+	tap := TapName("lab-1", "node-1", 0)
+	bridge := BridgeName("lab-1", "0")
+	if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge, "brif", tap), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.CreateTap(tap, bridge); err != nil {
+		t.Fatalf("create tap: %v", err)
+	}
+	mask, err := os.ReadFile(filepath.Join(manager.SysClassNet, bridge, "brif", tap, "group_fwd_mask"))
+	if err != nil || string(mask) != "0x5" {
+		t.Fatalf("per-port group_fwd_mask: %q %v", mask, err)
+	}
+}
+
+func TestPerPortGroupForwardMaskDisabledByZero(t *testing.T) {
+	manager, _ := testManager(t)
+	manager.BridgeGroupFwdMask = 0
+	bridge := BridgeName("lab-1", "0")
+	tap := TapName("lab-1", "node-1", 0)
+	if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge, "bridge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge, "brif", tap), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.EnsureBridge(bridge); err != nil {
+		t.Fatalf("ensure bridge: %v", err)
+	}
+	if err := manager.CreateTap(tap, bridge); err != nil {
+		t.Fatalf("create tap: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.SysClassNet, bridge, "brif", tap, "group_fwd_mask")); !os.IsNotExist(err) {
+		t.Fatalf("mask 0 must disable the per-port write, got %v", err)
+	}
+}
+
+func TestEnsureBridgeToleratesPerPortMaskErrors(t *testing.T) {
+	manager, _ := testManager(t)
+	bridge := BridgeName("lab-1", "0")
+	tap := TapName("lab-1", "node-1", 0)
+	if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge, "bridge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(manager.SysClassNet, bridge, "brif", tap), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	warnings := 0
+	manager.Logf = func(string, ...any) { warnings++ }
+	manager.WriteFile = func(string, []byte, os.FileMode) error { return syscall.EINVAL }
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := manager.EnsureBridge(bridge); err != nil {
+			t.Fatalf("per-port EINVAL must not fail the bridge: %v", err)
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("expected one warning per bridge, got %d", warnings)
 	}
 }

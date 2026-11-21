@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -52,6 +53,9 @@ type NodeInfo struct {
 	MemoryBytes   int64     `json:"memory_bytes,omitempty"`
 	CPUUsageUsec  int64     `json:"cpu_usage_usec,omitempty"`
 	UptimeSeconds int64     `json:"uptime_seconds,omitempty"`
+	// Ready reports that the engine console can be driven: a prompt was
+	// seen for IOL and VPCS, or a QEMU guest produced console output.
+	Ready bool `json:"ready"`
 }
 
 type Node struct {
@@ -71,11 +75,16 @@ type Node struct {
 	State       string
 	Started     time.Time
 	Done        chan struct{}
+	Ready       atomic.Bool
 
 	historyMu   sync.Mutex
 	history     []byte
 	subscribers map[chan []byte]struct{}
 	consoleDone chan struct{}
+
+	// writeMu serialises console writes so an agent command replay cannot
+	// interleave with a user typing on the same pty.
+	writeMu sync.Mutex
 }
 
 type Manager struct {
@@ -87,9 +96,17 @@ type Manager struct {
 }
 
 func NewManager(cfg config.Config, logger *slog.Logger) *Manager {
+	links := network.New(cfg.VMUser, cfg.NetworkBackend)
+	links.BridgeGroupFwdMask = cfg.BridgeGroupFwdMask
+	if logger != nil {
+		links.Logf = func(format string, args ...any) {
+			logger.Warn(fmt.Sprintf(format, args...))
+		}
+	}
+
 	return &Manager{
 		cfg:    cfg,
-		net:    network.New(cfg.VMUser, cfg.NetworkBackend),
+		net:    links,
 		logger: logger,
 		nodes:  map[string]*Node{},
 	}
@@ -97,6 +114,15 @@ func NewManager(cfg config.Config, logger *slog.Logger) *Manager {
 
 // Start validates a node spec and launches the matching engine.
 func (m *Manager) Start(spec Spec) (NodeInfo, error) {
+	// Parse the raw legacy qemu_options before validation so the allow-list
+	// rejects unsafe arguments before any tap or run directory is created.
+	if spec.ExtraOptions != "" {
+		merged, err := spec.withExtraOptions()
+		if err != nil {
+			return NodeInfo{}, err
+		}
+		spec = merged
+	}
 	spec.Normalize()
 	if err := spec.Validate(m.cfg.ImageRoots()); err != nil {
 		return NodeInfo{}, err
@@ -211,7 +237,16 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 		return NodeInfo{}, fmt.Errorf("open qemu log: %w", err)
 	}
 
-	args, err := BuildQEMUArgs(spec, taps, overlay, vnc, m.kvmAvailable())
+	kvm := m.kvmAvailable()
+	if !kvm {
+		if spec.Accel == "kvm" || spec.Accel == "kvm:tcg" {
+			m.logger.Warn("kvm is unavailable; starting with tcg", "id", spec.ID)
+		}
+		if spec.CPUModel == "host" {
+			m.logger.Warn("kvm is unavailable; using the max cpu model", "id", spec.ID)
+		}
+	}
+	args, err := BuildQEMUArgs(spec, taps, overlay, vnc, kvm)
 	if err != nil {
 		_ = logFile.Close()
 		_ = ptmx.Close()
@@ -219,6 +254,9 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 		m.cleanupTaps(taps)
 		return NodeInfo{}, err
 	}
+	// One audit line per start: operators can see every parameter that reached
+	// QEMU, including template extras.
+	m.logger.Info("qemu command line", "id", spec.ID, "command", commandLine(m.cfg.QEMUBinary, args))
 
 	command := exec.Command(m.cfg.QEMUBinary, args...)
 	if tty != nil {
@@ -317,6 +355,7 @@ func (m *Manager) Stop(id string) error {
 	m.cleanupTaps(node.Taps)
 	node.Taps = nil
 	node.State = "stopped"
+	node.Ready.Store(false)
 	m.mu.Unlock()
 	m.logger.Info("node stopped", "id", id)
 
@@ -498,6 +537,7 @@ func (m *Manager) wait(node *Node) {
 	m.mu.Lock()
 	if current, ok := m.nodes[node.Spec.ID]; ok && current == node {
 		node.State = "stopped"
+		node.Ready.Store(false)
 		if node.PTY != nil {
 			_ = node.PTY.Close()
 			node.PTY = nil
@@ -533,6 +573,7 @@ func (m *Manager) info(node *Node) NodeInfo {
 		Started:     node.Started,
 		Cgroup:      node.CgroupPath,
 		VNCPort:     node.VNCPort,
+		Ready:       node.State == "running" && node.Ready.Load(),
 	}
 	if node.Cmd != nil && node.Cmd.Process != nil {
 		info.PID = node.Cmd.Process.Pid
