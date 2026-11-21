@@ -95,7 +95,8 @@ final class App
                 LabLocks $locks,
                 ImageReferences $images,
                 SnapshotRepository $snapshots,
-            ): LabService => new LabService($config, $parser, $writer, $agent, $locks, $images, $snapshots)
+                TemplateRepository $templates,
+            ): LabService => new LabService($config, $parser, $writer, $agent, $locks, $images, $snapshots, $templates)
         );
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
         $container->set(RateLimiter::class, static fn (PDO $pdo): RateLimiter => new RateLimiter($pdo));

@@ -7,6 +7,7 @@ declare(strict_types=1);
 namespace TeraLab\Api\Labs;
 
 use PDO;
+use TeraLab\Api\Database\BusyRetry;
 use TeraLab\Api\Http\HttpException;
 
 final class LabLocks
@@ -57,17 +58,20 @@ final class LabLocks
         }
 
         $now = time();
-        $statement = $this->pdo->prepare(
-            'INSERT INTO lab_locks (lab_id, user_id, created_at, expires_at) '
-            . 'VALUES (:lab_id, :user_id, :created_at, :expires_at) '
-            . 'ON CONFLICT(lab_id) DO UPDATE SET user_id = :user_id, created_at = :created_at, expires_at = :expires_at'
-        );
-        $statement->execute([
-            ':lab_id' => $labID,
-            ':user_id' => $userID,
-            ':created_at' => $now,
-            ':expires_at' => $now + self::TTL_SECONDS,
-        ]);
+        // Upsert of the same values is idempotent: safe to retry a busy lock.
+        BusyRetry::retry(function () use ($labID, $userID, $now): void {
+            $statement = $this->pdo->prepare(
+                'INSERT INTO lab_locks (lab_id, user_id, created_at, expires_at) '
+                . 'VALUES (:lab_id, :user_id, :created_at, :expires_at) '
+                . 'ON CONFLICT(lab_id) DO UPDATE SET user_id = :user_id, created_at = :created_at, expires_at = :expires_at'
+            );
+            $statement->execute([
+                ':lab_id' => $labID,
+                ':user_id' => $userID,
+                ':created_at' => $now,
+                ':expires_at' => $now + self::TTL_SECONDS,
+            ]);
+        });
 
         return $this->current($labID) ?? [];
     }

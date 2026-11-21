@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Derived from UNetLab template html/templates/paloalto.php.
 # Converted to YAML by TeraLab contributors, 2026-11-17.
+# Modified by TeraLab contributors, 2026-11-21: structured QEMU parameter keys.
+# The original file remains BSD-3-Clause; these modifications are AGPL-3.0-or-later.
 schema: 1
 id: paloalto
 name: PaloAlto
@@ -14,4 +16,6 @@ defaults:
   console: vnc
 options:
   qemu_arch: x86_64
-  qemu_options: '-machine type=pc-1.0,accel=kvm -nographic -rtc base=utc'
+  qemu_nic: e1000
+  qemu_machine: pc-1.0
+  qemu_accel: kvm

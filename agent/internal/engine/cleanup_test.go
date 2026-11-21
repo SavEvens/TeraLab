@@ -97,7 +97,7 @@ func TestReconcileSparesRunningNodeLinks(t *testing.T) {
 		State: "running",
 	}
 
-	result, err := manager.Reconcile()
+	result, err := manager.Reconcile(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}

@@ -230,5 +230,12 @@ func (m *Manager) startVPCS(spec Spec, runDir string) (NodeInfo, error) {
 	}
 	go m.pumpPTY(node)
 
-	return m.register(node)
+	info, err := m.register(node)
+	if err != nil {
+		return info, err
+	}
+	// VPCS is ready once its prompt answers on the console.
+	m.startConsoleProbe(node, nil)
+
+	return info, nil
 }

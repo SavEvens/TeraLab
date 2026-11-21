@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/SavEvens/TeraLab/agent/internal/network"
 )
 
 const Version = "0.1.0"
@@ -33,12 +35,15 @@ type Config struct {
 	DynamipsBinary  string
 	IOLIourc        string
 	NetworkBackend  string
-	VMUser          string
-	VMUID           uint32
-	VMGID           uint32
-	VMGroups        []uint32
-	AllowRootVM     bool
-	DisableKVM      bool
+	// BridgeGroupFwdMask is written to each lab bridge port so STP and LACP
+	// frames cross the emulated segment. 0 disables the per-port write.
+	BridgeGroupFwdMask uint16
+	VMUser             string
+	VMUID              uint32
+	VMGID              uint32
+	VMGroups           []uint32
+	AllowRootVM        bool
+	DisableKVM         bool
 }
 
 func Load() (Config, error) {
@@ -66,6 +71,12 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	cfg.ImageExtraRoots = roots
+
+	mask, err := bridgeGroupFwdMask()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.BridgeGroupFwdMask = mask
 
 	secret := os.Getenv("TERALAB_AGENT_SECRET")
 	if secret == "" {
@@ -132,6 +143,25 @@ func imageExtraRoots() ([]string, error) {
 	}
 
 	return roots, nil
+}
+
+// bridgeGroupFwdMask parses TERALAB_BRIDGE_GROUP_FWD_MASK (decimal or 0x hex,
+// 0 disables). A malformed value is a configuration error, so an operator typo
+// cannot silently disable forwarding for STP and LACP.
+func bridgeGroupFwdMask() (uint16, error) {
+	raw := strings.TrimSpace(os.Getenv("TERALAB_BRIDGE_GROUP_FWD_MASK"))
+	if raw == "" {
+		return network.DefaultBridgeGroupFwdMask, nil
+	}
+	value, err := strconv.ParseUint(raw, 0, 16)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"invalid TERALAB_BRIDGE_GROUP_FWD_MASK %q: want a 16-bit value such as 0x5 or 0",
+			raw,
+		)
+	}
+
+	return uint16(value), nil
 }
 
 func setVMUser(cfg *Config) {

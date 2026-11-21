@@ -137,7 +137,7 @@ final class Config
             }
         }
 
-        return '1.5.5';
+        return '1.5.6';
     }
 
     /**

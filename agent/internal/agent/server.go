@@ -57,7 +57,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
-	if result, err := s.manager.Reconcile(); err != nil {
+	if result, err := s.manager.Reconcile(nil); err != nil {
 		s.logger.Warn("startup reconciliation incomplete", "error", err)
 	} else if len(result.KilledProcesses) > 0 || len(result.RemovedLinks) > 0 || len(result.RemovedDirs) > 0 {
 		s.logger.Info("startup reconciliation complete",

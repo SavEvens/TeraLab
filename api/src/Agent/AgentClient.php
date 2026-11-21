@@ -116,11 +116,25 @@ final class AgentClient
     }
 
     /**
+     * Reclaim stale engine resources.
+     *
+     * Without an argument the agent runs node-level cleanup only and leaves
+     * lab run directories alone. Pass the live lab ids to also remove the run
+     * directories of labs that no longer exist: the list is the keep-set, so
+     * an explicit empty list frees every lab run directory and must only be
+     * used when the live listing really is empty.
+     *
+     * @param list<string>|null $labIDs null = node-level cleanup only
      * @return array<string, mixed>
      */
-    public function reconcile(): array
+    public function reconcile(?array $labIDs = null): array
     {
-        return $this->request('POST', '/v1/cleanup.stale');
+        $payload = [];
+        if ($labIDs !== null) {
+            $payload['lab_ids'] = $labIDs;
+        }
+
+        return $this->request('POST', '/v1/cleanup.stale', $payload);
     }
 
     /**

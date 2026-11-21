@@ -70,6 +70,31 @@ Import accepts all three. Save always writes v2.
 - **`<extensions>`** is TeraLab-only, versioned JSON. EVE-NG ignores it. It is
   where future TeraLab features will live.
 
+## What the engines apply at boot
+
+- **IOL applies the embedded startup config on a node's first boot.** After
+  that, the configuration saved on the device (NVRAM) wins: after editing a
+  saved lab's config, **wipe** the node before starting it.
+- **IOL L2 VLANs** live in the VLAN database (`vlan.dat`), not in a startup
+  config; in the default VTP server mode IOS ignores `vlan` lines. TeraLab
+  inserts `vtp mode transparent` ahead of the VLAN definitions for the L2 image
+  so they are part of the startup config and are applied. The L2 image is
+  recognised by its file name (`linux_l2`, `_l2-`, `linux-l2`); a renamed L2
+  image does not get the insertion, so add `vtp mode transparent` yourself.
+- IOL may show the initial-configuration dialog and ignore the startup config
+  when the file has no loopback interface. Answer `no` / press RETURN; the
+  console is usable afterwards.
+- **IPv6-only IOL interfaces**: IOS does not restore `no shutdown` for an
+  interface that has an IPv6 address and no IPv4 address. The agent replays
+  `no shutdown` on those interfaces after boot. It never overrides an explicit
+  `shutdown`, and it skips the replay (with a log line) when the config sets an
+  `enable` password.
+- **`running` is not `ready`**: `running` means the engine process is up;
+  `ready` becomes true when the guest answers on its console (IOL/VPCS: a
+  prompt; QEMU: the first console output).
+- **QEMU guests** apply their own configuration; the embedded `<config>` is not
+  delivered to them. Configure c8000v and PAN-OS over the console.
+
 ## EVE-NG compatibility
 
 A TeraLab export can be placed in an EVE-NG lab folder and opened: EVE-NG

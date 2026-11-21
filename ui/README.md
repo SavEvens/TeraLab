@@ -3,7 +3,7 @@
 
 # TeraLab UI
 
-Vue 3 single-page application for TeraLab v1.5.5.
+Vue 3 single-page application for TeraLab v1.5.6.
 
 ## Design
 

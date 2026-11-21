@@ -90,3 +90,42 @@ func TestLoadRejectsInvalidUID(t *testing.T) {
 		t.Fatal("expected invalid UID to be rejected")
 	}
 }
+
+func TestLoadBridgeGroupFwdMask(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	cases := []struct {
+		raw  string
+		want uint16
+	}{
+		{raw: "", want: 0x5},
+		{raw: "0x5", want: 0x5},
+		{raw: "5", want: 0x5},
+		{raw: "0", want: 0},
+		{raw: "0x4", want: 0x4},
+		{raw: "0xfff8", want: 0xfff8},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.raw, func(t *testing.T) {
+			t.Setenv("TERALAB_BRIDGE_GROUP_FWD_MASK", testCase.raw)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if cfg.BridgeGroupFwdMask != testCase.want {
+				t.Fatalf("mask %q: want %#x, got %#x", testCase.raw, testCase.want, cfg.BridgeGroupFwdMask)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidBridgeGroupFwdMask(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	for _, raw := range []string{"bogus", "65536", "-1", "0x", "1,5"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("TERALAB_BRIDGE_GROUP_FWD_MASK", raw)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TERALAB_BRIDGE_GROUP_FWD_MASK") {
+				t.Fatalf("expected %q to be rejected, got %v", raw, err)
+			}
+		})
+	}
+}

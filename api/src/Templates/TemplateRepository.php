@@ -257,5 +257,6 @@ final class TemplateRepository
         if (!is_array($options)) {
             throw new HttpException(422, 'Template options must be a mapping.');
         }
+        QemuOptions::validate($options);
     }
 }

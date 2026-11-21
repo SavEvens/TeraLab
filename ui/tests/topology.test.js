@@ -2,7 +2,7 @@
 // Copyright (C) 2026 TeraLab contributors
 
 import { describe, expect, it } from 'vitest'
-import { buildEdges, defaultPortName, firstFreePort, nextNetworkId, nodeControls, nodeFromLab, portLabel, toPayload, usedNetworks } from '../src/topology'
+import { buildEdges, defaultPortName, firstFreePort, nextNetworkId, nodeControls, nodeFromLab, portLabel, pruneLinks, toPayload, usedNetworks } from '../src/topology'
 
 const labNode = (id, network) => ({
   id: String(id),
@@ -137,5 +137,86 @@ describe('topology helpers', () => {
   it('keeps every control when the node state is unknown', () => {
     expect(nodeControls('unknown')).toEqual({ start: true, stop: true, wipe: true })
     expect(nodeControls(undefined)).toEqual({ start: true, stop: true, wipe: true })
+  })
+})
+
+describe('pruneLinks', () => {
+  const net = (id) => ({ id: String(id), name: `Net-${id}`, type: 'bridge' })
+  const linkedNode = (id, ...networkIds) => ({
+    id: String(id),
+    type: 'lab',
+    position: { x: 0, y: 0 },
+    data: {
+      id: String(id),
+      name: `N${id}`,
+      kind: 'iol',
+      interfaces: networkIds.map((network, index) => ({
+        id: index,
+        name: `Ethernet0/${index}`,
+        type: 'ethernet',
+        network_id: network
+      }))
+    }
+  })
+
+  it('detaches the peer and removes the network when a linked node is deleted', () => {
+    // Deleting N2 leaves N1 e0/0 pointing at the cable N2 used to hold.
+    const result = pruneLinks([linkedNode(1, '1')], [net(1)])
+    expect(result.nodes[0].data.interfaces[0].network_id).toBe('')
+    expect(result.networks).toEqual([])
+  })
+
+  it('keeps a shared segment for its remaining members', () => {
+    const result = pruneLinks([linkedNode(1, '1'), linkedNode(2, '1')], [net(1)])
+    expect(result.nodes.map((node) => node.data.interfaces[0].network_id)).toEqual(['1', '1'])
+    expect(result.networks.map((network) => network.id)).toEqual(['1'])
+  })
+
+  it('detaches a dangling network id and drops unreferenced networks', () => {
+    const result = pruneLinks([linkedNode(1, '9')], [net(1)])
+    expect(result.nodes[0].data.interfaces[0].network_id).toBe('')
+    expect(result.networks).toEqual([])
+  })
+
+  it('counts two interfaces on the same node as two attachments', () => {
+    const result = pruneLinks([linkedNode(1, '1', '1')], [net(1)])
+    expect(result.nodes[0].data.interfaces.map((iface) => iface.network_id)).toEqual(['1', '1'])
+    expect(result.networks.map((network) => network.id)).toEqual(['1'])
+  })
+
+  it('treats 0 as a real attachment when a network 0 exists', () => {
+    const networks = [net(0)]
+    const result = pruneLinks([linkedNode(1, '0'), linkedNode(2, '0')], networks)
+    expect(result.nodes.map((node) => node.data.interfaces[0].network_id)).toEqual(['0', '0'])
+    expect(result.networks.map((network) => network.id)).toEqual(['0'])
+
+    // A single attachment to network 0 is still under-connected.
+    const single = pruneLinks([linkedNode(1, '0')], [net(0)])
+    expect(single.nodes[0].data.interfaces[0].network_id).toBe('')
+    expect(single.networks).toEqual([])
+  })
+
+  it('leaves unconnected values untouched and prunes under-connected networks', () => {
+    // No network 0 exists, so '0' means "not connected" and is left as-is.
+    const result = pruneLinks([linkedNode(1, '', '0', null, '2')], [net(2)])
+    expect(result.nodes[0].data.interfaces.map((iface) => iface.network_id)).toEqual(['', '0', null, ''])
+    expect(result.networks).toEqual([])
+  })
+
+  it('does not mutate its inputs and returns new arrays', () => {
+    const nodes = [linkedNode(1, '1'), linkedNode(2, '1'), linkedNode(3, '9')]
+    const networks = [net(1), net(2)]
+    const nodesBefore = JSON.parse(JSON.stringify(nodes))
+    const networksBefore = JSON.parse(JSON.stringify(networks))
+
+    const result = pruneLinks(nodes, networks)
+
+    expect(nodes).toEqual(nodesBefore)
+    expect(networks).toEqual(networksBefore)
+    expect(result.nodes).not.toBe(nodes)
+    expect(result.networks).not.toBe(networks)
+    expect(result.nodes[0]).not.toBe(nodes[0])
+    expect(result.nodes[2].data.interfaces[0].network_id).toBe('')
+    expect(result.networks.map((network) => network.id)).toEqual(['1'])
   })
 })

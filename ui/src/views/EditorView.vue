@@ -190,7 +190,7 @@ import PictureNode from '../components/PictureNode.vue'
 import { api } from '../api'
 import { notify, progress, dismiss } from '../stores/toasts'
 import { openConsole, consoleState } from '../stores/consoles'
-import { buildEdges, defaultPortName, nodeControls } from '../topology'
+import { buildEdges, defaultPortName, nodeControls, pruneLinks as pruneTopologyLinks } from '../topology'
 import { session } from '../stores/session'
 
 const props = defineProps({ id: { type: String, required: true } })
@@ -526,8 +526,7 @@ function clearNetwork(networkId) {
       if (iface.network_id === networkId) iface.network_id = ''
     }
   }
-  cleanupNetworks()
-  rebuildEdges()
+  pruneLinks()
   dirty.value = true
 }
 
@@ -548,14 +547,19 @@ function edgesChanged(changes) {
   }
 }
 
-function cleanupNetworks() {
-  const used = new Set()
-  for (const node of nodes.value) {
-    for (const iface of node.data.interfaces) {
-      if (iface.network_id) used.add(iface.network_id)
-    }
-  }
-  networks.value = networks.value.filter((network) => used.has(String(network.id)))
+// Apply the cable invariant to the whole topology: a network needs at least
+// two attached interfaces, so deleting a node detaches the peer and removes
+// the cable. The helper replaces node/interface copies, which keeps Vue's
+// reactivity intact and clears the peer's network_id before rebuildEdges()
+// runs, so the edge disappears immediately.
+function pruneLinks() {
+  const pruned = pruneTopologyLinks(nodes.value, networks.value)
+  nodes.value = pruned.nodes
+  networks.value = pruned.networks
+  // The Inspector holds a reference to the selected node object.
+  const selectedId = selected.value?.id
+  if (selectedId) selected.value = nodes.value.find((node) => node.id === selectedId) || null
+  rebuildEdges()
 }
 
 function selectNode(event) {
@@ -583,6 +587,8 @@ function applyTemplate(templateId) {
   if (defaults.nic) selected.value.data.nic = defaults.nic
   if (defaults.serial) selected.value.data.serial = defaults.serial
   if (Number.isInteger(defaults.ethernet)) updatePorts(defaults.ethernet)
+  // A template change can drop ports; never leave a half link behind.
+  pruneLinks()
   dirty.value = true
 }
 
@@ -590,21 +596,12 @@ function updatePorts(count) {
   if (!selected.value) return
   record()
   const interfaces = selected.value.data.interfaces
-  while (interfaces.length > count) {
-    const removed = interfaces.pop()
-    if (removed?.network_id) {
-      for (const node of nodes.value) {
-        for (const iface of node.data.interfaces) {
-          if (iface !== removed && iface.network_id === removed.network_id) iface.network_id = ''
-        }
-      }
-    }
-  }
+  while (interfaces.length > count) interfaces.pop()
   while (interfaces.length < count) {
     interfaces.push({ id: interfaces.length, name: defaultPortName(selected.value.data.kind, interfaces.length), type: 'ethernet', network_id: '', attributes: {} })
   }
-  cleanupNetworks()
-  rebuildEdges()
+  // Shrinking can drop the last or second-to-last end of a cable.
+  pruneLinks()
   dirty.value = true
 }
 
@@ -612,8 +609,7 @@ function deleteNode(node) {
   record()
   nodes.value = nodes.value.filter((item) => item.id !== node.id)
   if (selected.value?.id === node.id) selected.value = null
-  cleanupNetworks()
-  rebuildEdges()
+  pruneLinks()
   dirty.value = true
 }
 

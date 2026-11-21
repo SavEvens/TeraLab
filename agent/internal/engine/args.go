@@ -5,7 +5,9 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 )
 
 // VNCConfig describes the loopback VNC endpoint for a node.
@@ -14,7 +16,17 @@ type VNCConfig struct {
 	MonitorPath string
 }
 
+// BuildQEMUArgs renders the QEMU command line. Structured parameters come from
+// the spec and fall back only when empty; console, tap, kernel and boot policy
+// stay engine-owned.
 func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig, kvm bool) ([]string, error) {
+	if spec.ExtraOptions != "" {
+		merged, err := spec.withExtraOptions()
+		if err != nil {
+			return nil, err
+		}
+		spec = merged
+	}
 	if len(taps) != spec.Ethernet {
 		return nil, errors.New("tap count does not match ethernet count")
 	}
@@ -25,8 +37,25 @@ func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig, kvm
 		return nil, errors.New("vnc configuration supplied for a non-vnc console")
 	}
 
+	machine := spec.Machine
+	if machine == "" {
+		machine = defaultMachine
+	}
+	nic := canonicalNIC(spec.NIC)
+	if nic == "" {
+		nic = defaultNIC
+	}
+	nicDevice := nicDevices[nic]
+	if nicDevice == "" {
+		return nil, fmt.Errorf("unsupported nic driver %q", nic)
+	}
+	diskInterface := spec.DiskInterface
+	if diskInterface == "" {
+		diskInterface = defaultDiskInterface
+	}
+
 	args := []string{
-		"-machine", spec.Machine,
+		"-machine", machine,
 		"-smp", strconv.Itoa(spec.CPU),
 		"-m", strconv.Itoa(spec.RAM),
 		"-name", spec.Name,
@@ -56,23 +85,23 @@ func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig, kvm
 		args = append(args, "-serial", "pty")
 	}
 
-	if kvm {
-		args = append(args, "-accel", "kvm", "-cpu", "host")
-	} else {
-		args = append(args, "-accel", "tcg", "-cpu", "max")
+	accelerators := effectiveAccels(spec.Accel, kvm)
+	for _, accel := range accelerators {
+		args = append(args, "-accel", accel)
 	}
+	args = append(args, "-cpu", effectiveCPUModel(spec.CPUModel, accelerators))
 
 	for index, tap := range taps {
 		netdev := "net" + strconv.Itoa(index)
 		args = append(
 			args,
-			"-device", spec.NIC+",netdev="+netdev+",mac="+spec.MAC(index),
+			"-device", nicDevice+",netdev="+netdev+",mac="+spec.MAC(index),
 			"-netdev", "tap,id="+netdev+",ifname="+tap+",script=no,downscript=no",
 		)
 	}
 
 	if spec.Image != "" {
-		args = append(args, "-drive", "file="+overlay+",if=virtio,format=qcow2,cache=none")
+		args = append(args, "-drive", "file="+overlay+",if="+diskInterface+",format=qcow2,cache=none")
 	}
 	if spec.Kernel != "" {
 		args = append(args, "-kernel", spec.Kernel)
@@ -91,6 +120,68 @@ func BuildQEMUArgs(spec Spec, taps []string, overlay string, vnc *VNCConfig, kvm
 	} else if spec.Image != "" && spec.Kernel == "" {
 		args = append(args, "-boot", "order=c")
 	}
+	args = append(args, spec.Extra...)
 
 	return args, nil
+}
+
+// effectiveAccels resolves the accelerator list. An explicit request is
+// honoured, except that KVM is demoted to TCG when /dev/kvm is unavailable:
+// templates ship "accel=kvm" as a preference, and the engine has always
+// started such nodes with TCG rather than refusing to run them.
+func effectiveAccels(accel string, kvm bool) []string {
+	switch accel {
+	case "kvm":
+		if kvm {
+			return []string{"kvm"}
+		}
+
+		return []string{"tcg"}
+	case "kvm:tcg":
+		if kvm {
+			return []string{"kvm", "tcg"}
+		}
+
+		return []string{"tcg"}
+	case "tcg":
+		return []string{"tcg"}
+	}
+	if kvm {
+		return []string{"kvm"}
+	}
+
+	return []string{"tcg"}
+}
+
+// effectiveCPUModel resolves the CPU model, keeping it compatible with the
+// primary accelerator: "host" only exists under KVM, and TCG has no host CPU.
+func effectiveCPUModel(model string, accelerators []string) string {
+	if model == "" {
+		if accelerators[0] == "kvm" {
+			return "host"
+		}
+
+		return "max"
+	}
+	if model == "host" && accelerators[0] != "kvm" {
+		return "max"
+	}
+
+	return model
+}
+
+// commandLine renders an argv for a single audit log line, quoting tokens that
+// contain spaces or shell punctuation.
+func commandLine(binary string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, binary)
+	for _, arg := range args {
+		if arg == "" || strings.ContainsAny(arg, " \t\n\"'\\") {
+			parts = append(parts, strconv.Quote(arg))
+			continue
+		}
+		parts = append(parts, arg)
+	}
+
+	return strings.Join(parts, " ")
 }

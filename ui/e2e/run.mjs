@@ -254,7 +254,7 @@ try {
   const nameInput = page.locator('.inspector input').first()
   await nameInput.fill('Renamed R1')
   const nicSelect = page.locator('.inspector select').filter({ has: page.locator('option[value="e1000"]') })
-  await nicSelect.selectOption('virtio-net-pci')
+  await nicSelect.selectOption('virtio')
   const serialInput = page.locator('.inspector label').filter({ hasText: 'Serial ports' }).locator('input')
   await serialInput.fill('2')
   await page.waitForTimeout(1800)
@@ -354,6 +354,28 @@ try {
   const largeMs = Date.now() - largeStart
   await page.screenshot({ path: `${outDir}/editor-100.png`, fullPage: true })
 
+  // Deleting one end of a cable must detach the peer and remove the network:
+  // a network only exists while two or more interfaces are attached to it.
+  await fetch(`http://127.0.0.1:${mockPort}/__linked`, { method: 'POST' })
+  await page.goto(`http://127.0.0.1:${uiPort}/ui/labs/lab1`)
+  await page.waitForFunction(() => document.querySelectorAll('.lab-node').length === 2, null, { timeout: 15000 })
+  await page.waitForFunction(() => document.querySelectorAll('.vue-flow__edge').length === 1, null, { timeout: 10000 })
+  const linkedBefore = await page.locator('.ed-status span strong').allTextContents()
+  await page.locator('.lab-node').nth(1).click({ button: 'right' })
+  await page.waitForSelector('.context-menu')
+  await page.locator('.context-menu').getByText('Delete', { exact: true }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.lab-node').length === 1, null, { timeout: 10000 })
+  await page.waitForFunction(() => document.querySelectorAll('.vue-flow__edge').length === 0, null, { timeout: 10000 })
+  const linkedAfter = await page.locator('.ed-status span strong').allTextContents()
+  const pruneDeadline = Date.now() + 10000
+  let prunedState = (await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()).lab
+  while (prunedState.node_list.length !== 1 && Date.now() < pruneDeadline) {
+    await sleep(200)
+    prunedState = (await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()).lab
+  }
+  const linkedRemaining = prunedState.node_list.map((node) => ({ id: node.id, network_id: node.interfaces[0]?.network_id ?? null }))
+  const linkedNetworksAfterSave = prunedState.network_list.length
+
   await page.getByRole('link', { name: '← Labs' }).click()
   await page.waitForURL('**/ui/labs')
   await page.getByRole('link', { name: 'Images' }).click()
@@ -424,6 +446,10 @@ try {
     startToast: startToast.replace(/\s+/g, ' ').trim(),
     fiftyMs,
     largeMs,
+    linkedBefore,
+    linkedAfter,
+    linkedRemaining,
+    linkedNetworksAfterSave,
     imagesAfterDelete,
     pageErrors: errors
   }
@@ -477,7 +503,7 @@ try {
   if (!/stopped/i.test(labsStatusAfterStop) || stopButtonsAfter !== 0) throw new Error('stopping the lab did not clear the status/button')
   if (!/AGPL-3.0-or-later/.test(aboutText)) throw new Error('about page missing licence')
   if (terminalBounds.screenBottom > terminalBounds.paneBottom + 1) throw new Error(`terminal clipped: ${JSON.stringify(terminalBounds)}`)
-  if (nodeFields.nic !== 'virtio-net-pci' || nodeFields.serial !== 2) throw new Error('node nic/serial were not saved')
+  if (nodeFields.nic !== 'virtio' || nodeFields.serial !== 2) throw new Error('node nic/serial were not saved')
   if (!imageRow.includes('Renamed base')) throw new Error('image rename failed')
   if (!imageOptions.some((option) => option.includes('Renamed base'))) throw new Error('inspector image picker missing uploaded image')
   if (!/save conflict/i.test(conflictText)) throw new Error('conflict dialog missing')
@@ -487,6 +513,11 @@ try {
   if (dockPersists !== 1) throw new Error('console dock did not persist across routes')
   if (fiftyMs > 5000) throw new Error(`50-node editor open took ${fiftyMs}ms`)
   if (largeMs > 10000) throw new Error(`100-node editor open took ${largeMs}ms`)
+  if (linkedBefore[0] !== '2' || linkedBefore[1] !== '1') throw new Error(`linked lab did not load 2 nodes / 1 link: ${linkedBefore}`)
+  if (linkedAfter[0] !== '1' || linkedAfter[1] !== '0') throw new Error(`node deletion did not prune the cable: ${linkedAfter}`)
+  if (linkedRemaining.length !== 1) throw new Error(`node deletion left ${linkedRemaining.length} nodes: ${JSON.stringify(linkedRemaining)}`)
+  if (linkedRemaining[0].network_id !== '') throw new Error(`peer port still attached after delete: ${JSON.stringify(linkedRemaining)}`)
+  if (linkedNetworksAfterSave !== 0) throw new Error(`saved lab has an orphan network after delete: ${JSON.stringify(prunedState.network_list)}`)
   if (imagesAfterDelete !== 0) throw new Error('image delete failed')
   if (!/start/i.test(startToast)) throw new Error('start job toast missing')
   console.log('UI_E2E_OK')

@@ -18,4 +18,6 @@ options:
   description: Cisco Catalyst 8000V Edge router (IOS XE 17.x).
   qemu_arch: x86_64
   qemu_nic: vmxnet3
-  qemu_options: '-machine type=pc,accel=kvm -cpu host -serial mon:stdio -nographic -no-user-config -nodefaults -rtc base=utc'
+  qemu_machine: pc
+  qemu_cpu: host
+  qemu_accel: kvm

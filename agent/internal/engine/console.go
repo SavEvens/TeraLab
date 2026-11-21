@@ -56,7 +56,17 @@ func (s *PTYSession) Read(buffer []byte) (int, error) {
 	}
 }
 
+// Write sends one burst to the node console. The node write mutex keeps a
+// user's keystrokes and an agent command replay from interleaving.
 func (s *PTYSession) Write(buffer []byte) (int, error) {
+	if s.writeTo == nil {
+		return 0, io.ErrClosedPipe
+	}
+	if s.node != nil {
+		s.node.writeMu.Lock()
+		defer s.node.writeMu.Unlock()
+	}
+
 	return s.writeTo.Write(buffer)
 }
 
@@ -116,6 +126,15 @@ func (m *Manager) AttachPTY(id string) (*PTYSession, bool) {
 	return session, true
 }
 
+// markConsoleOutput marks a node ready on first console output. A QEMU guest
+// has no command prompt, so any output means the guest is booting; IOL and
+// VPCS readiness comes from the console prompt probe instead.
+func (n *Node) markConsoleOutput() {
+	if n.Spec.Engine == "qemu" || n.Spec.Engine == "" {
+		n.Ready.Store(true)
+	}
+}
+
 // pumpPTY drains a console pty so engines never block when nobody is viewing,
 // and fans the stream out to attached sessions.
 func (m *Manager) pumpPTY(node *Node) {
@@ -123,6 +142,7 @@ func (m *Manager) pumpPTY(node *Node) {
 	for {
 		count, err := node.PTY.Read(buffer)
 		if count > 0 {
+			node.markConsoleOutput()
 			chunk := append([]byte(nil), buffer[:count]...)
 			node.historyMu.Lock()
 			node.history = append(node.history, chunk...)

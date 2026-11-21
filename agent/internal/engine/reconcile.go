@@ -37,7 +37,16 @@ type ReconcileResult struct {
 
 // Reconcile removes state left by a previous agent process: orphan engine
 // processes, stale taps and bridges, cgroups, and run directories.
-func (m *Manager) Reconcile() (ReconcileResult, error) {
+//
+// keepLabIDs is the keep-set of labs that still exist: every directory directly
+// below the run root whose run-directory component (see shortPathComponent) is
+// not in the keep-set and does not hold a live node is removed, and every
+// removed path is reported in RemovedDirs.
+//
+// A nil keep-set disables lab-directory pruning; only the node-level cleanup
+// runs. Startup reconciliation passes nil because the agent does not know which
+// labs exist until the API tells it.
+func (m *Manager) Reconcile(keepLabIDs []string) (ReconcileResult, error) {
 	result := ReconcileResult{}
 	var firstErr error
 	note := func(err error) {
@@ -48,11 +57,25 @@ func (m *Manager) Reconcile() (ReconcileResult, error) {
 
 	keep := m.liveLinks("")
 	liveNodes := map[string]bool{}
+	// liveDirs holds the run-directory components that must survive the lab
+	// sweep: the lab of every tracked node, or the node's own directory when
+	// it has no lab.
+	liveDirs := map[string]bool{}
 	m.mu.Lock()
 	for _, node := range m.nodes {
 		liveNodes[node.Spec.ID] = true
+		if node.Spec.LabID != "" {
+			liveDirs[shortPathComponent(node.Spec.LabID)] = true
+		} else {
+			liveDirs[shortPathComponent(node.Spec.ID)] = true
+		}
 	}
 	m.mu.Unlock()
+	for _, labID := range keepLabIDs {
+		if labID != "" {
+			liveDirs[shortPathComponent(labID)] = true
+		}
+	}
 
 	runRoot, err := filepath.Abs(m.cfg.RunDir)
 	if err != nil {
@@ -129,6 +152,29 @@ func (m *Manager) Reconcile() (ReconcileResult, error) {
 		}
 	}
 
+	// A nil keep-set means the caller does not know the labs yet; leave lab
+	// directories alone in that case.
+	if keepLabIDs != nil {
+		entries, readErr := os.ReadDir(runRoot)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			note(readErr)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || liveDirs[entry.Name()] {
+				continue
+			}
+			path := filepath.Join(runRoot, entry.Name())
+			if dirHasLiveNode(path, liveNodes) {
+				continue
+			}
+			if removeErr := os.RemoveAll(path); removeErr != nil {
+				note(fmt.Errorf("remove stale lab directory %s: %w", path, removeErr))
+				continue
+			}
+			result.RemovedDirs = append(result.RemovedDirs, path)
+		}
+	}
+
 	stale, cleanupErr := m.net.CleanupStale(keep)
 	if cleanupErr != nil {
 		note(cleanupErr)
@@ -161,6 +207,35 @@ func (m *Manager) Reconcile() (ReconcileResult, error) {
 	}
 
 	return result, firstErr
+}
+
+// dirHasLiveNode reports whether a run directory still holds state for a node
+// the manager tracks. It is a safety net for state files whose lab id no longer
+// matches the lab directory they live in.
+func dirHasLiveNode(dir string, liveNodes map[string]bool) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || entry.Name() != stateFileName {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		state := nodeState{}
+		if json.Unmarshal(data, &state) != nil {
+			return nil
+		}
+		if state.ID != "" && liveNodes[state.ID] {
+			found = true
+
+			return fs.SkipAll
+		}
+
+		return nil
+	})
+
+	return found
 }
 
 func processMatches(pid int, expectedExe string) bool {

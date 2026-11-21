@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Backends supported for lab networks.
@@ -23,6 +24,11 @@ const (
 	BackendAuto  = "auto"
 )
 
+// DefaultBridgeGroupFwdMask forwards STP (bit 0) and LACP (bit 2) frames.
+// Per-port masks on Linux >= 4.15 only reject MAC pause frames, so this lets
+// the lab switches run STP and LACP without a patched kernel.
+const DefaultBridgeGroupFwdMask uint16 = 0x5
+
 // CommandRunner executes an external command and returns combined output.
 type CommandRunner func(name string, args ...string) ([]byte, error)
 
@@ -30,15 +36,29 @@ type Manager struct {
 	VMUser      string
 	SysClassNet string
 	Backend     string
-	Run         CommandRunner
+	// BridgeGroupFwdMask is written to every bridge port's group_fwd_mask;
+	// 0 disables the per-port write. The bridge-level mask is kept either way.
+	BridgeGroupFwdMask uint16
+	// Logf receives one warning per bridge when the per-port attribute is
+	// unavailable. Nil disables logging.
+	Logf func(format string, args ...any)
+	// WriteFile is os.WriteFile; tests replace it to inject kernel errors.
+	WriteFile func(path string, data []byte, perm os.FileMode) error
+	Run       CommandRunner
+
+	warnMu sync.Mutex
+	warned map[string]bool
 }
 
 func New(vmUser, backend string) *Manager {
 	manager := &Manager{
-		VMUser:      vmUser,
-		SysClassNet: "/sys/class/net",
-		Backend:     backend,
-		Run:         defaultRunner,
+		VMUser:             vmUser,
+		SysClassNet:        "/sys/class/net",
+		Backend:            backend,
+		BridgeGroupFwdMask: DefaultBridgeGroupFwdMask,
+		WriteFile:          os.WriteFile,
+		Run:                defaultRunner,
+		warned:             map[string]bool{},
 	}
 	if manager.Backend == "" || manager.Backend == BackendAuto {
 		if _, err := exec.LookPath("ovs-vsctl"); err == nil {
@@ -93,6 +113,9 @@ func (m *Manager) EnsureBridge(name string) error {
 	if err := m.enableGroupForwarding(name); err != nil {
 		return err
 	}
+	// Re-apply per-port forwarding to ports that already exist, so restarting
+	// a lab refreshes taps that survived a crash.
+	m.applyBridgePortForwarding(name)
 	if err := m.writeSysfs(name, "bridge/multicast_snooping", "0"); err != nil {
 		return err
 	}
@@ -121,7 +144,8 @@ func (m *Manager) ensureOVSBridge(name string) error {
 // enableGroupForwarding enables LLDP and other reserved multicast groups.
 //
 // Newer kernels reject bits 0-2 (STP, 802.3x, LACP); the highest accepted mask
-// keeps LLDP and every other group working. LACP needs the OVS backend.
+// keeps LLDP and every other group working. STP and LACP are forwarded per port
+// instead (see applyPortForwarding), where only MAC pause is reserved.
 func (m *Manager) enableGroupForwarding(name string) error {
 	var lastErr error
 	for _, value := range []string{"65535", "65528", "16384"} {
@@ -136,6 +160,63 @@ func (m *Manager) enableGroupForwarding(name string) error {
 	}
 
 	return lastErr
+}
+
+// applyBridgePortForwarding refreshes the per-port mask on every existing port
+// of a bridge. A missing bridge directory is normal on first creation.
+func (m *Manager) applyBridgePortForwarding(bridge string) {
+	if m.BridgeGroupFwdMask == 0 {
+		return
+	}
+	entries, err := os.ReadDir(filepath.Join(m.SysClassNet, bridge, "brif"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		m.warnOnce("bridge:"+bridge, "bridge %s: cannot list ports for group_fwd_mask: %v", bridge, err)
+		return
+	}
+	for _, entry := range entries {
+		m.applyPortForwarding(bridge, entry.Name())
+	}
+}
+
+// applyPortForwarding forwards STP and LACP frames arriving on one tap.
+// Kernels older than 4.15 and the OVS backend have no per-port attribute;
+// that degrades to a single warning so a lab always starts.
+func (m *Manager) applyPortForwarding(bridge, tap string) {
+	if m.BridgeGroupFwdMask == 0 {
+		return
+	}
+	write := m.WriteFile
+	if write == nil {
+		write = os.WriteFile
+	}
+	path := filepath.Join(m.SysClassNet, bridge, "brif", tap, "group_fwd_mask")
+	value := fmt.Sprintf("0x%x", m.BridgeGroupFwdMask)
+	if err := write(path, []byte(value), 0o644); err != nil {
+		m.warnOnce("port:"+bridge, "bridge %s: per-port group_fwd_mask unavailable: %v", bridge, err)
+	}
+}
+
+// warnOnce logs the first failure for a key; repeated taps on the same bridge
+// must not flood the log.
+func (m *Manager) warnOnce(key, format string, args ...any) {
+	if m.Logf == nil {
+		return
+	}
+	m.warnMu.Lock()
+	if m.warned == nil {
+		m.warned = map[string]bool{}
+	}
+	if m.warned[key] {
+		m.warnMu.Unlock()
+		return
+	}
+	m.warned[key] = true
+	m.warnMu.Unlock()
+
+	m.Logf(format, args...)
 }
 
 // EnsureLab creates every bridge for a lab and returns bridge names by network id.
@@ -177,9 +258,12 @@ func (m *Manager) CreateTap(tap, bridge string) error {
 				m.DeleteLink(tap)
 				return fmt.Errorf("attach tap %s to %s: %s: %w", tap, bridge, strings.TrimSpace(string(output)), err)
 			}
-		} else if output, err := m.Run("ip", "link", "set", "dev", tap, "master", bridge); err != nil {
-			m.DeleteLink(tap)
-			return fmt.Errorf("attach tap %s to %s: %s: %w", tap, bridge, strings.TrimSpace(string(output)), err)
+		} else {
+			if output, err := m.Run("ip", "link", "set", "dev", tap, "master", bridge); err != nil {
+				m.DeleteLink(tap)
+				return fmt.Errorf("attach tap %s to %s: %s: %w", tap, bridge, strings.TrimSpace(string(output)), err)
+			}
+			m.applyPortForwarding(bridge, tap)
 		}
 	}
 	if output, err := m.Run("ip", "link", "set", "dev", tap, "up"); err != nil {

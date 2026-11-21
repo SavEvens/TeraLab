@@ -7,6 +7,7 @@ declare(strict_types=1);
 namespace TeraLab\Api\Snapshots;
 
 use PDO;
+use TeraLab\Api\Database\BusyRetry;
 
 final class SnapshotRepository
 {
@@ -21,11 +22,7 @@ final class SnapshotRepository
     {
         $id = bin2hex(random_bytes(16));
         $now = time();
-        $statement = $this->pdo->prepare(
-            'INSERT INTO lab_snapshots (id, lab_id, name, revision, xml, created_by, created_at) '
-            . 'VALUES (:id, :lab_id, :name, :revision, :xml, :created_by, :created_at)'
-        );
-        $statement->execute([
+        $row = [
             ':id' => $id,
             ':lab_id' => $labID,
             ':name' => $name,
@@ -33,7 +30,15 @@ final class SnapshotRepository
             ':xml' => $xml,
             ':created_by' => $userId,
             ':created_at' => $now,
-        ]);
+        ];
+        // The row carries a fresh random id: a retried insert cannot duplicate.
+        BusyRetry::retry(function () use ($row): void {
+            $statement = $this->pdo->prepare(
+                'INSERT INTO lab_snapshots (id, lab_id, name, revision, xml, created_by, created_at) '
+                . 'VALUES (:id, :lab_id, :name, :revision, :xml, :created_by, :created_at)'
+            );
+            $statement->execute($row);
+        });
 
         return [
             'id' => $id,
