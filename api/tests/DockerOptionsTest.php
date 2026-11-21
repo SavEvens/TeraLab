@@ -36,7 +36,7 @@ final class DockerOptionsTest extends TestCase
         $docker = [
             'image' => 'frrouting/frr:10.0.1',
             'console_command' => '/usr/bin/vtysh',
-            'cap_add' => ['NET_ADMIN'],
+            'cap_add' => ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'],
             'pull' => true,
         ];
 
@@ -46,7 +46,7 @@ final class DockerOptionsTest extends TestCase
         self::assertSame('frrouting/frr:10.0.1', DockerOptions::image($template['options']));
         self::assertSame([
             'console_command' => '/usr/bin/vtysh',
-            'cap_add' => ['NET_ADMIN'],
+            'cap_add' => ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'],
             'pull' => true,
         ], DockerOptions::spec($template['options']));
     }
@@ -117,8 +117,8 @@ final class DockerOptionsTest extends TestCase
      */
     public static function invalidDockerBlocks(): iterable
     {
-        yield 'bad capability' => [['image' => 'frrouting/frr:10.0.1', 'cap_add' => ['SYS_ADMIN']]];
-        yield 'mixed capabilities' => [['image' => 'frrouting/frr:10.0.1', 'cap_add' => ['NET_ADMIN', 'SYS_ADMIN']]];
+        yield 'bad capability' => [['image' => 'frrouting/frr:10.0.1', 'cap_add' => ['SYS_MODULE']]];
+        yield 'mixed capabilities' => [['image' => 'frrouting/frr:10.0.1', 'cap_add' => ['NET_ADMIN', 'SYS_PTRACE']]];
         yield 'capabilities not a list' => [['image' => 'frrouting/frr:10.0.1', 'cap_add' => ['NET_ADMIN' => true]]];
         yield 'non-string capability' => [['image' => 'frrouting/frr:10.0.1', 'cap_add' => [7]]];
         yield 'too many capabilities' => [[
@@ -179,16 +179,35 @@ final class DockerOptionsTest extends TestCase
         );
     }
 
+    public function testSysAdminIsAcceptedWhileOtherPrivilegedCapabilitiesAreNot(): void
+    {
+        $spec = DockerOptions::spec([
+            'docker' => ['image' => 'frrouting/frr:10.0.1', 'cap_add' => ['SYS_ADMIN']],
+        ]);
+        self::assertSame(['SYS_ADMIN'], $spec['cap_add']);
+
+        foreach (['SYS_MODULE', 'SYS_PTRACE', 'DAC_READ_SEARCH'] as $capability) {
+            try {
+                DockerOptions::spec([
+                    'docker' => ['image' => 'frrouting/frr:10.0.1', 'cap_add' => [$capability]],
+                ]);
+                self::fail($capability . ' must stay rejected');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status, $capability);
+            }
+        }
+    }
+
     public function testCapAddIsDedupedAndPullDefaultsToTrue(): void
     {
         $spec = DockerOptions::spec([
             'docker' => [
                 'image' => 'frrouting/frr:10.0.1',
-                'cap_add' => ['NET_ADMIN', 'NET_ADMIN', 'NET_RAW'],
+                'cap_add' => ['NET_ADMIN', 'NET_ADMIN', 'NET_RAW', 'SYS_ADMIN', 'SYS_ADMIN'],
             ],
         ]);
 
-        self::assertSame(['NET_ADMIN', 'NET_RAW'], $spec['cap_add']);
+        self::assertSame(['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'], $spec['cap_add']);
         self::assertTrue($spec['pull']);
     }
 

@@ -49,13 +49,17 @@ var (
 	dockerConsolePattern = regexp.MustCompile(`^/[A-Za-z0-9_./+-]{1,255}$`)
 )
 
-// Docker is a bounded engine: escalation is only possible through the two
-// capabilities needed by routing and packet-crafting daemons.
+// Docker is a bounded engine. Containers start from Docker's default
+// capability baseline; templates may opt into the routing and packet
+// capabilities below. SYS_ADMIN is required by FRR zebra and stays opt-in.
 const maxDockerCapAdd = 8
+
+var dockerTemplateCapabilities = []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"}
 
 var dockerCapabilities = map[string]bool{
 	"NET_ADMIN": true,
 	"NET_RAW":   true,
+	"SYS_ADMIN": true,
 }
 
 // QEMU fallbacks, applied only when the node spec leaves a field empty. The
@@ -433,8 +437,9 @@ func validateDockerOptions(options *DockerOptions) error {
 	for _, capability := range options.CapAdd {
 		if !dockerCapabilities[capability] {
 			return fmt.Errorf(
-				"unsupported docker capability %q: must be one of NET_ADMIN, NET_RAW",
+				"unsupported docker capability %q: must be one of %s",
 				capability,
+				strings.Join(dockerTemplateCapabilities, ", "),
 			)
 		}
 		if seen[capability] {
@@ -443,6 +448,8 @@ func validateDockerOptions(options *DockerOptions) error {
 		seen[capability] = true
 		count++
 	}
+	// The limit applies to template-provided capabilities only; the fixed
+	// Docker baseline is not counted here.
 	if count > maxDockerCapAdd {
 		return fmt.Errorf("docker cap_add may not contain more than %d capabilities", maxDockerCapAdd)
 	}

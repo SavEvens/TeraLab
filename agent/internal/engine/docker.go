@@ -98,10 +98,32 @@ func dockerBinaryAvailable(binary string) bool {
 	return err == nil
 }
 
+// dockerBaselineCaps is Docker's default capability set. Containers are
+// created with --cap-drop=ALL and this fixed baseline is added back, so images
+// behave as they do under a normal container while the effective set stays
+// explicit. The baseline is never template-controlled.
+var dockerBaselineCaps = []string{
+	"CHOWN",
+	"DAC_OVERRIDE",
+	"FSETID",
+	"FOWNER",
+	"MKNOD",
+	"NET_RAW",
+	"SETGID",
+	"SETUID",
+	"SETFCAP",
+	"SETPCAP",
+	"NET_BIND_SERVICE",
+	"SYS_CHROOT",
+	"KILL",
+	"AUDIT_WRITE",
+}
+
 // dockerCreateArgs renders the hardened `docker create` argv. There is no
 // mount, device, host network, privileged flag, entrypoint override or
-// arbitrary extra argument: escalation is limited to the validated cap_add
-// allowlist, and the image's own default command is kept.
+// arbitrary extra argument: capabilities are the fixed Docker baseline plus
+// the validated template cap_add allowlist, and the image's own default
+// command is kept.
 func dockerCreateArgs(spec Spec) ([]string, error) {
 	if err := validateDockerImage(spec.Image); err != nil {
 		return nil, err
@@ -126,6 +148,11 @@ func dockerCreateArgs(spec Spec) ([]string, error) {
 		args = append(args, "--label", dockerLabLabel+"="+spec.LabID)
 	}
 	args = append(args, "--network=none", "--cap-drop=ALL")
+	// Restore Docker's default set explicitly after the drop. Template caps
+	// are additions on top of this baseline.
+	for _, capability := range dockerBaselineCaps {
+		args = append(args, "--cap-add", capability)
+	}
 	for _, capability := range dockerCapAdd(spec.Docker) {
 		args = append(args, "--cap-add", capability)
 	}
@@ -143,17 +170,21 @@ func dockerCreateArgs(spec Spec) ([]string, error) {
 	return args, nil
 }
 
-// dockerCapAdd returns the validated capabilities in a deduplicated order.
-// Validation runs before start; the allowlist is repeated here so a future
-// caller cannot bypass it accidentally.
+// dockerCapAdd returns template-requested capabilities that are not already
+// part of the baseline, deduplicated. Validation runs before start; the
+// allowlist is repeated here so a future caller cannot bypass it.
 func dockerCapAdd(options *DockerOptions) []string {
 	if options == nil {
 		return nil
 	}
+	baseline := make(map[string]bool, len(dockerBaselineCaps))
+	for _, capability := range dockerBaselineCaps {
+		baseline[capability] = true
+	}
 	result := make([]string, 0, len(options.CapAdd))
 	seen := map[string]bool{}
 	for _, capability := range options.CapAdd {
-		if !dockerCapabilities[capability] || seen[capability] {
+		if !dockerCapabilities[capability] || baseline[capability] || seen[capability] {
 			continue
 		}
 		seen[capability] = true

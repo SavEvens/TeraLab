@@ -39,8 +39,12 @@ final class DockerOptions
     /** Console command: an absolute path, no shell metacharacters. */
     public const CONSOLE_COMMAND_PATTERN = '~^/[A-Za-z0-9_./+-]{1,255}\z~';
 
-    /** Capabilities a template may add. Everything else stays dropped. */
-    public const CAP_ADD = ['NET_ADMIN', 'NET_RAW'];
+    /**
+     * Capabilities a template may add. Everything else stays dropped.
+     * `SYS_ADMIN` is required by some routing daemons (FRR zebra) and remains
+     * opt-in per template; there is no blanket escalation.
+     */
+    public const CAP_ADD = ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'];
 
     public const MAX_CAP_ADD = 8;
 

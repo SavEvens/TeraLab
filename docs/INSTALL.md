@@ -132,7 +132,7 @@ options:
   docker:
     image: frrouting/frr:10.0.1          # node image may override
     console_command: /usr/bin/vtysh
-    cap_add: [NET_ADMIN]
+    cap_add: [NET_ADMIN, SYS_ADMIN]
     pull: true
 ```
 
@@ -142,19 +142,26 @@ options:
 |---|---|---|
 | `image` | string, required | Container reference such as `frrouting/frr:10.0.1`; digest references (`@sha256:…`) are accepted. A node's `image` attribute overrides it. It is not an image-store file. |
 | `console_command` | absolute path, optional | Command for the console tab; default `/bin/sh`. |
-| `cap_add` | list, optional | Only `NET_ADMIN` and `NET_RAW`, at most 8 entries. |
+| `cap_add` | list, optional | Only `NET_ADMIN`, `NET_RAW` or `SYS_ADMIN`, at most 8 entries. `SYS_ADMIN` is opt-in and weakens isolation inside the container. |
 | `pull` | bool, optional | Default `true`. When `false`, a missing local image fails with a message telling the operator to `docker pull` it. |
 
-Containers are created with `--network=none`, `--cap-drop=ALL`,
-`--security-opt=no-new-privileges`, Docker's default seccomp profile,
-`--pids-limit=1024`, and `--memory`/`--cpus` from the node. They are never
-privileged, have no host mounts and use no Docker-managed network. Each
+Containers are created with `--network=none`, `--cap-drop=ALL` followed by a
+fixed baseline of Docker's default capabilities, plus only the extras a
+template lists in `cap_add`; `SYS_ADMIN` is not in the baseline and is granted
+only when a template asks for it (FRR's zebra requires it). They also run with
+`--security-opt=no-new-privileges`, Docker's default seccomp and AppArmor
+profiles, `--pids-limit=1024`, and `--memory`/`--cpus` from the node. They are
+never privileged, have no host mounts and use no Docker-managed network. Each
 connected interface is a veth pair created by the agent and attached to the
 node's lab bridge with a deterministic MAC; only lab bridges provide
 connectivity. The container is created with an interactive TTY (`-i -t`), so an
 image whose default command is a shell stays running; an image whose default
 command exits immediately fails the start with its exit code and last log
 lines.
+
+An image that expects a capability outside this baseline must have it added to
+the template's `cap_add` (the allowlist is bounded); `SYS_ADMIN` weakens
+isolation inside the container even though the container remains namespaced.
 
 A missing image is pulled during start, bounded to 45 s (the API call times
 out at 60 s). The agent runs `docker` as root, but its service has no access to

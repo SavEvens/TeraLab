@@ -503,9 +503,16 @@ func TestDockerSpecRejectsNonContainerFields(t *testing.T) {
 		{name: "serial port", mutate: func(spec *Spec) { spec.Serial = 1 }, want: "serial"},
 		{name: "qemu extras", mutate: func(spec *Spec) { spec.Extra = []string{"-smp 4"} }, want: "qemu options"},
 		{
-			name: "unsupported capability",
+			name: "unsupported capability SYS_MODULE",
 			mutate: func(spec *Spec) {
-				spec.Docker = &DockerOptions{CapAdd: []string{"SYS_ADMIN"}}
+				spec.Docker = &DockerOptions{CapAdd: []string{"SYS_MODULE"}}
+			},
+			want: "unsupported docker capability",
+		},
+		{
+			name: "unsupported capability SYS_PTRACE",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{CapAdd: []string{"SYS_PTRACE"}}
 			},
 			want: "unsupported docker capability",
 		},
@@ -539,14 +546,27 @@ func TestDockerSpecRejectsNonContainerFields(t *testing.T) {
 	}
 }
 
+func TestDockerSpecAcceptsTemplateCapabilities(t *testing.T) {
+	for _, capability := range []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"} {
+		t.Run(capability, func(t *testing.T) {
+			spec := dockerValidationSpec("alpine:3.20")
+			spec.Docker = &DockerOptions{CapAdd: []string{capability}}
+			spec.Normalize()
+			if err := spec.Validate(nil); err != nil {
+				t.Fatalf("expected %s to validate: %v", capability, err)
+			}
+		})
+	}
+}
+
 func TestDockerSpecDedupesCapabilities(t *testing.T) {
 	spec := dockerValidationSpec("alpine:3.20")
-	spec.Docker = &DockerOptions{CapAdd: []string{"NET_RAW", "NET_ADMIN", "NET_RAW"}}
+	spec.Docker = &DockerOptions{CapAdd: []string{"NET_RAW", "NET_ADMIN", "SYS_ADMIN", "NET_RAW"}}
 	spec.Normalize()
 	if err := spec.Validate(nil); err != nil {
 		t.Fatalf("validation failed: %v", err)
 	}
-	if len(spec.Docker.CapAdd) != 2 {
+	if len(spec.Docker.CapAdd) != 3 {
 		t.Fatalf("capabilities were not deduplicated: %v", spec.Docker.CapAdd)
 	}
 }

@@ -128,6 +128,7 @@ func dockerTestSpec(t *testing.T) Spec {
 
 func TestDockerCreateArgsHardenedDefaults(t *testing.T) {
 	spec := dockerTestSpec(t)
+	spec.Docker = nil // no template-provided capabilities
 	args, err := dockerCreateArgs(spec)
 	if err != nil {
 		t.Fatalf("create args: %v", err)
@@ -139,7 +140,6 @@ func TestDockerCreateArgsHardenedDefaults(t *testing.T) {
 		"--label teralab.lab=lab-1",
 		"--network=none",
 		"--cap-drop=ALL",
-		"--cap-add NET_ADMIN",
 		"--security-opt=no-new-privileges",
 		"--pids-limit=1024",
 		"--memory=512m",
@@ -167,21 +167,36 @@ func TestDockerCreateArgsHardenedDefaults(t *testing.T) {
 	if args[len(args)-1] != spec.Image {
 		t.Fatalf("image must be the last argument, got %v", args)
 	}
-	if strings.Count(joined, "--cap-add") != 1 {
-		t.Fatalf("expected one cap-add, got %s", joined)
+	for _, capability := range dockerBaselineCaps {
+		if !strings.Contains(joined, "--cap-add "+capability) {
+			t.Fatalf("expected baseline capability %s in %s", capability, joined)
+		}
+	}
+	for _, capability := range []string{"NET_ADMIN", "SYS_ADMIN"} {
+		if strings.Contains(joined, "--cap-add "+capability) {
+			t.Fatalf("template capability %s must not be granted by default: %s", capability, joined)
+		}
+	}
+	if got := strings.Count(joined, "--cap-add"); got != len(dockerBaselineCaps) {
+		t.Fatalf("expected exactly the %d baseline cap-add flags, got %d in %s", len(dockerBaselineCaps), got, joined)
 	}
 }
 
 func TestDockerCreateArgsWithoutOptions(t *testing.T) {
 	spec := dockerTestSpec(t)
-	spec.Docker = nil
+	spec.Docker = &DockerOptions{}
 	args, err := dockerCreateArgs(spec)
 	if err != nil {
 		t.Fatalf("create args: %v", err)
 	}
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--cap-add") {
-		t.Fatalf("no capabilities expected by default: %s", joined)
+	if got := strings.Count(joined, "--cap-add"); got != len(dockerBaselineCaps) {
+		t.Fatalf("expected the %d baseline capabilities, got %d in %s", len(dockerBaselineCaps), got, joined)
+	}
+	for _, capability := range []string{"NET_ADMIN", "SYS_ADMIN"} {
+		if strings.Contains(joined, "--cap-add "+capability) {
+			t.Fatalf("template capability %s must not be granted without cap_add: %s", capability, joined)
+		}
 	}
 	if !strings.Contains(joined, "--cap-drop=ALL") {
 		t.Fatalf("cap-drop must always be present: %s", joined)
@@ -199,6 +214,34 @@ func TestDockerCreateArgsDedupesCaps(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if strings.Count(joined, "--cap-add NET_ADMIN") != 1 || strings.Count(joined, "--cap-add NET_RAW") != 1 {
 		t.Fatalf("capabilities not deduplicated: %s", joined)
+	}
+	if got := strings.Count(joined, "--cap-add"); got != len(dockerBaselineCaps)+1 {
+		t.Fatalf("expected baseline plus NET_ADMIN only, got %d cap-add flags in %s", got, joined)
+	}
+}
+
+func TestDockerCreateArgsTemplateCapsAndBaseline(t *testing.T) {
+	spec := dockerTestSpec(t)
+	spec.Docker = &DockerOptions{CapAdd: []string{"NET_ADMIN", "SYS_ADMIN", "NET_RAW"}}
+	spec.Normalize()
+	args, err := dockerCreateArgs(spec)
+	if err != nil {
+		t.Fatalf("create args: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, capability := range []string{"NET_ADMIN", "SYS_ADMIN"} {
+		if strings.Count(joined, "--cap-add "+capability) != 1 {
+			t.Fatalf("expected one --cap-add %s in %s", capability, joined)
+		}
+	}
+	// NET_RAW is already in the baseline and must not be emitted twice.
+	for _, capability := range dockerBaselineCaps {
+		if got := strings.Count(joined, "--cap-add "+capability); got != 1 {
+			t.Fatalf("baseline capability %s emitted %d times in %s", capability, got, joined)
+		}
+	}
+	if got := strings.Count(joined, "--cap-add"); got != len(dockerBaselineCaps)+2 {
+		t.Fatalf("expected baseline plus NET_ADMIN/SYS_ADMIN, got %d cap-add flags in %s", got, joined)
 	}
 }
 

@@ -144,7 +144,8 @@ final class NodeControllerTest extends TestCase
         [$app, $cookie, $csrf] = $this->appWithSession();
 
         foreach ([
-            ['engine' => 'docker', 'docker' => ['cap_add' => ['SYS_ADMIN']]],
+            ['engine' => 'docker', 'docker' => ['cap_add' => ['SYS_MODULE']]],
+            ['engine' => 'docker', 'docker' => ['cap_add' => ['SYS_PTRACE']]],
             ['engine' => 'docker', 'docker' => ['image' => 'x', 'pull' => 'yes']],
             ['engine' => 'docker'],
         ] as $payload) {
