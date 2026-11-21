@@ -7,6 +7,7 @@
       <div class="spacer"></div>
       <span class="badge version">v{{ version }}</span>
       <span v-if="session.user" class="user">{{ session.user.username }} · {{ session.user.role }}</span>
+      <button v-if="session.user" class="ghost" @click="passwordOpen = true">Change password</button>
       <button v-if="session.user" class="ghost icon" title="Log out" aria-label="Log out" @click="doLogout">⏻</button>
     </header>
 
@@ -45,6 +46,7 @@
       <router-view />
     </main>
 
+    <PasswordChangeDialog v-if="!bare" :open="passwordOpen" @close="passwordOpen = false" />
     <ConsoleDock />
     <ToastHost />
   </div>
@@ -56,11 +58,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { session, logout } from './stores/session'
 import { api } from './api'
 import ConsoleDock from './components/ConsoleDock.vue'
+import PasswordChangeDialog from './components/PasswordChangeDialog.vue'
 import ToastHost from './components/ToastHost.vue'
 
 const router = useRouter()
 const route = useRoute()
 const version = ref('1.6-dev')
+const passwordOpen = ref(false)
 const bare = computed(() => ['login', 'setup', 'editor'].includes(String(route.name)))
 
 async function doLogout() {

@@ -8,6 +8,8 @@ import Inspector from '../src/components/Inspector.vue'
 import TemplatePicker from '../src/components/TemplatePicker.vue'
 import ToastHost from '../src/components/ToastHost.vue'
 import ImagesView from '../src/views/ImagesView.vue'
+import SystemView from '../src/views/SystemView.vue'
+import PasswordChangeDialog from '../src/components/PasswordChangeDialog.vue'
 import { api } from '../src/api'
 import { session } from '../src/stores/session'
 import { notify, toasts, dismiss } from '../src/stores/toasts'
@@ -20,7 +22,21 @@ vi.mock('../src/api', () => ({
     deleteImage: vi.fn(),
     renameImage: vi.fn(),
     setImageReference: vi.fn(),
-    mapImageTemplate: vi.fn()
+    mapImageTemplate: vi.fn(),
+    host: vi.fn(),
+    settings: vi.fn(),
+    saveSettings: vi.fn(),
+    logs: vi.fn(),
+    tokens: vi.fn(),
+    createToken: vi.fn(),
+    revokeToken: vi.fn(),
+    users: vi.fn(),
+    createUser: vi.fn(),
+    updateUser: vi.fn(),
+    resetUserPassword: vi.fn(),
+    revokeUserSessions: vi.fn(),
+    deleteUser: vi.fn(),
+    changePassword: vi.fn()
   },
   uploadImageWithProgress: vi.fn(),
   setCsrf: vi.fn(),
@@ -602,6 +618,278 @@ describe('ImagesView', () => {
     expect(wrapper.find('input[aria-label="Reference"]').element.value).toBe('taken.qcow2')
     expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('Another image already uses that reference.'))).toBe(true)
     expect(api.images).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+})
+
+
+const usersFixture = () => [
+  {
+    id: 'user1', username: 'admin', email: 'admin@example.test', name: 'Ada Admin', role: 'admin',
+    expiration: -1, created_at: 1700000000, updated_at: 1700000000,
+    session_count: 2, last_seen_at: 1700000500, lab_count: 1
+  },
+  {
+    id: 'user2', username: 'editor', email: 'editor@example.test', name: '', role: 'editor',
+    expiration: 1800000000, created_at: 1700000000, updated_at: 1700000000,
+    session_count: 0, last_seen_at: null, lab_count: 2
+  },
+  {
+    id: 'user3', username: 'viewer', email: '', name: 'Vera Viewer', role: 'user',
+    expiration: -1, created_at: 1700000000, updated_at: 1700000000,
+    session_count: 0, last_seen_at: null, lab_count: 0
+  }
+]
+
+async function mountSystemView() {
+  const wrapper = mount(SystemView)
+  await flushPromises()
+  const usersTab = wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'Users')
+  await usersTab.trigger('click')
+  await flushPromises()
+  return wrapper
+}
+
+function rowButton(wrapper, username, label) {
+  return wrapper.find(`tr[data-user="${username}"]`).findAll('button').find((button) => button.text() === label)
+}
+
+describe('SystemView users', () => {
+  beforeEach(() => {
+    session.user = { id: 'user1', username: 'admin', role: 'admin' }
+    api.host.mockResolvedValue({
+      data: { load1: 0.1, load5: 0.1, load15: 0.1, cpu_usage_percent: 5, disk_free_bytes: 1, disk_total_bytes: 2, nodes: [], engines: [], interfaces: [] }
+    })
+    api.settings.mockResolvedValue({ data: { timezone: 'UTC', console_default: 'telnet', session_ttl: 3600, max_upload_bytes: 33554432 } })
+    api.logs.mockResolvedValue({ data: { lines: [] } })
+    api.tokens.mockResolvedValue({ data: [] })
+    api.users.mockResolvedValue({ data: usersFixture() })
+  })
+
+  it('hides the Users tab from non-admins', async () => {
+    session.user = { id: 'user3', username: 'viewer', role: 'user' }
+    const wrapper = mount(SystemView)
+    await flushPromises()
+    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).not.toContain('Users')
+    expect(api.users).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('renders roles, expiration, session and lab counts for an admin', async () => {
+    const wrapper = await mountSystemView()
+    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toContain('Users')
+    expect(api.users).toHaveBeenCalledTimes(1)
+
+    const rows = wrapper.findAll('.users-table tbody tr')
+    expect(rows).toHaveLength(3)
+    const adminRow = wrapper.find('tr[data-user="admin"]')
+    expect(adminRow.text()).toContain('(you)')
+    expect(adminRow.text()).toContain('never')
+    expect(adminRow.text()).toContain('Ada Admin · admin@example.test')
+    expect(adminRow.find('.badge.role').text()).toBe('admin')
+    const cells = adminRow.findAll('td').map((cell) => cell.text())
+    expect(cells[3]).toBe('2')
+    expect(cells[5]).toBe('1')
+
+    const viewerRow = wrapper.find('tr[data-user="viewer"]')
+    expect(viewerRow.text()).toContain('Vera Viewer')
+    expect(viewerRow.findAll('td')[4].text()).toBe('never')
+    expect(viewerRow.find('.badge.you').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('sends the add-user payload and shows a generated password once', async () => {
+    api.createUser
+      .mockResolvedValueOnce({ data: { user: { id: 'user4', username: 'newuser' } } })
+      .mockResolvedValueOnce({ data: { user: { id: 'user5', username: 'genuser' }, password: 'Generated-Pass-1234' } })
+    const wrapper = await mountSystemView()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Add user').trigger('click')
+    await wrapper.find('input[aria-label="Username"]').setValue('newuser')
+    await wrapper.find('select[aria-label="Role"]').setValue('editor')
+    await wrapper.find('input[aria-label="Email"]').setValue('new@example.test')
+    await wrapper.find('input[aria-label="Display name"]').setValue('New User')
+    const expiration = '2027-01-02T03:04'
+    await wrapper.find('input[aria-label="Expires"]').setValue(expiration)
+    await wrapper.find('input[aria-label="Password"]').setValue('Typed-Password-123!')
+    await wrapper.find('.add-user-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.createUser).toHaveBeenNthCalledWith(1, {
+      username: 'newuser',
+      role: 'editor',
+      email: 'new@example.test',
+      name: 'New User',
+      expiration: Math.floor(new Date(expiration).getTime() / 1000),
+      password: 'Typed-Password-123!'
+    })
+    expect(wrapper.find('.add-user-modal').exists()).toBe(false)
+    expect(wrapper.find('.add-user-modal .token-once').exists()).toBe(false)
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Add user').trigger('click')
+    await wrapper.find('input[aria-label="Username"]').setValue('genuser')
+    await wrapper.find('.add-user-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.createUser).toHaveBeenNthCalledWith(2, { username: 'genuser', role: 'user' })
+    expect(wrapper.find('.add-user-modal .token-once code').text()).toBe('Generated-Pass-1234')
+    expect(wrapper.find('.add-user-modal form').exists()).toBe(false)
+
+    await wrapper.find('.add-user-modal').findAll('button').find((button) => button.text() === 'Close').trigger('click')
+    expect(wrapper.find('.add-user-modal').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('edits email, name, expiration and role, but not your own role', async () => {
+    api.updateUser.mockResolvedValue({ data: { user: { id: 'user2' } } })
+    const wrapper = await mountSystemView()
+
+    await rowButton(wrapper, 'editor', 'Edit').trigger('click')
+    expect(wrapper.find('.edit-user-modal input[aria-label="Email"]').element.value).toBe('editor@example.test')
+    await wrapper.find('.edit-user-modal input[aria-label="Display name"]').setValue('Edited Editor')
+    await wrapper.find('.edit-user-modal input[aria-label="Expires"]').setValue('')
+    await wrapper.find('.edit-user-modal select[aria-label="Role"]').setValue('admin')
+    await wrapper.find('.edit-user-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.updateUser).toHaveBeenCalledWith('user2', {
+      email: 'editor@example.test',
+      name: 'Edited Editor',
+      expiration: -1,
+      role: 'admin'
+    })
+    expect(wrapper.find('.edit-user-modal').exists()).toBe(false)
+
+    await rowButton(wrapper, 'admin', 'Edit').trigger('click')
+    expect(wrapper.find('.edit-user-modal select[aria-label="Role"]').element.disabled).toBe(true)
+    expect(wrapper.find('.edit-user-modal').text()).toContain('You cannot change your own role.')
+    wrapper.unmount()
+  })
+
+  it('resets a password with a typed value and shows a generated one once', async () => {
+    api.resetUserPassword
+      .mockResolvedValueOnce({ data: { password: 'Reset-Generated-1234' } })
+      .mockResolvedValueOnce({ data: {} })
+    const wrapper = await mountSystemView()
+
+    await rowButton(wrapper, 'editor', 'Reset password').trigger('click')
+    await wrapper.find('.reset-password-modal form').trigger('submit')
+    await flushPromises()
+    expect(api.resetUserPassword).toHaveBeenNthCalledWith(1, 'user2', {})
+    expect(wrapper.find('.reset-password-modal .token-once code').text()).toBe('Reset-Generated-1234')
+    await wrapper.find('.reset-password-modal').findAll('button').find((button) => button.text() === 'Close').trigger('click')
+
+    await rowButton(wrapper, 'viewer', 'Reset password').trigger('click')
+    await wrapper.find('.reset-password-modal input[aria-label="New password"]').setValue('Typed-Reset-1234!')
+    await wrapper.find('.reset-password-modal form').trigger('submit')
+    await flushPromises()
+    expect(api.resetUserPassword).toHaveBeenNthCalledWith(2, 'user3', { password: 'Typed-Reset-1234!' })
+    expect(wrapper.find('.reset-password-modal').exists()).toBe(false)
+    expect(wrapper.find('.reset-password-modal .token-once').exists()).toBe(false)
+    expect(toasts.some((toast) => toast.kind === 'success' && toast.message.includes('Password reset for viewer'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('force logs out after confirmation', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    api.revokeUserSessions.mockResolvedValue({ data: { revoked: 3 } })
+    const wrapper = await mountSystemView()
+
+    await rowButton(wrapper, 'editor', 'Force logout').trigger('click')
+    await flushPromises()
+
+    expect(confirm).toHaveBeenCalled()
+    expect(api.revokeUserSessions).toHaveBeenCalledWith('user2')
+    expect(toasts.some((toast) => toast.kind === 'success' && toast.message.includes('3 sessions revoked'))).toBe(true)
+    confirm.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('deletes with and without the delete_labs option', async () => {
+    api.deleteUser.mockResolvedValue({ data: { deleted: true, labs_trashed: 0 } })
+    const wrapper = await mountSystemView()
+
+    await rowButton(wrapper, 'editor', 'Delete').trigger('click')
+    await wrapper.find('input[aria-label="Also delete their labs"]').setValue(true)
+    await wrapper.find('.delete-user-modal').findAll('button').find((button) => button.text() === 'Delete user').trigger('click')
+    await flushPromises()
+    expect(api.deleteUser).toHaveBeenNthCalledWith(1, 'user2', { delete_labs: true })
+    expect(wrapper.find('.delete-user-modal').exists()).toBe(false)
+
+    await rowButton(wrapper, 'viewer', 'Delete').trigger('click')
+    await wrapper.find('.delete-user-modal').findAll('button').find((button) => button.text() === 'Delete user').trigger('click')
+    await flushPromises()
+    expect(api.deleteUser).toHaveBeenNthCalledWith(2, 'user3', { delete_labs: false })
+    wrapper.unmount()
+  })
+
+  it('keeps the dialog open and toasts the server guard message', async () => {
+    api.deleteUser.mockRejectedValue(new Error('You cannot delete your own account.'))
+    const wrapper = await mountSystemView()
+
+    await rowButton(wrapper, 'admin', 'Delete').trigger('click')
+    await wrapper.find('.delete-user-modal').findAll('button').find((button) => button.text() === 'Delete user').trigger('click')
+    await flushPromises()
+
+    expect(api.deleteUser).toHaveBeenCalledWith('user1', { delete_labs: false })
+    expect(wrapper.find('.delete-user-modal').exists()).toBe(true)
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('You cannot delete your own account.'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('explains the last-admin guard when a role update is rejected', async () => {
+    api.updateUser.mockRejectedValue(new Error('The last administrator cannot be demoted.'))
+    const wrapper = await mountSystemView()
+
+    await rowButton(wrapper, 'editor', 'Edit').trigger('click')
+    await wrapper.find('.edit-user-modal select[aria-label="Role"]').setValue('user')
+    await wrapper.find('.edit-user-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.edit-user-modal').exists()).toBe(true)
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('last administrator cannot be demoted'))).toBe(true)
+    wrapper.unmount()
+  })
+})
+
+describe('PasswordChangeDialog', () => {
+  it('validates the confirmation and calls the API with the auth field names', async () => {
+    api.changePassword.mockResolvedValue({ status: 'success' })
+    const wrapper = mount(PasswordChangeDialog, { props: { open: true } })
+    expect(wrapper.text()).toContain('Your other sessions will be signed out; this session stays signed in.')
+
+    await wrapper.find('input[aria-label="Current password"]').setValue('Old-Password-123!')
+    await wrapper.find('input[aria-label="New password"]').setValue('New-Password-123!')
+    await wrapper.find('input[aria-label="Confirm new password"]').setValue('Mismatch-123!')
+    await wrapper.find('form').trigger('submit')
+    expect(api.changePassword).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('The new passwords do not match.')
+
+    await wrapper.find('input[aria-label="Confirm new password"]').setValue('New-Password-123!')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.changePassword).toHaveBeenCalledWith({
+      current_password: 'Old-Password-123!',
+      new_password: 'New-Password-123!'
+    })
+    expect(wrapper.emitted('close')).toHaveLength(1)
+    expect(toasts.some((toast) => toast.kind === 'success' && toast.message.includes('Password changed'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows the server error and stays open', async () => {
+    api.changePassword.mockRejectedValue(new Error('Current password is incorrect.'))
+    const wrapper = mount(PasswordChangeDialog, { props: { open: true } })
+
+    await wrapper.find('input[aria-label="Current password"]').setValue('Wrong-Password-123!')
+    await wrapper.find('input[aria-label="New password"]').setValue('New-Password-123!')
+    await wrapper.find('input[aria-label="Confirm new password"]').setValue('New-Password-123!')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.error').text()).toContain('Current password is incorrect.')
+    expect(wrapper.emitted('close')).toBeUndefined()
     wrapper.unmount()
   })
 })
