@@ -13,6 +13,7 @@ use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Templates\DockerOptions;
 
 final class NodeController
 {
@@ -151,8 +152,24 @@ final class NodeController
         }
 
         $engine = $spec['engine'] ?? 'qemu';
-        if (!in_array($engine, ['qemu', 'vpcs', 'dynamips', 'iol'], true)) {
+        if (!in_array($engine, ['qemu', 'vpcs', 'dynamips', 'iol', 'docker'], true)) {
             throw new HttpException(422, 'Unsupported engine.');
+        }
+        if ($engine === 'docker') {
+            if (($spec['image'] ?? '') === '') {
+                throw new HttpException(422, 'Docker nodes require a container image.');
+            }
+            // The engine runs a docker exec PTY: telnet is the only console a
+            // docker node can have, so normalise here as LabService does.
+            $spec['console'] = 'telnet';
+            $docker = $data['docker'] ?? null;
+            if ($docker !== null) {
+                if (!is_array($docker)) {
+                    throw new HttpException(422, 'docker must be a mapping.');
+                }
+                DockerOptions::validate(['docker' => $docker]);
+                $spec['docker'] = DockerOptions::spec(['docker' => $docker]);
+            }
         }
 
         $slots = $data['slots'] ?? null;

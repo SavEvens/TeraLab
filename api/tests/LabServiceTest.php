@@ -665,6 +665,146 @@ final class LabServiceTest extends TestCase
         self::assertSame('', $parsed['node_list'][0]['interfaces'][0]['network_id']);
     }
 
+    public function testDockerNodeStartPayloadUsesTheRawContainerReference(): void
+    {
+        $this->template('frr', $this->dockerTemplateYaml('frr', 'frrouting/frr:10.0.1'));
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'docker', '', [0, 0, 0]);
+        $node['template'] = 'frr';
+        $node['ram'] = 256;
+        $lab = $service->create([
+            'name' => 'Docker Lab',
+            'networks' => [['id' => '0', 'name' => 'Net-1']],
+            'nodes' => [$node],
+        ]);
+
+        $service->start((string) $lab['id']);
+        $payload = $this->startPayload();
+
+        self::assertSame('docker', $payload['engine']);
+        self::assertSame('frrouting/frr:10.0.1', $payload['image'], 'the container reference is never resolved through the image store');
+        self::assertSame(1, $payload['cpu']);
+        self::assertSame(256, $payload['ram']);
+        self::assertSame(3, $payload['ethernet']);
+        self::assertSame(['tl-test-bridge-0', 'tl-test-bridge-0', 'tl-test-bridge-0'], $payload['networks']);
+        self::assertSame([
+            'console_command' => '/usr/bin/vtysh',
+            'cap_add' => ['NET_ADMIN'],
+            'pull' => true,
+        ], $payload['docker']);
+        foreach (['iso', 'kernel', 'initrd', 'append', 'nvram', 'platform', 'serial'] as $key) {
+            self::assertArrayNotHasKey($key, $payload, 'docker specs must not carry ' . $key);
+        }
+    }
+
+    public function testDockerNodeStartsWithATelnetConsoleWhateverTheStoredMode(): void
+    {
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'docker', 'frrouting/frr:10.0.1', []);
+        $node['console'] = 'vnc';
+        $lab = $service->create(['name' => 'Docker Console', 'nodes' => [$node]]);
+
+        $stored = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertSame('vnc', $stored['node_list'][0]['console'], 'the lab file keeps the stored mode');
+
+        $service->start((string) $lab['id']);
+
+        self::assertSame('telnet', $this->startPayload()['console'], 'a docker console is always a telnet PTY');
+    }
+
+    public function testDockerNodeImageOverridesTheTemplateAndSurvivesSave(): void
+    {
+        $this->template('frr', $this->dockerTemplateYaml('frr', 'frrouting/frr:10.0.1'));
+        $service = $this->service();
+        $node = $this->node('1', 'R1', 'docker', 'frrouting/frr:9.1.0', []);
+        $node['template'] = 'frr';
+        $lab = $service->create(['name' => 'Docker Override', 'nodes' => [$node]]);
+
+        $stored = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertSame('frrouting/frr:9.1.0', $stored['node_list'][0]['image'], 'the container reference is stored verbatim');
+
+        $service->start((string) $lab['id']);
+        $payload = $this->startPayload();
+        self::assertSame('frrouting/frr:9.1.0', $payload['image'], 'the node image wins over the template default');
+        self::assertSame([
+            'console_command' => '/usr/bin/vtysh',
+            'cap_add' => ['NET_ADMIN'],
+            'pull' => true,
+        ], $payload['docker'], 'the template still contributes the docker block');
+    }
+
+    public function testDockerNodeWithoutAReferenceIsRejectedAtStart(): void
+    {
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Docker Without Image',
+            'nodes' => [$this->node('1', 'R1', 'docker', '', [])],
+        ]);
+
+        try {
+            $service->start((string) $lab['id']);
+            self::fail('a docker node without a container reference must not start');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('no container image reference', $exception->getMessage());
+        }
+        self::assertSame([], array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => $call['path'] === '/v1/node.start',
+        )));
+    }
+
+    public function testImportedDockerNodeKeepsItsContainerReference(): void
+    {
+        $xml = '<?xml version="1.0" encoding="UTF-8"?><lab name="Docker Import" id="docker-import" version="1">'
+            . '<topology><nodes><node id="1" name="R1" type="docker" template="docker"'
+            . ' image="frrouting/frr:10.0.1" console="telnet" cpu="1" ram="256" ethernet="0"/>'
+            . '</nodes><networks/></topology></lab>';
+
+        $lab = $this->service()->import($this->upload($xml, 'docker.unl'), 'tester');
+        $stored = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+
+        self::assertSame(
+            'frrouting/frr:10.0.1',
+            $stored['node_list'][0]['image'],
+            'an EVE-NG docker reference must survive the portable-reference normalisation',
+        );
+        $types = array_column($lab['warnings'], 'type');
+        self::assertNotContains('image_unmapped', $types);
+        self::assertNotContains('node_unsupported', $types);
+    }
+
+    public function testDockerWarningsUseImageMissingAndNotTheImageStore(): void
+    {
+        $this->template('frr', $this->dockerTemplateYaml('frr', 'frrouting/frr:10.0.1'));
+        $service = $this->service();
+
+        $withTemplate = $this->node('1', 'R1', 'docker', '', []);
+        $withTemplate['template'] = 'frr';
+        $withImage = $this->node('2', 'R2', 'docker', 'frrouting/frr:10.0.1', []);
+        $withoutImage = $this->node('3', 'R3', 'docker', '', []);
+        $qemu = $this->node('4', 'Q1', 'qemu', 'missing.qcow2', []);
+        $switch = $this->node('5', 'SW1', 'eth-switch', '', []);
+
+        $lab = $service->create([
+            'name' => 'Docker Warnings',
+            'nodes' => [$withTemplate, $withImage, $withoutImage, $qemu, $switch],
+        ]);
+
+        $byNode = [];
+        foreach ($lab['warnings'] as $warning) {
+            if (is_array($warning) && isset($warning['node'])) {
+                $byNode[(string) $warning['node']][] = (string) $warning['type'];
+            }
+        }
+
+        self::assertArrayNotHasKey('R1', $byNode, 'the template default satisfies the docker reference');
+        self::assertArrayNotHasKey('R2', $byNode, 'a container reference is not an image-store lookup');
+        self::assertSame(['image_missing'], $byNode['R3'] ?? []);
+        self::assertSame(['image_unmapped'], $byNode['Q1'] ?? []);
+        self::assertSame(['node_unsupported'], $byNode['SW1'] ?? []);
+    }
+
     private function template(string $id, string $yaml): void
     {
         $directory = $this->config->templatesDir;
@@ -672,6 +812,13 @@ final class LabServiceTest extends TestCase
             self::fail('cannot create the templates directory');
         }
         file_put_contents($directory . '/' . $id . '.yaml', $yaml);
+    }
+
+    private function dockerTemplateYaml(string $id, string $image): string
+    {
+        return "schema: 1\nid: " . $id . "\nname: Docker\nkind: docker\noptions:\n  docker:\n"
+            . "    image: " . $image . "\n    console_command: /usr/bin/vtysh\n"
+            . "    cap_add: [NET_ADMIN]\n    pull: true\n";
     }
 
     /**
