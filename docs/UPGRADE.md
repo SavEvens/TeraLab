@@ -1,12 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.5.5
+# Upgrading to TeraLab v1.5.6
 
-v1.5.5 is a patch release: editor and console polish plus the System/About
-clean-up, keeping `.unl` labs, the v1 API surface, and the `/var/lib/teralab`
-layout unchanged. There is no database migration and no lab-format change. The
-installer is idempotent and is the supported upgrade path.
+v1.5.6 is a minor release: IOL embedded-configuration fidelity, QEMU parameters
+taken from templates and nodes, LACP forwarding on the Linux bridge, and
+lifecycle/topology fixes. It keeps `.unl` labs, the v1 and v2 API surface, and
+the `/var/lib/teralab` layout unchanged. There is no database migration and no
+lab-format change. The installer is idempotent and is the supported upgrade
+path.
 
 ## Before upgrading
 
@@ -22,7 +24,7 @@ installer is idempotent and is the supported upgrade path.
 
 ```sh
 git fetch --tags
-git checkout v1.5.5
+git checkout v1.5.6
 sudo packaging/teralab/install.sh
 ```
 
@@ -64,6 +66,63 @@ sudo /opt/teralab/packaging/teralab/teralab-firewall
 Until the rule is present, IP traffic between lab nodes is dropped (IPv4
 always; IPv6 where the host's `FORWARD` policy is `DROP`). See
 `docs/INSTALL.md` for details.
+
+## IOL embedded configuration in v1.5.6
+
+- **L2 VLANs are applied on boot.** IOS stores VLANs in the VLAN database
+  (`vlan.dat`) and, in the default VTP server mode, ignores `vlan` lines in a
+  startup configuration. For the L2 image the agent inserts
+  `vtp mode transparent` before the VLAN definitions, so they become part of
+  the startup config and are created.
+- **IPv6-only interfaces are brought up.** IOS does not restore `no shutdown`
+  for an interface with an IPv6 address and no IPv4 address. The agent replays
+  `no shutdown` on those interfaces after boot, over the console. An explicit
+  `shutdown` is never overridden, and a configuration with an `enable` password
+  skips the replay with a log line; a timeout is a warning, not a start
+  failure.
+- **Editing a saved config still needs a wipe.** IOL applies the embedded
+  configuration on first boot; NVRAM wins afterwards.
+
+## QEMU parameters in v1.5.6
+
+QEMU parameters now come from the node override, then the template `options`,
+then the agent's fallback. Templates may set `qemu_nic`, `qemu_machine`,
+`qemu_arch`, `qemu_cpu`, `qemu_accel` and `qemu_disk_interface`; a node can
+override each one. The legacy `qemu_options` string is still parsed, with known
+flags filling only empty structured fields and the remaining arguments
+validated against an allow-list.
+
+- The Catalyst 8000V template uses `vmxnet3`; `e1000` is not a supported C8000V
+  vNIC. `virtio` maps to `virtio-net-pci`, and PAN-OS keeps `e1000`.
+- With nothing configured, `e1000` remains the fallback, so existing guests keep
+  their model.
+- Parameters live on the template and the node spec, not in the `.unl` file.
+  No lab re-save is needed for this change.
+
+## EtherChannel and LACP on the Linux bridge
+
+The Linux bridge now forwards LACP per port: the agent writes
+`/sys/class/net/<bridge>/brif/<tap>/group_fwd_mask` with `0x5` (STP + LACP) by
+default. The bridge-level mask cannot allow LACP. This requires Linux ≥ 4.15.
+
+Set `TERALAB_BRIDGE_GROUP_FWD_MASK` to another 16-bit value, or to `0` to
+disable the per-port write and use static `channel-group … mode on` instead
+(OVS remains supported). A malformed value is rejected when the agent loads its
+configuration; a kernel without the attribute logs a warning and the lab still
+starts.
+
+## Topology pruning in v1.5.6
+
+A network is a cable/segment and must have at least two attached interfaces.
+Deleting a node now detaches the peer, removes the network and clears dangling
+`network_id` values; the editor shows this immediately, and `create`, `save`
+and `import` enforce the same rule as the authority. A segment shared by three
+or more nodes keeps its remaining members. The `.unl` format is unchanged
+(detaching is written as `network_id="0"`).
+
+Existing labs are cleaned on their next save or import — there is no bulk sweep
+to run. `GET /api/v2/labs/{id}/nodes` also gains the additive `ready` field,
+true once the console can be driven.
 
 ## Editor and console changes in v1.5.5
 

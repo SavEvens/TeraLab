@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Installing TeraLab v1.5.5
+# Installing TeraLab v1.5.6
 
 TeraLab targets Debian 13 with PHP 8.4 and QEMU 10. QEMU, Dynamips, IOL, and
 the kernel remain separate components with their own licences.
@@ -90,6 +90,21 @@ There are no default accounts, no telemetry, and no `setcap` usage.
   `sudo apt-get install cmake libelf-dev libpcap-dev && packaging/dynamips/build.sh`
   then `sudo dpkg -i dist/teralab-dynamips_*.deb`. A licensed IOS image is
   required and is never bundled.
+
+### EtherChannel, VLANs and guest NICs
+
+- **LACP works on the default Linux bridge backend.** TeraLab enables the
+  reserved group per port (`/sys/class/net/<bridge>/brif/<tap>/group_fwd_mask`,
+  default `0x5` = STP + LACP) because the bridge-level mask cannot allow it.
+  This needs Linux ≥ 4.15. Set `TERALAB_BRIDGE_GROUP_FWD_MASK=0` to restore
+  strict 802.1D filtering and use static `channel-group … mode on`, or install
+  OVS.
+- **QEMU parameters come from the template or the node.** Templates may set
+  `qemu_nic`, `qemu_machine`, `qemu_arch`, `qemu_cpu`, `qemu_accel`,
+  `qemu_disk_interface` and `qemu_options` (validated extras); a node overrides
+  them. `vmxnet3` is what the Catalyst 8000V template uses (e1000 is not a
+  supported C8000V vNIC). With nothing configured, `e1000` remains the fallback
+  so existing guests keep their model; PAN-OS stays explicitly on `e1000`.
 
 ## Host firewall (Docker hosts)
 

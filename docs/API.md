@@ -54,6 +54,11 @@ CSRF=$(curl -b jar $B/api/v2/auth/me | jq -r .csrf_token)
 `GET /api/v2/labs/{id}` includes `lock` when the lab is running. While a lab is
 locked, saves from another user return 409 with the owner and expiry.
 
+Create, save and import enforce the link invariant: a network must have at least
+two attached interfaces. Deleting a node detaches the remaining end, and any
+network left with fewer than two attachments is removed from `network_list` (and
+dangling `network_id` references are cleared). The `.unl` format is unchanged.
+
 Create example:
 
 ```sh
@@ -88,8 +93,11 @@ for VNC the generated password.
 - `POST /api/v2/labs/{id}/networks` with `{"networks":[{"id":"0"}]}`.
 - `POST /api/v2/labs/{id}/networks/cleanup`.
 - `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol availability.
-- `GET /api/v2/system/host` reports load, disk, nodes, engines, and host
-  interfaces.
+- `GET /api/v2/system/host` reports load, CPU usage (`cpu_usage_percent`),
+  disk, nodes, engines, and host interfaces.
+- `GET /api/v2/labs/{id}/nodes` reports per-node `state` and `ready`; `ready`
+  turns true when the guest answers on its console, not when the process
+  starts.
 - `GET /api/v2/system/logs?source=api|agent` tails logs (admin).
 - `GET|PUT /api/v2/system/settings` reads/updates runtime settings (admin).
 - `GET /api/v2/system/backup` downloads a zip; `POST /api/v2/system/restore`
@@ -110,7 +118,9 @@ for VNC the generated password.
 - `GET /api/v2/jobs`, `GET /api/v2/jobs/{id}` report job records; lab
   start/stop/wipe return `job_id`. `POST /api/v2/jobs/{id}/cancel` cancels a
   queued/running job.
-- `POST /api/v2/maintenance/reconcile` reclaims orphaned resources.
+- `POST /api/v2/maintenance/reconcile` reclaims orphaned resources; it also
+  removes the run directories of labs that no longer exist, using the live
+  lab list (trash excluded) as the keep-set.
 
 ## API tokens
 

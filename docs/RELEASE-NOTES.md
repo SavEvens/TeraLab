@@ -3,6 +3,157 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.6 release notes
+
+- Release date: 2026-11-21
+- Previous release: v1.5.5
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## IOL embedded-config fidelity
+
+Two long-standing IOL boot problems are fixed in the agent; neither was an IOL
+bug, both are standard IOS behaviour.
+
+- **Layer-2 VLANs are applied.** IOS keeps VLAN 1–1005 in the VLAN database
+  (`vlan.dat`), and in the default VTP server mode the `vlan` lines of a
+  startup configuration are ignored. For the L2 image the agent now inserts
+  `vtp mode transparent` before the first VLAN definition in the generated
+  startup config, so the VLANs are part of the configuration and are created on
+  boot. The rest of the file is byte-identical, and the insertion is idempotent.
+- **IPv6-only interfaces come up.** IOS does not restore `no shutdown` from a
+  startup config for an interface that has an IPv6 address and no IPv4 address.
+  After boot the agent replays `no shutdown` on exactly those interfaces over
+  the existing console fan-out, once the device answers with a prompt. It never
+  overrides an explicit `shutdown`, and it skips the replay with a log line when
+  the configuration sets an `enable` password (the replay cannot enter
+  configuration mode without credentials). The replay is bounded at 60 s; a
+  timeout is a warning and never fails the node start.
+
+IOL applies the embedded configuration on a node's **first boot**; NVRAM saved
+on the device wins afterwards. Editing a saved lab's config therefore still
+requires a **wipe** before the change takes effect.
+
+## QEMU parameters from templates and users
+
+The engine no longer chooses machine, NIC, CPU, accelerator or disk interface
+itself when a template or node provides them. Templates may set structured
+options — `qemu_nic`, `qemu_machine`, `qemu_arch`, `qemu_cpu`, `qemu_accel`,
+`qemu_disk_interface` — and a node can override each one. The legacy
+`qemu_options` string is still parsed: known flags fill only empty structured
+fields, engine-owned flags are dropped, and the remaining arguments go through
+an allow-list before QEMU sees them.
+
+- The Catalyst 8000V template now selects `vmxnet3` (`e1000` is not a supported
+  C8000V vNIC); `virtio` maps to `virtio-net-pci`; PAN-OS keeps `e1000`
+  explicitly.
+- A template that sets nothing still gets `e1000`, so existing guests keep
+  their model.
+- The API validates options when a template is saved and when a node spec is
+  built; the agent validates again before start. Unsafe extras (paths, sockets,
+  host devices, unknown flags) are rejected rather than passed to QEMU.
+- The effective QEMU command line is logged once per node start.
+
+## LACP on the Linux bridge
+
+LACP EtherChannels now form on the default Linux bridge backend without OVS
+and without a patched kernel. The bridge-level `group_fwd_mask` cannot forward
+LACP, so the agent writes a per-port mask to
+`/sys/class/net/<bridge>/brif/<tap>/group_fwd_mask`: `0x5` by default (STP +
+LACP). This needs Linux ≥ 4.15, where the per-port mask only reserves MAC pause
+frames.
+
+`TERALAB_BRIDGE_GROUP_FWD_MASK` overrides the value (`0` disables the per-port
+write and restores strict 802.1D filtering; malformed values are rejected when
+the agent loads its configuration). A kernel or backend without the attribute
+logs one warning per bridge and continues — forwarding failures never block a
+lab from starting.
+
+## Lifecycle and topology
+
+- **A network must have at least two attached interfaces.** Deleting a node now
+  detaches the surviving peer, removes the network object and clears dangling
+  `network_id` references. The editor applies the rule immediately on delete,
+  port-count shrink and template change; `create`, `save` and `import` enforce
+  it as the authority, so an API client cannot persist a dead link. Segments
+  shared by three or more nodes keep their remaining members.
+- **Per-node `ready`.** `GET /api/v2/labs/{id}/nodes` now reports `ready` next
+  to `state`. It turns true when the console can be driven — an IOL or VPCS
+  prompt was seen, or a QEMU guest produced console output — and false again
+  when the node stops. `running` still means only that the engine process is
+  up.
+- **SQLite busy handling.** `busy_timeout` rises from 5 s to 15 s, and
+  idempotent writes (session last-seen, audit insert, lab-lock upsert, snapshot
+  insert) retry a bounded number of times on `SQLITE_BUSY`/`database is
+  locked`. Non-busy errors are rethrown immediately, and writes that allocate
+  external resources are never retried.
+- **Orphan run directories can be reclaimed.** `POST /api/v2/maintenance/reconcile`
+  now sends the live lab ids as a keep-set, so the agent removes run directories
+  that belong to no existing lab (trash excluded) while never removing a
+  directory that still holds a live node. The raw agent endpoint also accepts
+  an explicit empty list, which prunes every non-live lab directory; without a
+  body (and on the agent's own startup pass) lab directories are left alone
+  because the lab set is unknown then.
+
+## Documentation
+
+- `docs/LAB-FORMAT.md` gains **What the engines apply at boot**: IOL first-boot
+  and NVRAM behaviour, VTP-transparent VLANs, the IPv6 admin replay, the setup
+  dialog, the `running`/`ready` distinction and QEMU guest configuration.
+- `docs/INSTALL.md` explains the per-port forwarding knob for EtherChannel and
+  LACP, and the QEMU parameter keys, the C8000V `vmxnet3` requirement and the
+  `e1000` fallback.
+- `docs/API.md` documents `cpu_usage_percent`, `ready` and the link invariant.
+
+## Compatibility notes
+
+- **No database migration and no `.unl` format change.** Labs and the
+  `/var/lib/teralab` layout are unchanged; the normal upgrade backup in
+  `docs/UPGRADE.md` is sufficient.
+- **QEMU parameters are resolved from the template when a node starts**, so
+  editing a template affects the next start of its nodes; the resolved values
+  are not written into the lab file. A node's `qemu_*` attributes override the
+  template.
+- **Legacy `qemu_options` is still accepted** and is parsed and validated as
+  before. The built-in templates were migrated to the structured keys so the
+  two mechanisms do not drift.
+- **`e1000` remains the fallback** when a template sets no NIC, so existing labs
+  behave as before unless their template or node asks for another model.
+- **IOL config edits need a wipe**, because NVRAM wins after the first boot.
+- **Existing labs are pruned on their next save or import**; there is no
+  separate bulk topology sweep in this release. Opening and saving a lab cleans
+  dangling and single-ended networks.
+- **Run-directory pruning uses the live lab set.** The maintenance endpoint
+  sends the live lab ids (trash excluded) as the keep-set; trashed or deleted
+  labs' run directories are reclaimed.
+- **`ready` is additive.** Clients that ignore the new field keep working, and
+  the v1 and v2 request and response shapes are otherwise unchanged.
+- Per-port forwarding also lets BPDUs cross the emulated segment, which models a
+  real cable; the knob restores the strict behaviour.
+
+## Licensing and provenance
+
+No new dependency and no new upstream-derived code; three existing BSD-3-Clause
+templates (`csr1000v`, `paloalto`, `vwaas`) were modified and now carry the
+required modification date and AGPL notice for the modifications, keeping their
+original notices. `LICENSE`, `NOTICE`,
+`PROVENANCE.md`, `LICENSES/README.md` and `docs/SBOM.md` change only in their
+version strings.
+
+## Validation
+
+Verified in the release tree:
+
+- PHP suite: 141 tests, 1309 assertions; PHPStan reports no errors.
+- Go: all packages pass, including `-race` for the engine, network and agent
+  packages.
+- UI: 32 tests pass and the production build succeeds; the mock e2e
+  passes when run alone (`UI_E2E_OK`).
+- Release gate green: `scripts/teralab-project-init.sh --check` (artifact
+  policy, licence headers, PHP lint, secret scan, shellcheck).
+
+Live-lab validation (IOL L2/IPv6 labs, C8000V interfaces, LACP EtherChannel and
+a delete-node repro) is pending the v1.5.6 deployment.
+
 # TeraLab v1.5.5 release notes
 
 - Release date: 2026-11-20
