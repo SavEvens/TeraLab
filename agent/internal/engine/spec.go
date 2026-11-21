@@ -32,7 +32,35 @@ var (
 	uuidPattern     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	platformPattern = regexp.MustCompile(`^(c7200|c3600|c2691|c3725|c3745|c1700|c2600)$`)
 	slotPattern     = regexp.MustCompile(`^[0-9]{1,2}:[0-9]{1,2}:(tap|linux|unix)$`)
+	// dockerImagePattern is a conservative Docker reference grammar: an
+	// optional registry host (with an optional port), a lowercase repository
+	// path, an optional tag, and an optional sha256 digest. Registry hosts may
+	// contain uppercase letters; repository components may not.
+	dockerImagePattern = regexp.MustCompile(
+		`^([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:\d{1,5})?/)?` +
+			`([a-z0-9]+(([._]|__|-+)[a-z0-9]+)*/)*` +
+			`[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*` +
+			`(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?` +
+			`(@sha256:[0-9a-f]{64})?$`,
+	)
+	// dockerConsolePattern accepts an absolute console command with no words
+	// or shell metacharacters; the engine runs it directly, never through a
+	// shell.
+	dockerConsolePattern = regexp.MustCompile(`^/[A-Za-z0-9_./+-]{1,255}$`)
 )
+
+// Docker is a bounded engine. Containers start from Docker's default
+// capability baseline; templates may opt into the routing and packet
+// capabilities below. SYS_ADMIN is required by FRR zebra and stays opt-in.
+const maxDockerCapAdd = 8
+
+var dockerTemplateCapabilities = []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"}
+
+var dockerCapabilities = map[string]bool{
+	"NET_ADMIN": true,
+	"NET_RAW":   true,
+	"SYS_ADMIN": true,
+}
 
 // QEMU fallbacks, applied only when the node spec leaves a field empty. The
 // e1000 default is deliberate: most built-in templates declare no NIC, PAN-OS
@@ -66,7 +94,26 @@ var (
 )
 
 // Engines lists the supported node engines.
-var Engines = []string{"qemu", "vpcs", "dynamips", "iol"}
+var Engines = []string{"qemu", "vpcs", "dynamips", "iol", "docker"}
+
+// DockerOptions is the bounded, template-declared configuration for a
+// container node. Arbitrary extra arguments are deliberately absent.
+type DockerOptions struct {
+	ConsoleCommand string   `json:"console_command,omitempty"`
+	CapAdd         []string `json:"cap_add,omitempty"`
+	// Pull controls whether a missing image may be pulled. A nil value keeps
+	// the historical default: pull once, with a bounded timeout.
+	Pull *bool `json:"pull,omitempty"`
+}
+
+// PullEnabled reports whether the engine may pull a missing image.
+func (d *DockerOptions) PullEnabled() bool {
+	if d == nil || d.Pull == nil {
+		return true
+	}
+
+	return *d.Pull
+}
 
 type Spec struct {
 	ID       string   `json:"id"`
@@ -101,6 +148,8 @@ type Spec struct {
 	Slots         []string `json:"slots,omitempty"`
 	Iourc         string   `json:"iourc,omitempty"`
 	Config        string   `json:"config,omitempty"`
+	// Docker carries the bounded container options for engine "docker".
+	Docker *DockerOptions `json:"docker,omitempty"`
 }
 
 func (s *Spec) Normalize() {
@@ -146,6 +195,9 @@ func (s *Spec) Normalize() {
 		for index := 0; index < s.Ethernet; index++ {
 			s.Slots = append(s.Slots, "0:"+strconv.Itoa(index)+":tap")
 		}
+	}
+	if s.Engine == "docker" && s.Docker != nil {
+		s.Docker.CapAdd = dedupeDockerCaps(s.Docker.CapAdd)
 	}
 }
 
@@ -195,6 +247,8 @@ func (s Spec) Validate(imageRoots []string) error {
 		return s.validateDynamips(imageRoots)
 	case "iol":
 		return s.validateIOL(imageRoots)
+	case "docker":
+		return s.validateDocker()
 	default:
 		return fmt.Errorf("unsupported engine %q", s.Engine)
 	}
@@ -332,6 +386,118 @@ func (s Spec) validateIOL(imageRoots []string) error {
 	}
 
 	return nil
+}
+
+// validateDocker checks the container-specific fields. Container images are
+// registry references, not files under the image store, so they never pass
+// through resolveFile.
+func (s Spec) validateDocker() error {
+	if s.Image == "" {
+		return errors.New("docker requires an image reference")
+	}
+	if err := validateDockerImage(s.Image); err != nil {
+		return err
+	}
+	if s.ISO != "" {
+		return errors.New("docker nodes do not accept iso images")
+	}
+	if s.Kernel != "" {
+		return errors.New("docker nodes do not accept a kernel image")
+	}
+	if s.Initrd != "" {
+		return errors.New("docker nodes do not accept an initrd")
+	}
+	if s.ExtraOptions != "" || len(s.Extra) > 0 {
+		return errors.New("qemu options are only supported for qemu nodes")
+	}
+	if s.Console != "telnet" {
+		return errors.New("docker supports only a telnet console")
+	}
+	if s.Serial != 0 {
+		return errors.New("docker nodes do not support serial ports")
+	}
+	if s.Docker != nil {
+		if err := validateDockerOptions(s.Docker); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateDockerOptions(options *DockerOptions) error {
+	if options.ConsoleCommand != "" && !dockerConsolePattern.MatchString(options.ConsoleCommand) {
+		return fmt.Errorf(
+			"invalid docker console command %q: must be an absolute path without spaces or shell characters",
+			options.ConsoleCommand,
+		)
+	}
+	seen := map[string]bool{}
+	count := 0
+	for _, capability := range options.CapAdd {
+		if !dockerCapabilities[capability] {
+			return fmt.Errorf(
+				"unsupported docker capability %q: must be one of %s",
+				capability,
+				strings.Join(dockerTemplateCapabilities, ", "),
+			)
+		}
+		if seen[capability] {
+			continue
+		}
+		seen[capability] = true
+		count++
+	}
+	// The limit applies to template-provided capabilities only; the fixed
+	// Docker baseline is not counted here.
+	if count > maxDockerCapAdd {
+		return fmt.Errorf("docker cap_add may not contain more than %d capabilities", maxDockerCapAdd)
+	}
+
+	return nil
+}
+
+// validateDockerImage accepts a conservative registry reference. Tags and
+// sha256 digests are both supported; anything that looks like a path escape,
+// a flag, or a shell fragment is rejected before it reaches the docker CLI.
+func validateDockerImage(reference string) error {
+	if reference == "" {
+		return errors.New("docker requires an image reference")
+	}
+	if len(reference) > 255 {
+		return errors.New("docker image reference must be at most 255 characters")
+	}
+	if strings.ContainsAny(reference, " \t\r\n") || hasControlChars(reference) {
+		return errors.New("invalid docker image reference")
+	}
+	if strings.HasPrefix(reference, "/") {
+		return errors.New("invalid docker image reference: must not start with a slash")
+	}
+	if strings.Contains(reference, "..") {
+		return errors.New("invalid docker image reference: must not contain ..")
+	}
+	if !dockerImagePattern.MatchString(reference) {
+		return fmt.Errorf("invalid docker image reference %q", reference)
+	}
+
+	return nil
+}
+
+func dedupeDockerCaps(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+
+	return result
 }
 
 // canonicalNIC maps a legacy NIC value to its canonical short name. Unknown

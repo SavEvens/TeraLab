@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Derived from UNetLab template html/templates/docker.php.
 # Converted to YAML by TeraLab contributors, 2026-11-17.
+# Modified by TeraLab contributors, 2026-11-21: a docker template now requires
+# a container reference; the node's image attribute overrides it.
+# The modifications are licensed under AGPL-3.0-or-later.
 schema: 1
 id: docker
 name: Docker
@@ -10,4 +13,8 @@ icon: Server.png
 defaults:
   ram: 256
   ethernet: 1
-options: {  }
+options:
+  docker:
+    # Generic base image; operators should pin their own reference.
+    image: alpine:3.20
+    pull: true

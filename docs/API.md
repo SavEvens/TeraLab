@@ -92,7 +92,7 @@ for VNC the generated password.
 
 - `POST /api/v2/labs/{id}/networks` with `{"networks":[{"id":"0"}]}`.
 - `POST /api/v2/labs/{id}/networks/cleanup`.
-- `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol availability.
+- `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol/docker availability.
 - `GET /api/v2/system/host` reports load, CPU usage (`cpu_usage_percent`),
   disk, nodes, engines, and host interfaces.
 - `GET /api/v2/labs/{id}/nodes` reports per-node `state` and `ready`; `ready`
@@ -113,6 +113,9 @@ for VNC the generated password.
 - `POST /api/v2/templates/import` imports YAML (multipart `file`).
 - `POST /api/v2/templates/{id}/duplicate` creates a custom copy.
 - `PUT /api/v2/templates/{id}` creates/updates a custom YAML template (editor).
+- The `PUT`/`POST` template endpoints validate a bounded `options.docker`
+  block (`image`, `console_command`, `cap_add`, `pull`); unknown keys are
+  rejected, and `kind: docker` requires `options.docker.image`.
 - `DELETE /api/v2/templates/{id}` removes a custom template.
 - `PUT /api/v2/images/{id}/template` maps an image to a template.
 - `GET /api/v2/jobs`, `GET /api/v2/jobs/{id}` report job records; lab

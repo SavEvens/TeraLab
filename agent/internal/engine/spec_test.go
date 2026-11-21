@@ -422,3 +422,164 @@ func TestSpecImageRootsRequiresPrimaryRoot(t *testing.T) {
 		t.Fatal("expected missing image root to be reported")
 	}
 }
+
+func TestEnginesListIncludesDocker(t *testing.T) {
+	found := false
+	for _, name := range Engines {
+		if name == "docker" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("docker engine is missing from %v", Engines)
+	}
+}
+
+func dockerValidationSpec(image string) Spec {
+	spec := Spec{ID: "node-1", LabID: "lab-1", Name: "R1", Engine: "docker", Image: image}
+	spec.Normalize()
+
+	return spec
+}
+
+func TestDockerSpecAcceptsRegistryReferences(t *testing.T) {
+	images := []string{
+		"alpine",
+		"frrouting/frr:10.0.1",
+		"library/debian:bookworm-slim",
+		"ghcr.io/org/image:tag",
+		"localhost:5000/team/app:v1.2.3",
+		"registry.example.com:5000/a/b/c:latest",
+		"ghcr.io/org/app@sha256:" + strings.Repeat("a", 64),
+		"ghcr.io/org/app:1.0@sha256:" + strings.Repeat("b", 64),
+	}
+	for _, image := range images {
+		t.Run(image, func(t *testing.T) {
+			spec := dockerValidationSpec(image)
+			if err := spec.Validate(nil); err != nil {
+				t.Fatalf("expected %q to validate: %v", image, err)
+			}
+		})
+	}
+}
+
+func TestDockerSpecRejectsMalformedReferences(t *testing.T) {
+	images := []string{
+		"",
+		"Alpine",
+		"alpine ",
+		" alpine",
+		"/alpine",
+		"../alpine",
+		"alpine/",
+		"alpine//tag",
+		"alpine..bad",
+		"alpine:tag:extra",
+		"alpine@sha256:1234",
+		"alpine@md5:" + strings.Repeat("a", 32),
+		strings.Repeat("a", 256),
+		"alpine\n",
+	}
+	for _, image := range images {
+		t.Run(image, func(t *testing.T) {
+			spec := dockerValidationSpec(image)
+			if err := spec.Validate(nil); err == nil {
+				t.Fatalf("expected %q to be rejected", image)
+			}
+		})
+	}
+}
+
+func TestDockerSpecRejectsNonContainerFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Spec)
+		want   string
+	}{
+		{name: "iso", mutate: func(spec *Spec) { spec.ISO = "/tmp/disk.iso" }, want: "iso"},
+		{name: "kernel", mutate: func(spec *Spec) { spec.Kernel = "/tmp/vmlinuz" }, want: "kernel"},
+		{name: "initrd", mutate: func(spec *Spec) { spec.Initrd = "/tmp/initrd" }, want: "initrd"},
+		{name: "vnc console", mutate: func(spec *Spec) { spec.Console = "vnc" }, want: "telnet"},
+		{name: "serial port", mutate: func(spec *Spec) { spec.Serial = 1 }, want: "serial"},
+		{name: "qemu extras", mutate: func(spec *Spec) { spec.Extra = []string{"-smp 4"} }, want: "qemu options"},
+		{
+			name: "unsupported capability SYS_MODULE",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{CapAdd: []string{"SYS_MODULE"}}
+			},
+			want: "unsupported docker capability",
+		},
+		{
+			name: "unsupported capability SYS_PTRACE",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{CapAdd: []string{"SYS_PTRACE"}}
+			},
+			want: "unsupported docker capability",
+		},
+		{
+			name: "relative console command",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConsoleCommand: "vtysh"}
+			},
+			want: "console command",
+		},
+		{
+			name: "console command with arguments",
+			mutate: func(spec *Spec) {
+				spec.Docker = &DockerOptions{ConsoleCommand: "/usr/bin/vtysh --help"}
+			},
+			want: "console command",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			spec := dockerValidationSpec("alpine:3.20")
+			testCase.mutate(&spec)
+			err := spec.Validate(nil)
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected error containing %q, got %v", testCase.want, err)
+			}
+		})
+	}
+}
+
+func TestDockerSpecAcceptsTemplateCapabilities(t *testing.T) {
+	for _, capability := range []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"} {
+		t.Run(capability, func(t *testing.T) {
+			spec := dockerValidationSpec("alpine:3.20")
+			spec.Docker = &DockerOptions{CapAdd: []string{capability}}
+			spec.Normalize()
+			if err := spec.Validate(nil); err != nil {
+				t.Fatalf("expected %s to validate: %v", capability, err)
+			}
+		})
+	}
+}
+
+func TestDockerSpecDedupesCapabilities(t *testing.T) {
+	spec := dockerValidationSpec("alpine:3.20")
+	spec.Docker = &DockerOptions{CapAdd: []string{"NET_RAW", "NET_ADMIN", "SYS_ADMIN", "NET_RAW"}}
+	spec.Normalize()
+	if err := spec.Validate(nil); err != nil {
+		t.Fatalf("validation failed: %v", err)
+	}
+	if len(spec.Docker.CapAdd) != 3 {
+		t.Fatalf("capabilities were not deduplicated: %v", spec.Docker.CapAdd)
+	}
+}
+
+func TestDockerPullDefaultsToEnabled(t *testing.T) {
+	var missing *DockerOptions
+	if !missing.PullEnabled() {
+		t.Fatal("a nil docker block must pull by default")
+	}
+	if !(&DockerOptions{}).PullEnabled() {
+		t.Fatal("a nil pull value must pull by default")
+	}
+	if (&DockerOptions{Pull: boolPointer(false)}).PullEnabled() {
+		t.Fatal("pull=false must disable pulling")
+	}
+}

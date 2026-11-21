@@ -105,6 +105,63 @@ final class NodeControllerTest extends TestCase
         self::assertSame([], $this->calls);
     }
 
+    public function testDockerStartForwardsTheImageAndTheDockerBlock(): void
+    {
+        [$app, $cookie, $csrf] = $this->appWithSession();
+
+        $response = $this->request($app, 'POST', '/api/v2/nodes/start', [
+            'id' => 'node1',
+            'lab_id' => 'lab1',
+            'name' => 'R1',
+            'engine' => 'docker',
+            'image' => 'frrouting/frr:10.0.1',
+            'cpu' => 1,
+            'ram' => 256,
+            'ethernet' => 1,
+            'networks' => ['tlab0'],
+            'console' => 'telnet',
+            'docker' => [
+                'console_command' => '/usr/bin/vtysh',
+                'cap_add' => ['NET_ADMIN'],
+                'pull' => false,
+            ],
+        ], ['X-CSRF-Token' => $csrf], $cookie);
+
+        self::assertSame(202, $response->getStatusCode(), (string) $response->getBody());
+        self::assertCount(1, $this->calls);
+        $payload = $this->calls[0]['payload'];
+        self::assertSame('docker', $payload['engine']);
+        self::assertSame('frrouting/frr:10.0.1', $payload['image']);
+        self::assertSame([
+            'console_command' => '/usr/bin/vtysh',
+            'cap_add' => ['NET_ADMIN'],
+            'pull' => false,
+        ], $payload['docker']);
+    }
+
+    public function testDockerStartRejectsAnUnsafeBlockOrMissingImage(): void
+    {
+        [$app, $cookie, $csrf] = $this->appWithSession();
+
+        foreach ([
+            ['engine' => 'docker', 'docker' => ['cap_add' => ['SYS_MODULE']]],
+            ['engine' => 'docker', 'docker' => ['cap_add' => ['SYS_PTRACE']]],
+            ['engine' => 'docker', 'docker' => ['image' => 'x', 'pull' => 'yes']],
+            ['engine' => 'docker'],
+        ] as $payload) {
+            $response = $this->request(
+                $app,
+                'POST',
+                '/api/v2/nodes/start',
+                ['id' => 'node1', 'name' => 'R1'] + $payload,
+                ['X-CSRF-Token' => $csrf],
+                $cookie,
+            );
+            self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        }
+        self::assertSame([], $this->calls);
+    }
+
     public function testStopWipeStatusAndConsole(): void
     {
         [$app, $cookie, $csrf] = $this->appWithSession();

@@ -274,6 +274,36 @@ func (m *Manager) CreateTap(tap, bridge string) error {
 	return nil
 }
 
+// AttachInterface attaches an existing interface to a lab bridge using the
+// configured backend, applies the same per-port forwarding mask as CreateTap,
+// and brings the link up. Container nodes use it for the host end of a veth
+// pair; TeraLab remains the sole owner of lab bridges.
+func (m *Manager) AttachInterface(link, bridge string) error {
+	if err := ValidateLinkName(link); err != nil {
+		return err
+	}
+	if bridge != "" {
+		if err := ValidateLinkName(bridge); err != nil {
+			return err
+		}
+		if m.Backend == BackendOVS {
+			if output, err := m.Run("ovs-vsctl", "--may-exist", "add-port", bridge, link); err != nil {
+				return fmt.Errorf("attach %s to %s: %s: %w", link, bridge, strings.TrimSpace(string(output)), err)
+			}
+		} else {
+			if output, err := m.Run("ip", "link", "set", "dev", link, "master", bridge); err != nil {
+				return fmt.Errorf("attach %s to %s: %s: %w", link, bridge, strings.TrimSpace(string(output)), err)
+			}
+			m.applyPortForwarding(bridge, link)
+		}
+	}
+	if output, err := m.Run("ip", "link", "set", "dev", link, "up"); err != nil {
+		return fmt.Errorf("bring %s up: %s: %w", link, strings.TrimSpace(string(output)), err)
+	}
+
+	return nil
+}
+
 // DeleteLink removes a link and tolerates an already-missing device.
 func (m *Manager) DeleteLink(name string) error {
 	if err := ValidateLinkName(name); err != nil {

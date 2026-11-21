@@ -15,12 +15,17 @@ func TestAgentUnitCanSignalEngineProcesses(t *testing.T) {
 		t.Fatalf("read unit: %v", err)
 	}
 	unit := string(data)
-	for _, capability := range []string{"CAP_KILL", "CAP_SETUID", "CAP_SETGID", "CAP_NET_ADMIN"} {
+	// CAP_SYS_ADMIN is used to enter the container netns (nsenter/setns) and
+	// configure the veth peer; moving the link itself is CAP_NET_ADMIN. Docker
+	// containers are never started with --privileged.
+	for _, capability := range []string{"CAP_KILL", "CAP_SETUID", "CAP_SETGID", "CAP_NET_ADMIN", "CAP_SYS_ADMIN"} {
 		if !strings.Contains(unit, "CapabilityBoundingSet=") || !strings.Contains(unit, capability) {
 			t.Fatalf("agent unit must include %s", capability)
 		}
 	}
-	if !strings.Contains(unit, "AmbientCapabilities=") || !strings.Contains(unit, "CAP_KILL") {
-		t.Fatal("agent unit must grant ambient CAP_KILL for engine stop")
+	if !strings.Contains(unit, "AmbientCapabilities=") ||
+		!strings.Contains(unit, "CAP_KILL") ||
+		!strings.Contains(unit, "CAP_SYS_ADMIN") {
+		t.Fatal("agent unit must grant ambient CAP_KILL and CAP_SYS_ADMIN for stop and netns entry")
 	}
 }

@@ -13,12 +13,16 @@ use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Snapshots\SnapshotRepository;
+use TeraLab\Api\Templates\DockerOptions;
 use TeraLab\Api\Templates\QemuOptions;
 use TeraLab\Api\Templates\TemplateRepository;
 
 final class LabService
 {
     private const TRASH_TTL = 2592000; // 30 days
+
+    /** Node types the agent can run. */
+    private const ENGINES = ['qemu', 'vpcs', 'iol', 'dynamips', 'docker'];
 
     public function __construct(
         private readonly Config $config,
@@ -34,6 +38,9 @@ final class LabService
 
     /** @var array<string, array<string, string>> Template id => resolved QEMU spec fields. */
     private array $templateOptions = [];
+
+    /** @var array<string, array{image: string, docker: array<string, mixed>}> Template id => docker spec. */
+    private array $templateDockerOptions = [];
 
     /**
      * @param array<string, mixed> $input
@@ -693,7 +700,7 @@ final class LabService
     {
         return array_values(array_filter(
             $this->labNodes($lab),
-            static fn (array $node): bool => in_array($node['type'] ?? '', ['qemu', 'vpcs', 'iol', 'dynamips'], true),
+            static fn (array $node): bool => in_array($node['type'] ?? '', self::ENGINES, true),
         ));
     }
 
@@ -860,6 +867,59 @@ final class LabService
     }
 
     /**
+     * Docker templates contribute a raw container reference (never an image
+     * store lookup) and the bounded `docker` agent block. The console is always
+     * telnet, because the agent exposes a `docker exec` PTY.
+     *
+     * @param array<string, mixed> $spec
+     * @param array<string, mixed> $node
+     * @return array<string, mixed>
+     */
+    private function dockerSpec(array $spec, array $node): array
+    {
+        $docker = $this->dockerTemplate((string) ($node['template'] ?? ''));
+        $image = trim((string) ($node['image'] ?? ''));
+        if ($image === '') {
+            $image = $docker['image'];
+        }
+        if ($image === '') {
+            throw new HttpException(
+                422,
+                'Docker node "' . (string) ($node['name'] ?? $node['id'] ?? '') . '" has no container image reference.',
+            );
+        }
+        $spec['image'] = $image;
+        $spec['docker'] = $docker['docker'];
+        // A docker console is an exec PTY, so the engine only ever speaks
+        // telnet. Stored nodes may still carry another mode (old labs, manual
+        // edits); normalise instead of letting the agent reject the start.
+        $spec['console'] = 'telnet';
+
+        return $spec;
+    }
+
+    /**
+     * @return array{image: string, docker: array<string, mixed>}
+     */
+    private function dockerTemplate(string $templateID): array
+    {
+        if ($templateID === '') {
+            return ['image' => '', 'docker' => DockerOptions::spec([])];
+        }
+        if (isset($this->templateDockerOptions[$templateID])) {
+            return $this->templateDockerOptions[$templateID];
+        }
+        $repository = $this->templates ?? new TemplateRepository($this->config);
+        $template = $repository->find($templateID);
+        $options = $template !== null && is_array($template['options'] ?? null) ? $template['options'] : [];
+
+        return $this->templateDockerOptions[$templateID] = [
+            'image' => DockerOptions::image($options) ?? '',
+            'docker' => DockerOptions::spec($options),
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $lab
      * @return array<string, string>
      */
@@ -906,7 +966,7 @@ final class LabService
     private function spec(array $lab, array $node, array $bridges): array
     {
         $type = (string) ($node['type'] ?? 'qemu');
-        if (!in_array($type, ['qemu', 'vpcs', 'iol', 'dynamips'], true)) {
+        if (!in_array($type, self::ENGINES, true)) {
             throw new HttpException(422, 'Unsupported node type: ' . $type);
         }
         $interfaces = is_array($node['interfaces'] ?? null) ? $node['interfaces'] : [];
@@ -930,6 +990,9 @@ final class LabService
             'networks' => $networks,
             'console' => (string) ($node['console'] ?? 'telnet'),
         ];
+        if ($type === 'docker') {
+            return $this->dockerSpec($spec, $node);
+        }
         if (($node['uuid'] ?? '') !== '') {
             $spec['uuid'] = (string) $node['uuid'];
         }
@@ -984,12 +1047,28 @@ final class LabService
             if (in_array($type, ['text', 'picture'], true)) {
                 continue;
             }
-            if (!in_array($type, ['qemu', 'vpcs', 'iol', 'dynamips'], true)) {
+            if (!in_array($type, self::ENGINES, true)) {
                 $warnings[] = [
                     'type' => 'node_unsupported',
                     'node' => (string) ($node['name'] ?? $node['id'] ?? ''),
                     'message' => 'Node type "' . $type . '" is not supported by the engine and will not start.',
                 ];
+            }
+            if ($type === 'docker') {
+                // Container references never go through the image store.
+                $image = trim((string) ($node['image'] ?? ''));
+                if ($image === '') {
+                    $image = $this->dockerTemplate((string) ($node['template'] ?? ''))['image'];
+                }
+                if ($image === '') {
+                    $warnings[] = [
+                        'type' => 'image_missing',
+                        'node' => (string) ($node['name'] ?? $node['id'] ?? ''),
+                        'message' => 'Docker node "' . (string) ($node['name'] ?? $node['id'] ?? '')
+                            . '" has no container image reference and will not start.',
+                    ];
+                }
+                continue;
             }
             foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {
                 $value = (string) ($node[$key] ?? '');
@@ -1203,6 +1282,11 @@ final class LabService
         }
         foreach ($lab['node_list'] as $index => $node) {
             if (!is_array($node)) {
+                continue;
+            }
+            // A docker node stores a container reference in `image`; it is not
+            // an image-store path and must be preserved verbatim.
+            if (($node['type'] ?? '') === 'docker') {
                 continue;
             }
             foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {

@@ -16,7 +16,9 @@ use TeraLab\Api\Image\ImageReference;
  * The result is an EVE-NG-compatible .unl file: EVE-NG reads the topology,
  * interfaces, configs and objects, and ignores the TeraLab attributes and the
  * <extensions> element. Image/ISO/kernel/initrd values are single path
- * segments (never absolute paths).
+ * segments (never absolute paths), except on docker nodes where `image` is a
+ * container reference (registry/repository:tag) stored verbatim, matching the
+ * EVE-NG convention.
  */
 final class UnlWriter
 {
@@ -154,7 +156,10 @@ final class UnlWriter
         foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {
             $value = (string) ($node[$key] ?? '');
             if ($value !== '') {
-                $element->setAttribute($key, ImageReference::portable($value));
+                $element->setAttribute(
+                    $key,
+                    $type === 'docker' ? $value : ImageReference::portable($value),
+                );
             }
         }
         $element->setAttribute('console', (string) ($node['console'] ?? 'telnet'));

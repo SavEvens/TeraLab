@@ -59,23 +59,28 @@ type NodeInfo struct {
 }
 
 type Node struct {
-	Spec        Spec
-	Cmd         *exec.Cmd
-	PTY         *os.File
-	Relays      []io.Closer
-	RunDir      string
-	Overlay     string
-	Taps        []string
-	CgroupPath  string
-	VNCPort     int
-	VNCPassword string
-	MonitorPath string
-	ConsolePort int
-	StatePath   string
-	State       string
-	Started     time.Time
-	Done        chan struct{}
-	Ready       atomic.Bool
+	Spec Spec
+	Cmd  *exec.Cmd
+	// ExecCmd is the optional docker exec console client; it is never the
+	// container itself and stopping it must not stop the container.
+	ExecCmd      *exec.Cmd
+	ContainerID  string
+	ContainerPID int
+	PTY          *os.File
+	Relays       []io.Closer
+	RunDir       string
+	Overlay      string
+	Taps         []string
+	CgroupPath   string
+	VNCPort      int
+	VNCPassword  string
+	MonitorPath  string
+	ConsolePort  int
+	StatePath    string
+	State        string
+	Started      time.Time
+	Done         chan struct{}
+	Ready        atomic.Bool
 
 	historyMu   sync.Mutex
 	history     []byte
@@ -90,6 +95,7 @@ type Node struct {
 type Manager struct {
 	cfg    config.Config
 	net    *network.Manager
+	docker *dockerClient
 	logger *slog.Logger
 	mu     sync.Mutex
 	nodes  map[string]*Node
@@ -107,6 +113,7 @@ func NewManager(cfg config.Config, logger *slog.Logger) *Manager {
 	return &Manager{
 		cfg:    cfg,
 		net:    links,
+		docker: newDockerClient(cfg.DockerBinary),
 		logger: logger,
 		nodes:  map[string]*Node{},
 	}
@@ -153,11 +160,22 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 		info, err = m.startDynamips(spec, runDir)
 	case "iol":
 		info, err = m.startIOL(spec, runDir)
+	case "docker":
+		info, err = m.startDocker(spec, runDir)
 	default:
 		err = fmt.Errorf("unsupported engine %q", spec.Engine)
 	}
 	if err != nil {
-		_ = os.RemoveAll(runDir)
+		// A docker stop/start cycle reuses the preserved container. Removing
+		// its run directory here would also delete the state file that keeps
+		// the container associated with the node; leave a pre-existing state
+		// file for the next reconcile instead.
+		if spec.Engine != "docker" {
+			_ = os.RemoveAll(runDir)
+		} else if _, statErr := os.Stat(filepath.Join(runDir, stateFileName)); statErr != nil {
+			_ = os.RemoveAll(runDir)
+		}
+
 		return NodeInfo{}, err
 	}
 
@@ -332,6 +350,14 @@ func (m *Manager) Stop(id string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	if node.Spec.Engine == "docker" {
+		m.mu.Unlock()
+		return m.stopDocker(id, node)
+	}
+	if node.Cmd == nil || node.Cmd.Process == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("stop node %s: engine process is missing", id)
+	}
 	pid := node.Cmd.Process.Pid
 	m.mu.Unlock()
 
@@ -363,6 +389,13 @@ func (m *Manager) Stop(id string) error {
 }
 
 func (m *Manager) Wipe(id string) error {
+	m.mu.Lock()
+	node, tracked := m.nodes[id]
+	m.mu.Unlock()
+	if tracked && node.Spec.Engine == "docker" {
+		return m.wipeDocker(id, node)
+	}
+
 	if err := m.Stop(id); err != nil && !strings.Contains(err.Error(), "not found") {
 		return err
 	}
@@ -391,11 +424,19 @@ func (m *Manager) Wipe(id string) error {
 
 func (m *Manager) Status(id string) (NodeInfo, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	node, ok := m.nodes[id]
+	m.mu.Unlock()
 	if !ok {
 		return NodeInfo{}, errors.New("node not found")
 	}
+	// A re-registered container has no in-memory process to reflect; refresh
+	// its state from docker before reporting it.
+	if node.Spec.Engine == "docker" {
+		m.refreshDockerNode(node)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	return m.info(node), nil
 }
@@ -577,6 +618,8 @@ func (m *Manager) info(node *Node) NodeInfo {
 	}
 	if node.Cmd != nil && node.Cmd.Process != nil {
 		info.PID = node.Cmd.Process.Pid
+	} else if node.ContainerPID > 0 {
+		info.PID = node.ContainerPID
 	}
 	if node.State == "running" {
 		info.UptimeSeconds = int64(time.Since(node.Started).Seconds())
@@ -612,26 +655,21 @@ func readCgroupUsage(path string) (int64, int64) {
 }
 
 func (m *Manager) register(node *Node) (NodeInfo, error) {
-	state := nodeState{
-		ID:      node.Spec.ID,
-		LabID:   node.Spec.LabID,
-		Engine:  node.Spec.Engine,
-		Exe:     node.Cmd.Path,
-		PID:     node.Cmd.Process.Pid,
-		Taps:    append([]string(nil), node.Taps...),
-		Cgroup:  node.CgroupPath,
-		Started: node.Started.UTC().Format(time.RFC3339),
-	}
-	statePath := filepath.Join(node.RunDir, stateFileName)
-	if data, err := json.MarshalIndent(state, "", "  "); err == nil {
-		if err := os.WriteFile(statePath, data, 0o640); err == nil {
-			node.StatePath = statePath
-		}
-	}
+	m.saveNodeState(node)
 
 	m.mu.Lock()
 	m.nodes[node.Spec.ID] = node
 	m.mu.Unlock()
+
+	if node.Spec.Engine == "docker" {
+		m.logger.Info("docker node registered",
+			"id", node.Spec.ID,
+			"container", node.ContainerID,
+			"state", node.State,
+			"run_dir", node.RunDir,
+		)
+		return m.info(node), nil
+	}
 
 	go m.wait(node)
 	m.logger.Info("node started",
@@ -642,6 +680,40 @@ func (m *Manager) register(node *Node) (NodeInfo, error) {
 	)
 
 	return m.info(node), nil
+}
+
+// saveNodeState persists what a later agent process needs to re-register a
+// node. Container nodes additionally store the image, container id and bounded
+// docker options; the full spec keeps stop, status and wipe working after an
+// agent restart without a live exec.Cmd.
+func (m *Manager) saveNodeState(node *Node) {
+	state := nodeState{
+		ID:      node.Spec.ID,
+		LabID:   node.Spec.LabID,
+		Engine:  node.Spec.Engine,
+		Taps:    append([]string(nil), node.Taps...),
+		Cgroup:  node.CgroupPath,
+		Started: node.Started.UTC().Format(time.RFC3339),
+	}
+	if node.Spec.Engine == "docker" {
+		spec := node.Spec
+		state.Spec = &spec
+		state.Image = node.Spec.Image
+		state.ContainerID = node.ContainerID
+		state.Docker = node.Spec.Docker
+		state.PID = node.ContainerPID
+	} else if node.Cmd != nil {
+		state.Exe = node.Cmd.Path
+		if node.Cmd.Process != nil {
+			state.PID = node.Cmd.Process.Pid
+		}
+	}
+	statePath := filepath.Join(node.RunDir, stateFileName)
+	if data, err := json.MarshalIndent(state, "", "  "); err == nil {
+		if err := os.WriteFile(statePath, data, 0o640); err == nil {
+			node.StatePath = statePath
+		}
+	}
 }
 
 func (m *Manager) runDir(spec Spec) (string, error) {

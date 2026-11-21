@@ -4,8 +4,8 @@
 # TeraLab v1.6-dev software bill of materials
 
 This inventory covers distributed TeraLab code and its direct dependencies.
-QEMU, Dynamips, IOL/IOUtools, VPCS, Open vSwitch, and the kernel are separate
-programs; none is linked into the AGPLv3 TeraLab code.
+QEMU, Dynamips, IOL/IOUtools, VPCS, Open vSwitch, Docker, and the kernel are
+separate programs; none is linked into the AGPLv3 TeraLab code.
 
 ## First-party code
 
@@ -62,6 +62,10 @@ Exact versions and hashes: `api/composer.lock`.
 | VPCS 0.5b2 | BSD-3-Clause | Distribution package |
 | Open vSwitch 3.5 (optional) | Apache-2.0 | Distribution package |
 | Linux kernel/OVMF | GPL-2.0 / BSD | Distribution packages |
+
+The Docker CLI is executed by the agent as a separate program; it is not
+linked into TeraLab and is not distributed with it, so it is not a bundled
+dependency.
 
 ## Notices and source offer
 

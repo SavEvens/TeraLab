@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SavEvens/TeraLab/agent/internal/config"
 )
 
 func TestInterfacesListsHostLinks(t *testing.T) {
@@ -173,5 +175,53 @@ func TestStatusCPUUsageJSONField(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), `"cpu_usage_percent":42.5`) {
 		t.Fatalf("status payload lacks the measured cpu field: %s", payload)
+	}
+}
+
+func writeDockerStub(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "docker")
+	script := "#!/bin/sh\n" + body + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	return path
+}
+
+func TestDockerEngineStatusReportsDaemonAndVersion(t *testing.T) {
+	binary := writeDockerStub(t, `case "$1" in
+info) exit 0 ;;
+version) echo "27.1.1" ;;
+*) exit 1 ;;
+esac`)
+
+	status := dockerEngineStatus(context.Background(), config.Config{DockerBinary: binary})
+	if status.Name != "docker" || status.Binary != binary {
+		t.Fatalf("unexpected engine status identity: %+v", status)
+	}
+	if !status.Available {
+		t.Fatalf("expected docker to be available: %+v", status)
+	}
+	if status.Version != "27.1.1" {
+		t.Fatalf("unexpected docker version: %q", status.Version)
+	}
+}
+
+func TestDockerEngineStatusRequiresReachableDaemon(t *testing.T) {
+	binary := writeDockerStub(t, `exit 1`)
+
+	status := dockerEngineStatus(context.Background(), config.Config{DockerBinary: binary})
+	if status.Available {
+		t.Fatalf("daemon failure must not report available: %+v", status)
+	}
+}
+
+func TestDockerEngineStatusMissingBinary(t *testing.T) {
+	status := dockerEngineStatus(context.Background(), config.Config{
+		DockerBinary: filepath.Join(t.TempDir(), "missing-docker"),
+	})
+	if status.Available {
+		t.Fatalf("missing binary must not report available: %+v", status)
 	}
 }
