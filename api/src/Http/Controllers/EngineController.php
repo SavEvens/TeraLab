@@ -30,6 +30,26 @@ final class EngineController
         return Json::response($response, ['data' => $this->agent->engines()]);
     }
 
+    public function dockerImages(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $this->access->user($request);
+
+        try {
+            $images = $this->agent->dockerImages();
+        } catch (HttpException $exception) {
+            if ($exception->status < 500) {
+                throw $exception;
+            }
+
+            throw new HttpException(
+                502,
+                'The Docker image list is unavailable: Docker is not available on the agent host.',
+            );
+        }
+
+        return Json::response($response, ['data' => $images]);
+    }
+
     public function reconcile(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $this->access->requireRole($this->access->user($request), 'admin');

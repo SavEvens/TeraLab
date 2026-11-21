@@ -332,6 +332,8 @@ final class App
         $engines = $container->get(EngineController::class);
         $app->get('/api/v2/engines', fn ($request, $response) => $engines->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/docker/images', fn ($request, $response) => $engines->dockerImages($request, $response))
+            ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/system/host', fn ($request, $response) => $container->get(HostController::class)->status($request, $response))
             ->add($container->get(AuthMiddleware::class));
         $system = $container->get(SystemController::class);
