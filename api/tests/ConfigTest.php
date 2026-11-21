@@ -39,7 +39,7 @@ final class ConfigTest extends TestCase
         $file = $root . '/TERALAB_VERSION';
         self::assertFileExists($file);
         $expected = trim((string) file_get_contents($file));
-        self::assertSame('1.5.8', $expected);
+        self::assertSame('1.6-dev', $expected);
 
         putenv('TERALAB_ROOT=' . $root);
         putenv('TERALAB_CONFIG=/nonexistent/teralab-config.php');

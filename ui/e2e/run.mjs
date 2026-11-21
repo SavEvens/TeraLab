@@ -487,7 +487,7 @@ try {
   if (systemPayloadCards !== 0 || systemHost.includes('Host status payload')) throw new Error('system host tab still shows the raw JSON payload card')
   if (!/CPU usage/i.test(systemHost) || !/\d+(?:\.\d+)?%/.test(systemHost)) throw new Error(`system host tab has no CPU usage percentage: ${systemHost}`)
   if (aboutDots !== 0) throw new Error('about page still shows status dots')
-  if (!/^v\d+\.\d+\.\d+$/i.test(aboutBadge)) throw new Error(`about page version badge missing: ${aboutBadge}`)
+  if (!/^v\d+\.\d+(?:\.\d+)?(?:-[0-9a-z.]+)?$/i.test(aboutBadge)) throw new Error(`about page version badge missing: ${aboutBadge}`)
   if (!editorButtons.includes('+ Add link')) throw new Error(`top bar missing + Add link: ${editorButtons}`)
   if (editorButtons.includes('Save') || editorButtons.includes('Validate') || editorButtons.some((text) => /^Align/.test(text))) {
     throw new Error(`removed editor controls still present: ${editorButtons}`)
