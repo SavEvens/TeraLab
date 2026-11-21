@@ -163,9 +163,9 @@ ip address 10.0.0.1 255.255.255.0
 			want: []string{"Ethernet0/0"},
 		},
 		{
-			name: "trailing space on a top-level command still ends the block",
+			name:   "trailing space on a top-level command still ends the block",
 			config: "interface Ethernet0/0\n ip address 10.0.0.1 255.255.255.0\nrouter ospf 1 \n ipv6 address 2001:DB8::1/64\n",
-			want: nil,
+			want:   nil,
 		},
 		{
 			name: "uppercase commands",
