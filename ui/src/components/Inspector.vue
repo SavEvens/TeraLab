@@ -51,10 +51,10 @@
       <label>Image
         <select :value="node.data.image" @change="update('image', $event.target.value)">
           <option value="">—</option>
-          <option v-if="node.data.image && !hasReference(node.data.image, node.data.kind)" :value="node.data.image">
-            ⚠ {{ node.data.image }} (unmapped)
+          <option v-if="node.data.image && !hasNodeImage(node)" :value="node.data.image">
+            ⚠ {{ node.data.image }} (not mapped to this template)
           </option>
-          <option v-for="image in imagesFor(node.data.kind)" :key="image.id" :value="image.reference">
+          <option v-for="image in imagesForNode(node)" :key="image.id" :value="image.reference">
             {{ image.name }} ({{ image.format || image.kind }})
           </option>
         </select>
@@ -106,8 +106,17 @@ function imagesFor(kind) {
   return props.images.filter((image) => image.kind === kind)
 }
 
-function hasReference(value, kind) {
-  return imagesFor(kind).some((image) => image.reference === value)
+// When the node's template has at least one mapped image, the selector offers
+// only that set. Templates without a mapping keep the previous behaviour and
+// list every image of the node's engine kind.
+function imagesForNode(node) {
+  const mapped = props.images.filter((image) => image.template && image.template === node.data.template)
+
+  return mapped.length ? mapped : imagesFor(node.data.kind)
+}
+
+function hasNodeImage(node) {
+  return imagesForNode(node).some((image) => image.reference === node.data.image)
 }
 
 function update(key, value) {

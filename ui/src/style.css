@@ -425,6 +425,9 @@ label { display: grid; gap: 5px; color: var(--muted); font: 600 10px/1.2 var(--m
 .images-view code { font-size: 10px; color: var(--muted); }
 .images-view td select { max-width: 140px; }
 .images-view .badge.linked { margin-left: 7px; padding: 1px 6px; font-size: 9px; color: var(--magenta); border-color: rgba(255, 62, 200, 0.45); }
+.rename-modal { display: flex; flex-direction: column; gap: 12px; max-width: 520px; }
+.rename-modal form { display: flex; flex-direction: column; gap: 12px; }
+.rename-modal .row { margin-top: 4px; }
 .adopt-modal { max-width: 1080px; max-height: min(90vh, 880px); overflow: auto; display: flex; flex-direction: column; gap: 12px; }
 .adopt-root { display: flex; gap: 10px; align-items: end; }
 .adopt-root label { flex: 1; }

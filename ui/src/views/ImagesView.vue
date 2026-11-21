@@ -56,8 +56,7 @@
           <td>{{ new Date(image.created_at * 1000).toLocaleDateString() }}</td>
           <td class="actions">
             <button class="ghost" @click="inspect(image)">Details</button>
-            <button v-if="canEdit" class="ghost" @click="reference(image)">Reference</button>
-            <button v-if="canEdit" class="ghost" @click="rename(image)">Rename</button>
+            <button v-if="canEdit" class="ghost" @click="openRename(image)">Rename</button>
             <button v-if="canEdit" class="danger" @click="remove(image)">{{ image.external ? 'Unlink' : 'Delete' }}</button>
           </td>
         </tr>
@@ -80,6 +79,45 @@
           <dt>sha256</dt><dd class="mono">{{ details.sha256 }}</dd>
         </dl>
         <div class="row"><button class="ghost" @click="details = null">Close</button></div>
+      </div>
+    </div>
+
+    <div v-if="renameDialog.open" class="modal-backdrop" @click.self="closeRename">
+      <div class="modal rename-modal" role="dialog" aria-modal="true" aria-label="Rename image">
+        <h2>Rename image</h2>
+        <p class="hint">
+          The display name is what lists show. The reference is the single name lab nodes store.
+        </p>
+        <form @submit.prevent="saveRename">
+          <label>Display name
+            <input
+              v-model="renameDialog.name"
+              aria-label="Display name"
+              autocomplete="off"
+              :aria-invalid="renameNameError ? 'true' : undefined"
+              aria-describedby="rename-name-error"
+            />
+          </label>
+          <p v-if="renameNameError" id="rename-name-error" class="error" role="alert">{{ renameNameError }}</p>
+          <label>Reference
+            <input
+              v-model="renameDialog.reference"
+              aria-label="Reference"
+              autocomplete="off"
+              spellcheck="false"
+              :aria-invalid="renameReferenceError ? 'true' : undefined"
+              aria-describedby="rename-reference-hint rename-reference-error"
+            />
+          </label>
+          <p id="rename-reference-hint" class="hint">The value lab nodes store in the .unl file.</p>
+          <p v-if="renameReferenceError" id="rename-reference-error" class="error" role="alert">{{ renameReferenceError }}</p>
+          <div class="row">
+            <button type="button" class="ghost" :disabled="renameDialog.saving" @click="closeRename">Cancel</button>
+            <button type="submit" :disabled="renameDialog.saving || !!renameNameError || !!renameReferenceError">
+              {{ renameDialog.saving ? 'Saving…' : 'Save' }}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -205,6 +243,7 @@ const uploading = ref(false)
 const uploadProgress = ref(0)
 const details = ref(null)
 const error = ref('')
+const renameDialog = ref({ open: false, image: null, name: '', reference: '', saving: false })
 const fileInput = ref(null)
 const canEdit = computed(() => ['admin', 'editor'].includes(session.user?.role || 'user'))
 const canAdmin = computed(() => session.user?.role === 'admin')
@@ -278,30 +317,97 @@ function inspect(image) {
   details.value = image
 }
 
-async function reference(image) {
-  const value = window.prompt(`Reference for “${image.name}” (single name, no paths):`, image.reference || '')
-  if (value === null) return
-  const trimmed = value.trim()
-  if (!trimmed) return
-  try {
-    await api.setImageReference(image.id, trimmed)
-    notify('success', 'Reference updated')
-    await load()
-    if (details.value?.id === image.id) details.value = { ...details.value, reference: trimmed }
-  } catch (exception) {
-    error.value = exception.message
+// The API validates with PHP's strlen(), which counts UTF-8 bytes, not code
+// points. Use the same measure so multi-byte names cannot pass here and fail
+// server-side.
+function utf8Length(value) {
+  return new TextEncoder().encode(value).length
+}
+
+// Display name rules mirror ImageStore::rename(): non-empty after trimming,
+// at most 128 UTF-8 bytes, no control characters.
+const renameNameError = computed(() => {
+  if (!renameDialog.value.open) return ''
+  const name = renameDialog.value.name.trim()
+  if (!name) return 'Display name is required.'
+  if (utf8Length(name) > 128) return 'Display name must be 128 characters or fewer.'
+  if (/[\x00-\x1f]/.test(name)) return 'Display name cannot contain control characters.'
+
+  return ''
+})
+
+// Reference rules follow ImageReference::isPortable() (a single path segment,
+// no slashes or "..", at most 128 UTF-8 bytes) but are stricter on purpose:
+// interior whitespace and control characters are rejected too, so every value
+// stays on the portable [A-Za-z0-9._-] character set. isPortable() only trims
+// edges and would accept such values.
+const renameReferenceError = computed(() => {
+  if (!renameDialog.value.open) return ''
+  const reference = renameDialog.value.reference.trim()
+  if (!reference) return 'Reference is required.'
+  if (/\s/.test(reference)) return 'Reference cannot contain spaces.'
+  if (reference.includes('/') || reference.includes('\\')) return 'Reference must be a single name, without slashes.'
+  if (reference.includes('..')) return 'Reference cannot contain “..”.'
+  if (utf8Length(reference) > 128) return 'Reference must be 128 characters or fewer.'
+  if (/[\x00-\x1f]/.test(reference)) return 'Reference cannot contain control characters.'
+
+  return ''
+})
+
+function openRename(image) {
+  error.value = ''
+  renameDialog.value = {
+    open: true,
+    image,
+    name: image.name || '',
+    reference: image.reference || '',
+    saving: false
   }
 }
 
-async function rename(image) {
-  const value = window.prompt('Image name', image.name)
-  if (value === null || !value.trim()) return
+function closeRename() {
+  if (renameDialog.value.saving) return
+  renameDialog.value = { ...renameDialog.value, open: false }
+}
+
+async function saveRename() {
+  const dialog = renameDialog.value
+  if (!dialog.open || dialog.saving) return
+  if (renameNameError.value || renameReferenceError.value) return
+  const image = dialog.image
+  const name = dialog.name.trim()
+  const reference = dialog.reference.trim()
+  const nameChanged = name !== (image.name || '')
+  const referenceChanged = reference !== (image.reference || '')
+  if (!nameChanged && !referenceChanged) {
+    closeRename()
+    return
+  }
+
+  dialog.saving = true
+  let nameApplied = false
   try {
-    await api.renameImage(image.id, value.trim())
-    notify('success', 'Image renamed')
+    // The two existing helpers share the PATCH endpoint; only send what
+    // actually changed so an untouched field is never rewritten.
+    if (nameChanged) {
+      await api.renameImage(image.id, name)
+      nameApplied = true
+    }
+    if (referenceChanged) await api.setImageReference(image.id, reference)
+    dialog.saving = false
+    notify('success', 'Image updated')
+    closeRename()
     await load()
   } catch (exception) {
-    error.value = exception.message
+    dialog.saving = false
+    notify('error', exception.message)
+    if (nameApplied) {
+      // The display name is already stored. Keep the dialog open with the
+      // reference the user typed, but refresh the row behind it so a
+      // half-applied rename is visible.
+      dialog.image = { ...image, name }
+      await load()
+    }
   }
 }
 

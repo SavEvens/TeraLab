@@ -159,8 +159,8 @@ export function startMockServer(port = 8099) {
       nodeStates.lab1 = {}
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.7' })
-    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.7', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
+    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.5.8' })
+    if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.5.8', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       return send(response, 200, {
@@ -340,10 +340,46 @@ export function startMockServer(port = 8099) {
       images = [image]
       return send(response, 201, { status: 'success', data: image })
     }
+    if (request.method === 'POST' && path === '/__extra-image') {
+      // A second qemu image, mapped to a different template. The Inspector must
+      // not offer it for a Linux node once Linux has its own mapping.
+      images.push({
+        id: 'img2',
+        kind: 'qemu',
+        name: 'Other image',
+        reference: 'other.qcow2',
+        path: '/var/lib/teralab/images/qemu/other.qcow2',
+        sha256: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+        size: 2097152,
+        virtual_size: 8388608,
+        format: 'qcow2',
+        backing_file: '',
+        notes: null,
+        template: 'vpcs',
+        created_at: Math.floor(Date.now() / 1000)
+      })
+      return send(response, 200, { ok: true })
+    }
     if (path.startsWith('/api/v2/images/') && request.method === 'PATCH') {
       const input = await body(request)
-      images = images.map((image) => ({ ...image, name: input.name || image.name }))
-      return send(response, 200, { status: 'success', data: images[0] })
+      const id = decodeURIComponent(path.split('/').pop())
+      const current = images.find((image) => image.id === id)
+      if (!current) return send(response, 404, { message: 'Image not found.' })
+      if (
+        typeof input.reference === 'string' &&
+        input.reference !== current.reference &&
+        images.some((image) => image.id !== id && image.reference === input.reference)
+      ) {
+        return send(response, 409, { message: 'Another image already uses that reference.' })
+      }
+      images = images.map((image) => image.id === id
+        ? {
+            ...image,
+            name: typeof input.name === 'string' ? input.name : image.name,
+            reference: typeof input.reference === 'string' ? input.reference : image.reference
+          }
+        : image)
+      return send(response, 200, { status: 'success', data: images.find((image) => image.id === id) })
     }
     if (path.startsWith('/api/v2/images/') && path.endsWith('/template') && request.method === 'PUT') {
       const input = await body(request)

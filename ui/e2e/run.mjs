@@ -151,11 +151,20 @@ try {
   await page.getByRole('button', { name: 'Upload' }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /uploaded/i.test(toast.textContent || '')), null, { timeout: 10000 })
   await page.waitForSelector('.images-view tbody tr')
-  page.once('dialog', (dialog) => dialog.accept('Renamed base'))
   await page.getByRole('button', { name: 'Rename' }).click()
+  await page.waitForSelector('.rename-modal')
+  const renamePrefill = {
+    name: await page.locator('.rename-modal input[aria-label="Display name"]').inputValue(),
+    reference: await page.locator('.rename-modal input[aria-label="Reference"]').inputValue()
+  }
+  await page.locator('.rename-modal input[aria-label="Display name"]').fill('Renamed base')
+  await page.locator('.rename-modal').getByRole('button', { name: 'Save' }).click()
   await page.waitForFunction(() => document.querySelector('.images-view tbody')?.textContent.includes('Renamed base'), null, { timeout: 10000 })
   await page.locator('.images-view tbody tr').first().locator('select').selectOption('linux')
   await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /Template mapped/i.test(toast.textContent || '')), null, { timeout: 10000 })
+  // A second qemu image mapped elsewhere: the Linux node's Inspector must not
+  // offer it once Linux has its own mapping.
+  await fetch(`http://127.0.0.1:${mockPort}/__extra-image`, { method: 'POST' })
   const imageRow = await page.locator('.images-view tbody tr').first().innerText()
 
   await page.getByRole('link', { name: 'Labs', exact: true }).click()
@@ -223,6 +232,13 @@ try {
   await page.waitForFunction((count) => document.querySelectorAll('.lab-node').length === count + 3, addedNodes)
   const batchNodes = await page.locator('.lab-node').count()
   const nodeCountAfterBatch = await page.locator('.ed-status span strong').first().innerText()
+  // The batch cascade can place the last node outside the viewport; select it
+  // through the same click handler instead of scrolling the canvas.
+  await page.locator('.lab-node').last().evaluate((element) => element.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  await page.waitForFunction(() => document.querySelector('.inspector input')?.value === 'Linux6', null, { timeout: 10000 })
+  const addedImageSelect = page.locator('.inspector label').filter({ hasText: 'Image' }).locator('select')
+  const addedImageValue = await addedImageSelect.inputValue()
+  const addedImageOptions = (await addedImageSelect.locator('option').allTextContents()).map((text) => text.trim())
 
   // Explicit link dialog with an IOL interface (e0/0, e0/1).
   await page.locator('.ed-actions button').filter({ hasText: 'Add link' }).click()
@@ -239,6 +255,7 @@ try {
   await page.waitForTimeout(1600)
   const linkedState = (await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()).lab
   const iolNode = linkedState.node_list.find((node) => node.id === '3')
+  const batchNode = linkedState.node_list.find((node) => node.id === '4')
   const r2Node = linkedState.node_list.find((node) => node.id === '2')
   const interfaceLink = {
     iol: iolNode?.interfaces?.[1]?.network_id,
@@ -381,9 +398,13 @@ try {
   await page.getByRole('link', { name: 'Images' }).click()
   await page.waitForURL('**/ui/images')
   await page.waitForSelector('.images-view tbody tr', { timeout: 10000 })
-  page.once('dialog', (dialog) => dialog.accept())
-  await page.getByRole('button', { name: 'Delete' }).first().click()
-  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /deleted/i.test(toast.textContent || '')), null, { timeout: 10000 })
+  let remainingImages = await page.locator('.images-view tbody tr').count()
+  while (remainingImages > 0) {
+    page.once('dialog', (dialog) => dialog.accept())
+    await page.getByRole('button', { name: 'Delete' }).first().click()
+    await page.waitForFunction((count) => document.querySelectorAll('.images-view tbody tr').length < count, remainingImages, { timeout: 10000 })
+    remainingImages = await page.locator('.images-view tbody tr').count()
+  }
   const imagesAfterDelete = await page.locator('.images-view tbody tr').count()
 
   const result = {
@@ -440,6 +461,11 @@ try {
     nodeFields,
     imageRow: imageRow.replace(/\s+/g, ' ').trim(),
     imageOptions,
+    addedImageValue,
+    addedImageOptions,
+    batchNodeImage: batchNode?.image,
+    iolNodeImage: iolNode?.image,
+    renamePrefill,
     dockPersists,
     tableRows,
     xtermCount,
@@ -505,7 +531,22 @@ try {
   if (terminalBounds.screenBottom > terminalBounds.paneBottom + 1) throw new Error(`terminal clipped: ${JSON.stringify(terminalBounds)}`)
   if (nodeFields.nic !== 'virtio' || nodeFields.serial !== 2) throw new Error('node nic/serial were not saved')
   if (!imageRow.includes('Renamed base')) throw new Error('image rename failed')
+  if (renamePrefill.name !== 'base' || renamePrefill.reference !== 'base.qcow2') {
+    throw new Error(`rename dialog was not prefilled: ${JSON.stringify(renamePrefill)}`)
+  }
   if (!imageOptions.some((option) => option.includes('Renamed base'))) throw new Error('inspector image picker missing uploaded image')
+  if (imageOptions.some((option) => option.includes('Other image'))) {
+    throw new Error(`inspector lists an image that is not mapped to the template: ${JSON.stringify(imageOptions)}`)
+  }
+  if (addedImageValue !== 'base.qcow2') throw new Error(`added node did not get the mapped image: ${addedImageValue}`)
+  if (!addedImageOptions.some((option) => option.includes('Renamed base'))) {
+    throw new Error(`inspector image picker missing the mapped image: ${JSON.stringify(addedImageOptions)}`)
+  }
+  if (addedImageOptions.some((option) => option.includes('Other image'))) {
+    throw new Error(`inspector lists a non-mapped image: ${JSON.stringify(addedImageOptions)}`)
+  }
+  if (batchNode?.image !== 'base.qcow2') throw new Error(`saved batch node has the wrong image: ${batchNode?.image}`)
+  if (iolNode?.image !== '') throw new Error(`unmapped template got an image: ${iolNode?.image}`)
   if (!/save conflict/i.test(conflictText)) throw new Error('conflict dialog missing')
   if (!consoleTab.trim()) throw new Error('console tab missing')
   if (xtermCount < 1) throw new Error('xterm not mounted')
