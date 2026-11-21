@@ -47,12 +47,21 @@ var (
 	// or shell metacharacters; the engine runs it directly, never through a
 	// shell.
 	dockerConsolePattern = regexp.MustCompile(`^/[A-Za-z0-9_./+-]{1,255}$`)
+	// dockerConfigPathPattern is the container path a template may copy the
+	// node startup configuration to. ".." segments and control characters are
+	// rejected separately.
+	dockerConfigPathPattern = regexp.MustCompile(`^/[A-Za-z0-9_./-]{1,200}$`)
 )
 
 // Docker is a bounded engine. Containers start from Docker's default
 // capability baseline; templates may opt into the routing and packet
 // capabilities below. SYS_ADMIN is required by FRR zebra and stays opt-in.
-const maxDockerCapAdd = 8
+const (
+	maxDockerCapAdd    = 8
+	maxDockerDaemons   = 12
+	maxDockerConfigLen = 65536
+	dockerDaemonsPath  = "/etc/frr/daemons"
+)
 
 var dockerTemplateCapabilities = []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"}
 
@@ -61,6 +70,26 @@ var dockerCapabilities = map[string]bool{
 	"NET_RAW":   true,
 	"SYS_ADMIN": true,
 }
+
+// dockerDaemonAllowlist is the selectable daemon set shipped in the FRR
+// image's /etc/frr/daemons file. The order is the rendering order: it is fixed
+// here so the generated file never depends on the template's list order or on
+// the image's own defaults. zebra and staticd always run in the image; zebra
+// may be listed for readability.
+var dockerDaemonAllowlist = []string{
+	"zebra", "bgpd", "ospfd", "ospf6d", "ripd", "ripngd", "isisd", "pimd",
+	"pim6d", "ldpd", "nhrpd", "eigrpd", "babeld", "sharpd", "pbrd", "bfdd",
+	"fabricd", "vrrpd", "pathd",
+}
+
+var dockerDaemons = func() map[string]bool {
+	allowed := make(map[string]bool, len(dockerDaemonAllowlist))
+	for _, daemon := range dockerDaemonAllowlist {
+		allowed[daemon] = true
+	}
+
+	return allowed
+}()
 
 // QEMU fallbacks, applied only when the node spec leaves a field empty. The
 // e1000 default is deliberate: most built-in templates declare no NIC, PAN-OS
@@ -101,6 +130,13 @@ var Engines = []string{"qemu", "vpcs", "dynamips", "iol", "docker"}
 type DockerOptions struct {
 	ConsoleCommand string   `json:"console_command,omitempty"`
 	CapAdd         []string `json:"cap_add,omitempty"`
+	// Daemons selects FRR daemons from dockerDaemonAllowlist. When it is set,
+	// the engine renders a complete /etc/frr/daemons file and copies it into
+	// the container before every start. An empty list injects nothing.
+	Daemons []string `json:"daemons,omitempty"`
+	// ConfigPath is the absolute container path the node startup Config is
+	// copied to before every start. An empty value injects no configuration.
+	ConfigPath string `json:"config_path,omitempty"`
 	// Pull controls whether a missing image may be pulled. A nil value keeps
 	// the historical default: pull once, with a bounded timeout.
 	Pull *bool `json:"pull,omitempty"`
@@ -416,6 +452,9 @@ func (s Spec) validateDocker() error {
 	if s.Serial != 0 {
 		return errors.New("docker nodes do not support serial ports")
 	}
+	if len(s.Config) > maxDockerConfigLen || strings.ContainsRune(s.Config, 0) {
+		return errors.New("invalid startup configuration")
+	}
 	if s.Docker != nil {
 		if err := validateDockerOptions(s.Docker); err != nil {
 			return err
@@ -452,6 +491,65 @@ func validateDockerOptions(options *DockerOptions) error {
 	// Docker baseline is not counted here.
 	if count > maxDockerCapAdd {
 		return fmt.Errorf("docker cap_add may not contain more than %d capabilities", maxDockerCapAdd)
+	}
+	if err := validateDockerDaemons(options.Daemons); err != nil {
+		return err
+	}
+	if err := validateDockerConfigPath(options.ConfigPath); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateDockerDaemons accepts only exact allowlisted names, without
+// duplicates, and at most maxDockerDaemons entries. Selection order is free;
+// rendering always uses the allowlist order.
+func validateDockerDaemons(daemons []string) error {
+	if len(daemons) == 0 {
+		return nil
+	}
+	if len(daemons) > maxDockerDaemons {
+		return fmt.Errorf("docker daemons may not contain more than %d entries", maxDockerDaemons)
+	}
+	seen := make(map[string]bool, len(daemons))
+	for _, daemon := range daemons {
+		if !dockerDaemons[daemon] {
+			return fmt.Errorf(
+				"unsupported docker daemon %q: must be one of %s",
+				daemon,
+				strings.Join(dockerDaemonAllowlist, ", "),
+			)
+		}
+		if seen[daemon] {
+			return fmt.Errorf("duplicate docker daemon %q", daemon)
+		}
+		seen[daemon] = true
+	}
+
+	return nil
+}
+
+// validateDockerConfigPath accepts an absolute container path with a bounded
+// alphabet and no parent-directory segment. The value is passed to docker cp
+// as one argv element, never through a shell.
+func validateDockerConfigPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	if hasControlChars(path) || strings.ContainsRune(path, 0) {
+		return errors.New("invalid docker config_path: control characters are not allowed")
+	}
+	if !dockerConfigPathPattern.MatchString(path) {
+		return fmt.Errorf(
+			"invalid docker config_path %q: must be an absolute path of at most 200 characters without spaces or shell characters",
+			path,
+		)
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return fmt.Errorf("invalid docker config_path %q: parent directory segments are not allowed", path)
+		}
 	}
 
 	return nil
