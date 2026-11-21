@@ -228,6 +228,21 @@ func (s *Server) handleEngines(writer http.ResponseWriter, request *http.Request
 	writeJSON(writer, http.StatusOK, apiResponse{OK: true, Result: system.Engines(ctx, s.cfg, s.manager)})
 }
 
+// handleDockerImages lists the container images already pulled on the agent
+// host. A missing binary or an unreachable daemon is reported as 503 so the
+// Inspector can explain why no docker image can be offered.
+func (s *Server) handleDockerImages(writer http.ResponseWriter, request *http.Request) {
+	images, err := s.manager.DockerImages(request.Context())
+	if err != nil {
+		// Manager.DockerImages reports every failure (missing binary,
+		// unreachable daemon, failed listing) as ErrEngineUnavailable.
+		writeError(writer, http.StatusServiceUnavailable, "engine_unavailable", err.Error())
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, apiResponse{OK: true, Result: map[string]any{"images": images}})
+}
+
 func (s *Server) handleImageInspect(writer http.ResponseWriter, request *http.Request) {
 	var payload imageInspectRequest
 	if err := readJSON(request, &payload); err != nil {
