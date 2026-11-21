@@ -401,7 +401,7 @@ esac`
 		"ip link add " + host + " type veth peer name " + peer,
 		"ip link set dev " + host + " master " + bridge,
 		"ip link set dev " + host + " up",
-		"ip link set " + peer + " netns 4242",
+		"ip link set " + peer + " netns /var/run/docker/netns/abc",
 		"nsenter --net=/var/run/docker/netns/abc ip link set " + peer + " name eth0",
 		"nsenter --net=/var/run/docker/netns/abc ip link set dev eth0 address " + spec.MAC(0),
 		"nsenter --net=/var/run/docker/netns/abc ip link set dev eth0 up",
@@ -431,6 +431,7 @@ func TestDockerVethFallsBackToInitPID(t *testing.T) {
 	for _, expected := range []string{
 		"ip link add " + spec.TapName(0),
 		"ip link set dev " + spec.TapName(0) + " up",
+		"ip link set " + peer + " netns 99",
 		"nsenter -t 99 -n ip link set " + peer + " name eth0",
 	} {
 		if !callsContain(*netCalls, expected) {
@@ -898,12 +899,46 @@ func TestDockerVethRejectsUntrustedSandboxKey(t *testing.T) {
 		t.Fatalf("attach interface: %v", err)
 	}
 	peer := dockerPeerName(spec.LabID, spec.ID, 0)
-	if !callsContain(*netCalls, "nsenter -t 77 -n ip link set "+peer+" name eth0") {
-		t.Fatalf("expected the init-pid fallback in %v", *netCalls)
+	for _, expected := range []string{
+		"ip link set " + peer + " netns 77",
+		"nsenter -t 77 -n ip link set " + peer + " name eth0",
+	} {
+		if !callsContain(*netCalls, expected) {
+			t.Fatalf("expected %q in %v", expected, *netCalls)
+		}
 	}
 	for _, call := range *netCalls {
-		if strings.Contains(call, "--net="+inspect.NetworkSettings.SandboxKey) {
-			t.Fatalf("untrusted sandbox key reached nsenter: %v", *netCalls)
+		if strings.Contains(call, inspect.NetworkSettings.SandboxKey) {
+			t.Fatalf("untrusted sandbox key reached the veth move or nsenter: %v", *netCalls)
+		}
+	}
+}
+
+func TestDockerVethPIDMoveReportsPtraceHint(t *testing.T) {
+	manager := newDockerTestManager(t, "/bin/true")
+	spec := dockerTestSpec(t)
+	spec.Ethernet = 1
+	spec.Networks = []string{""}
+	spec.Normalize()
+	inspect := &dockerInspect{ID: "cid"}
+	inspect.State.Pid = 55
+	peer := dockerPeerName(spec.LabID, spec.ID, 0)
+	pidMove := "ip link set " + peer + " netns 55"
+	manager.net.Run = func(name string, args ...string) ([]byte, error) {
+		if strings.TrimSpace(name+" "+strings.Join(args, " ")) == pidMove {
+			return []byte("Invalid netns value"), errors.New("exit status 1")
+		}
+
+		return nil, nil
+	}
+
+	err := manager.attachDockerInterface(spec, 0, spec.TapName(0), inspect)
+	if err == nil {
+		t.Fatal("expected the pid-based move to fail")
+	}
+	for _, expected := range []string{"Invalid netns value", "kernel.yama.ptrace_scope", "CAP_SYS_PTRACE"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("expected %q in %v", expected, err)
 		}
 	}
 }

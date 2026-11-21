@@ -181,18 +181,19 @@ orphans — unlabelled containers on the host are never touched.
 
 The systemd unit adds `CAP_SYS_ADMIN` to the agent's existing `CAP_NET_ADMIN`
 so the agent can enter the container network namespace and configure the veth
-peer there (`nsenter`/`setns`); moving the peer into the namespace itself needs
-`CAP_NET_ADMIN`. The containers themselves stay unprivileged. On hosts with
-`kernel.yama.ptrace_scope=1`, `ip link set <peer> netns <pid>` is gated by
-ptrace access to `/proc/<pid>/ns/net`; interface attachment fails and
-multi-interface docker nodes will not start unless the operator sets
-`kernel.yama.ptrace_scope=0` (runtime
-`sysctl -w kernel.yama.ptrace_scope=0`, or a persistent sysctl drop-in).
-Lowering yama weakens a host hardening setting; alternatively, grant the agent
-`CAP_SYS_PTRACE` as a local exception. The engine prefers Docker's sandbox key
-for namespace entry (avoiding the PID form when available), but the veth move
-still targets the container init PID, so this does not always avoid the issue.
-System → Engines reports Docker availability and version.
+peer there (`nsenter`/`setns`); moving and attaching the link itself needs
+`CAP_NET_ADMIN`. The containers themselves stay unprivileged.
+
+TeraLab prefers Docker's sandbox key for both entering the container namespace
+and moving the veth peer, so hosts with `kernel.yama.ptrace_scope=1` work
+normally. If Docker does not expose a sandbox key, or exposes one outside
+`/var/run/docker/netns/` or `/run/docker/netns/`, the engine falls back to the
+container init PID; that path needs ptrace access to `/proc/<pid>/ns/net`, so
+`kernel.yama.ptrace_scope=1` blocks interface attachment unless the operator
+sets it to 0 (runtime `sysctl -w kernel.yama.ptrace_scope=0`, or a persistent
+sysctl drop-in) or grants the agent `CAP_SYS_PTRACE` as a local exception.
+Lowering yama weakens a host hardening setting. System → Engines reports Docker
+availability and version.
 
 ## Host firewall (Docker hosts)
 

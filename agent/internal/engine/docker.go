@@ -501,19 +501,18 @@ func (m *Manager) attachDockerInterface(
 	if pid <= 0 {
 		return fmt.Errorf("docker container %s has no init pid", inspect.ID)
 	}
+	sandbox := dockerSandboxKey(inspect)
 
 	// Moving the link itself needs CAP_NET_ADMIN. Entering the container
 	// namespace for nsenter/setns needs CAP_SYS_ADMIN, which the agent unit
 	// grants; containers themselves are never privileged.
 	//
-	// Entering the container netns reads /proc/<pid>/ns/net. On hosts with
-	// kernel.yama.ptrace_scope=1 a root process without CAP_SYS_PTRACE may be
-	// denied access to a netns that is not its descendant. TeraLab does not add
-	// CAP_SYS_PTRACE; operators on such hosts must lower yama or provide the
-	// documented exception. Prefer docker's sandbox key because dockerd owns
-	// the namespace, not the agent.
+	// Entering by PID reads /proc/<pid>/ns/net, which hosts with
+	// kernel.yama.ptrace_scope=1 may deny to a root process without
+	// CAP_SYS_PTRACE. TeraLab does not add CAP_SYS_PTRACE; the docker sandbox
+	// key path is preferred because iproute2 can open it directly.
 	nsenter := []string{"nsenter"}
-	if sandbox := dockerSandboxKey(inspect); sandbox != "" {
+	if sandbox != "" {
 		nsenter = append(nsenter, "--net="+sandbox)
 	} else {
 		nsenter = append(nsenter, "-t", strconv.Itoa(pid), "-n")
@@ -564,10 +563,33 @@ func (m *Manager) attachDockerInterface(
 		return fmt.Errorf("bring veth %s up: %s: %w", host, strings.TrimSpace(string(output)), err)
 	}
 
-	if output, err := m.net.Run("ip", "link", "set", peer, "netns", strconv.Itoa(pid)); err != nil {
+	// Prefer the sandbox path: iproute2 opens an absolute netns path directly,
+	// avoiding the /proc/<pid>/ns/net ptrace check that denies the move when
+	// kernel.yama.ptrace_scope=1 and the agent lacks CAP_SYS_PTRACE. The PID
+	// fallback is used only when Docker exposed no trusted sandbox key.
+	if sandbox != "" {
+		if output, err := m.net.Run("ip", "link", "set", peer, "netns", sandbox); err != nil {
+			cleanup()
+
+			return fmt.Errorf(
+				"move veth %s into container netns %s: %s: %w",
+				peer,
+				sandbox,
+				strings.TrimSpace(string(output)),
+				err,
+			)
+		}
+	} else if output, err := m.net.Run("ip", "link", "set", peer, "netns", strconv.Itoa(pid)); err != nil {
 		cleanup()
 
-		return fmt.Errorf("move veth %s into container netns: %s: %w", peer, strings.TrimSpace(string(output)), err)
+		return fmt.Errorf(
+			"move veth %s into container netns by pid %d: %s: %w "+
+				"(if this is a ptrace denial, adjust kernel.yama.ptrace_scope; the agent does not hold CAP_SYS_PTRACE)",
+			peer,
+			pid,
+			strings.TrimSpace(string(output)),
+			err,
+		)
 	}
 	if err := runInNamespace("ip", "link", "set", peer, "name", target); err != nil {
 		cleanup()
