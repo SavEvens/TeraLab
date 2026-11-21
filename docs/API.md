@@ -23,6 +23,55 @@ CSRF=$(curl -b jar $B/api/v2/auth/me | jq -r .csrf_token)
 | POST | `/api/v2/auth/password` | Change password; revokes other sessions |
 | POST | `/api/v2/auth/sessions/revoke` | Revoke all other sessions |
 
+## Users (admin)
+
+All six routes require the `admin` role; other authenticated users get 403.
+Mutations also require the `X-CSRF-Token` header.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v2/users` | List users with session and lab counts |
+| POST | `/api/v2/users` | Create a user |
+| PATCH | `/api/v2/users/{id}` | Update email, name, expiration, or role |
+| POST | `/api/v2/users/{id}/password` | Set or generate a password; revokes sessions |
+| POST | `/api/v2/users/{id}/sessions/revoke` | Force logout |
+| DELETE | `/api/v2/users/{id}` | Delete a user |
+
+`GET /api/v2/users` returns `{"data":[…]}` with `id`, `username`, `email`,
+`name`, `role`, `expiration`, `created_at`, `updated_at`, `session_count`,
+`last_seen_at`, and `lab_count`. Password hashes are never returned.
+`expiration` is `-1` for never, otherwise a unix timestamp. Roles are `admin`,
+`editor`, and `user`.
+
+Create with `{username, role, email?, name?, password?, expiration?}`. The
+response is 201 with `{"data":{"user":{…}}}`. When `password` is omitted or
+empty, a policy-compliant password is generated and returned once as
+`data.password`; a typed password is validated and never echoed. Usernames are
+3–32 characters (`A–Z a–z 0–9 _ . -`) and must be unique, otherwise 422.
+
+`PATCH /api/v2/users/{id}` accepts any subset of `{email, name, expiration,
+role}` and returns the updated user. You cannot change your own role, and the
+last administrator cannot be demoted; both return 409. Unknown ids return 404.
+
+`POST /api/v2/users/{id}/password` accepts an optional `{"password":"…"}`; omit
+it to generate one. A generated password is returned once in `data.password`;
+an admin-typed password is validated and never echoed. All sessions of that
+user are revoked. `POST /api/v2/users/{id}/sessions/revoke` returns
+`{"data":{"revoked":N}}`.
+
+`DELETE /api/v2/users/{id}` returns
+`{"data":{"deleted":true,"labs_trashed":N}}`. By default the user's labs are
+kept (they become ownerless and accessible to admins only); send
+`delete_labs: true` in the JSON body or query string to move them to the
+30-day lab trash instead. With `delete_labs`, a running node in any owned lab
+returns 409 before anything changes. Deleting your own account, or the last
+administrator, also returns 409. The user's sessions, lab permissions, lab
+locks, and API tokens are removed.
+
+Audit entries `user.create`, `user.update`, `user.password.reset`,
+`user.sessions.revoke`, and `user.delete` record the actor, target, and IP
+address; passwords are never logged.
+
 ## Labs
 
 | Method | Path | Purpose |
