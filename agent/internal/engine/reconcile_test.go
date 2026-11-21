@@ -240,6 +240,65 @@ func TestReconcileKeepsLabDirectoryWithLiveNodeState(t *testing.T) {
 	}
 }
 
+// A stopped node has no process, taps, cgroup or state file worth protecting:
+// keeping it in the manager must not pin its lab directory outside the keep-set.
+func TestReconcileRemovesLabDirectoryOfStoppedNode(t *testing.T) {
+	manager, _ := newCleanupTestManager(t)
+	manager.cfg.DisableCgroups = false
+	runRoot := manager.cfg.RunDir
+
+	labDir := mkdirLab(t, runRoot, "lab-deleted")
+	nodeDir := writeNodeStateFile(t, labDir, "node-stopped", "lab-deleted")
+	cgroupDir := filepath.Join(manager.cfg.CgroupRoot, "node-node-stopped")
+	if err := os.MkdirAll(cgroupDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := Spec{ID: "node-stopped", LabID: "lab-deleted", Name: "R1", Engine: "qemu"}
+	spec.Normalize()
+	manager.nodes[spec.ID] = &Node{Spec: spec, State: "stopped"}
+
+	result, err := manager.Reconcile([]string{})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, err := os.Stat(labDir); !os.IsNotExist(err) {
+		t.Fatalf("lab directory of a stopped node survived: %v", err)
+	}
+	if _, err := os.Stat(nodeDir); !os.IsNotExist(err) {
+		t.Fatalf("node directory of a stopped node survived: %v", err)
+	}
+	if _, err := os.Stat(cgroupDir); !os.IsNotExist(err) {
+		t.Fatalf("cgroup of a stopped node survived: %v", err)
+	}
+	if !contains(result.RemovedCgroups, cgroupDir) {
+		t.Fatalf("cgroup sweep skipped a stopped node: %+v", result.RemovedCgroups)
+	}
+}
+
+// A running node keeps its lab directory even when the lab is not in the
+// keep-set and the node has no state file on disk.
+func TestReconcileKeepsRunningNodeLabDirectory(t *testing.T) {
+	manager, _ := newCleanupTestManager(t)
+	runRoot := manager.cfg.RunDir
+
+	labDir := mkdirLab(t, runRoot, "lab-running")
+	spec := Spec{ID: "node-running", LabID: "lab-running", Name: "R1", Engine: "qemu"}
+	spec.Normalize()
+	manager.nodes[spec.ID] = &Node{Spec: spec, State: "running"}
+
+	result, err := manager.Reconcile([]string{})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, err := os.Stat(labDir); err != nil {
+		t.Fatalf("running node's lab directory was removed: %v", err)
+	}
+	if len(result.RemovedDirs) != 0 {
+		t.Fatalf("removed dirs = %v, want none", result.RemovedDirs)
+	}
+}
+
 func TestReconcileLeavesLabDirectoriesWithoutKeepSet(t *testing.T) {
 	manager, _ := newCleanupTestManager(t)
 	runRoot := manager.cfg.RunDir

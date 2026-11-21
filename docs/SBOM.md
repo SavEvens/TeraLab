@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# TeraLab v1.5.6 software bill of materials
+# TeraLab v1.5.7 software bill of materials
 
 This inventory covers distributed TeraLab code and its direct dependencies.
 QEMU, Dynamips, IOL/IOUtools, VPCS, Open vSwitch, and the kernel are separate

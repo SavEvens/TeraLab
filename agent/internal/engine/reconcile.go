@@ -58,11 +58,19 @@ func (m *Manager) Reconcile(keepLabIDs []string) (ReconcileResult, error) {
 	keep := m.liveLinks("")
 	liveNodes := map[string]bool{}
 	// liveDirs holds the run-directory components that must survive the lab
-	// sweep: the lab of every tracked node, or the node's own directory when
-	// it has no lab.
+	// sweep: the lab of every running node, or the node's own directory when it
+	// has no lab.
 	liveDirs := map[string]bool{}
 	m.mu.Lock()
 	for _, node := range m.nodes {
+		// Only running nodes own live resources. Stop() leaves a node in the
+		// map with State "stopped" after it has already reaped the process,
+		// taps, cgroup and state file, so a stopped node must neither keep its
+		// lab directory alive nor mask a stale state file from the cleanup
+		// below.
+		if node.State != "running" {
+			continue
+		}
 		liveNodes[node.Spec.ID] = true
 		if node.Spec.LabID != "" {
 			liveDirs[shortPathComponent(node.Spec.LabID)] = true

@@ -3,6 +3,98 @@
 
 # TeraLab release notes
 
+# TeraLab v1.5.7 release notes
+
+- Release date: 2026-11-21
+- Previous release: v1.5.6
+- Licence: AGPL-3.0-or-later; UNetLab-derived files remain BSD-3-Clause
+
+## Reconcile reclaims the run directory of a deleted lab
+
+`POST /api/v2/maintenance/reconcile` did not reclaim the run directory of a lab
+that had been started and then deleted. This was found during live validation
+right after the v1.5.6 deployment.
+
+The agent keeps a node in its in-memory map after the node stops, and the
+reconcile sweep treated every entry in that map as live. A stopped node
+therefore still counted as a live member of its lab, its lab directory was
+treated as protected, and the directory was skipped by the sweep that is
+supposed to remove labs missing from the keep-set.
+
+Only `running` nodes now protect a lab directory:
+
+- A node in state `stopped` no longer keeps its lab directory alive. The lab
+  directory is reclaimed with the rest of the directories outside the
+  keep-set.
+- State left on disk for a node that is not running is cleaned as stale: a
+  matching process (if any) is killed, and its taps, cgroup and state file are
+  removed.
+- A `running` node still protects its lab directory even when the lab is absent
+  from the keep-set, so an in-flight lab is never swept mid-run.
+- Directories of labs the agent never remembered were already reclaimed; this
+  release closes the primary case, the lab the agent started itself.
+
+Two regression tests cover both sides:
+`TestReconcileRemovesLabDirectoryOfStoppedNode` (lab directory, node directory
+and cgroup of a stopped node are removed) and
+`TestReconcileKeepsRunningNodeLabDirectory` (a running node's lab survives).
+
+## Behaviour changes
+
+- A lab whose nodes are all stopped no longer pins its run directory. Its run
+  directory is reclaimed on the next reconcile once the lab is gone from the
+  keep-set, which is what deleting a lab already advertised.
+- Nothing else is pruned more aggressively: labs that still exist are in the
+  keep-set, and running nodes are protected regardless.
+
+## API changes
+
+None. The endpoint, its request body and the `ReconcileResult` fields
+(`killed_processes`, `removed_links`, `removed_dirs`, `removed_cgroups`) are
+unchanged; only the agent's decision about which directories are live changed.
+No breaking change.
+
+## Upgrade and migration
+
+v1.5.7 is a patch release. There is no database migration, no `.unl` lab-format
+change and no change to the `/var/lib/teralab` layout. The normal upgrade path
+in `docs/UPGRADE.md` — stop the agent, back up `/etc/teralab` and
+`/var/lib/teralab`, check out `v1.5.7`, run
+`packaging/teralab/install.sh`, start the agent — applies unchanged. No backup
+step is added or removed by this release.
+
+## Known limitations
+
+- Reconcile only reclaims. It does not delete labs from the API database, and
+  it does not remove image files referenced by a reclaimed lab.
+- The keep-set comes from the API. Running reconcile while the API cannot read
+  the live lab list is still refused by the endpoint, as in v1.5.6.
+- Reconcile does not change the agent's in-memory node list. A stopped node
+  stays in it until it is wiped, as before; it simply no longer protects a lab
+  directory.
+
+## Licensing and provenance
+
+No new dependency and no new upstream-derived code. No BSD-3-Clause file was
+modified. `LICENSE`, `NOTICE`, `PROVENANCE.md`, `LICENSES/README.md` and
+`docs/SBOM.md` change only in their version strings.
+
+## Validation
+
+Verified in the release tree:
+
+- PHP suite: 141 tests, 1309 assertions; PHPStan reports no errors.
+- Go: all packages pass uncached (`go test -count=1 ./...`), including `-race`
+  for the `engine` and `agent` packages; both new reconcile tests pass.
+- UI: only version strings changed in `ui/`. UI tests and the production build
+  were not re-run for this release and are unchanged from v1.5.6.
+- Release gate green: `scripts/teralab-project-init.sh --check` (artifact
+  policy, licence headers, PHP lint, secret scan, shellcheck).
+
+Live check after deployment: start a lab, delete it, call
+`POST /api/v2/maintenance/reconcile`, and confirm the lab's run directory is
+listed in `removed_dirs`.
+
 # TeraLab v1.5.6 release notes
 
 - Release date: 2026-11-21
