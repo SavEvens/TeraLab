@@ -16,6 +16,7 @@ the kernel remain separate components with their own licences.
 - Node 20+ and npm (to build the Vue UI; prebuilt `ui/dist` is used when present)
 - Apache 2.4 with `mod_proxy`, `mod_proxy_wstunnel`, and `mod_rewrite`
 - Optional: `openvswitch-switch` for LACP forwarding
+- Optional: Docker Engine (`docker` CLI and daemon) for `kind: docker` nodes
 
 PHP upload limits must exceed your largest image. The installer writes
 `/etc/php/8.4/{apache2,fpm,cli}/conf.d/99-teralab-uploads.ini` with
@@ -90,6 +91,9 @@ There are no default accounts, no telemetry, and no `setcap` usage.
   `sudo apt-get install cmake libelf-dev libpcap-dev && packaging/dynamips/build.sh`
   then `sudo dpkg -i dist/teralab-dynamips_*.deb`. A licensed IOS image is
   required and is never bundled.
+- Docker: `docker` CLI and daemon on the agent host (`TERALAB_DOCKER`, default
+  `/usr/bin/docker`); containers are unprivileged and connect only through lab
+  bridges. See [Docker nodes](#docker-nodes).
 
 ### EtherChannel, VLANs and guest NICs
 
@@ -106,6 +110,83 @@ There are no default accounts, no telemetry, and no `setcap` usage.
   supported C8000V vNIC). With nothing configured, `e1000` remains the fallback
   so existing guests keep their model; PAN-OS stays explicitly on `e1000`.
 
+### Docker nodes
+
+`kind: docker` nodes run containers through the agent. They start, stop, wipe
+and open a console when the `docker` CLI and daemon are available on the agent
+host. The `.unl` format is unchanged: an EVE-NG docker node imports with its
+stored `image` (a container reference) and starts.
+
+Template example (`/etc/teralab/templates/frr.yaml`):
+
+```yaml
+schema: 1
+id: frr
+name: FRR Router
+kind: docker
+license: AGPL-3.0-or-later
+icon: Router.png
+defaults: { cpu: 1, ram: 256, ethernet: 3, console: telnet }
+options:
+  description: Free Range Routing appliance container.
+  docker:
+    image: frrouting/frr:10.0.1          # node image may override
+    console_command: /usr/bin/vtysh
+    cap_add: [NET_ADMIN]
+    pull: true
+```
+
+`options.docker` is strict: unknown keys are rejected.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `image` | string, required | Container reference such as `frrouting/frr:10.0.1`; digest references (`@sha256:…`) are accepted. A node's `image` attribute overrides it. It is not an image-store file. |
+| `console_command` | absolute path, optional | Command for the console tab; default `/bin/sh`. |
+| `cap_add` | list, optional | Only `NET_ADMIN` and `NET_RAW`, at most 8 entries. |
+| `pull` | bool, optional | Default `true`. When `false`, a missing local image fails with a message telling the operator to `docker pull` it. |
+
+Containers are created with `--network=none`, `--cap-drop=ALL`,
+`--security-opt=no-new-privileges`, Docker's default seccomp profile,
+`--pids-limit=1024`, and `--memory`/`--cpus` from the node. They are never
+privileged, have no host mounts and use no Docker-managed network. Each
+connected interface is a veth pair created by the agent and attached to the
+node's lab bridge with a deterministic MAC; only lab bridges provide
+connectivity. The container is created with an interactive TTY (`-i -t`), so an
+image whose default command is a shell stays running; an image whose default
+command exits immediately fails the start with its exit code and last log
+lines.
+
+A missing image is pulled during start, bounded to 45 s (the API call times
+out at 60 s). The agent runs `docker` as root, but its service has no access to
+a user Docker config (`ProtectHome=yes` masks `/root`), so pulls are
+unauthenticated. Pre-pull private images on the host with
+`sudo docker pull <reference>` before starting the node; the same command is
+the reliable option for large images on slow registries or offline hosts. The
+built-in `docker` template defaults to `alpine:3.20`; override the image per
+node, or copy the template and pin your own reference.
+
+`Stop` preserves the container, so filesystem state survives stop → start
+(unless the template image or owning lab changed, in which case the container
+is replaced). `Wipe` removes the container, its veths and its run directory.
+Containers are labelled `teralab.node` and `teralab.lab`; after an agent
+restart, reconcile re-registers preserved containers and removes only labelled
+orphans — unlabelled containers on the host are never touched.
+
+The systemd unit adds `CAP_SYS_ADMIN` to the agent's existing `CAP_NET_ADMIN`
+so the agent can enter the container network namespace and configure the veth
+peer there (`nsenter`/`setns`); moving the peer into the namespace itself needs
+`CAP_NET_ADMIN`. The containers themselves stay unprivileged. On hosts with
+`kernel.yama.ptrace_scope=1`, `ip link set <peer> netns <pid>` is gated by
+ptrace access to `/proc/<pid>/ns/net`; interface attachment fails and
+multi-interface docker nodes will not start unless the operator sets
+`kernel.yama.ptrace_scope=0` (runtime
+`sysctl -w kernel.yama.ptrace_scope=0`, or a persistent sysctl drop-in).
+Lowering yama weakens a host hardening setting; alternatively, grant the agent
+`CAP_SYS_PTRACE` as a local exception. The engine prefers Docker's sandbox key
+for namespace entry (avoiding the PID form when available), but the veth move
+still targets the container init PID, so this does not always avoid the issue.
+System → Engines reports Docker availability and version.
+
 ## Host firewall (Docker hosts)
 
 On hosts that run Docker, the `br_netfilter` module is loaded and
@@ -115,6 +196,8 @@ rules only for `docker0`. As a result, traffic between TeraLab lab bridges is
 dropped even though ARP (0x0806) and CDP (LLC/SNAP) pass because they are not
 IPv4. The symptom is confusing: interfaces stay `up/up`, LIN switches and CDP
 neighbours appear, but ping and other IPv4 traffic between lab nodes fail.
+This applies to every lab bridge, including bridges that carry docker-node
+interfaces.
 
 The installer enables `teralab-firewall.service`, which inserts one rule once:
 

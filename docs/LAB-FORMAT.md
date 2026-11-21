@@ -64,7 +64,10 @@ Import accepts all three. Save always writes v2.
   `config="1"` marks a node that has one.
 - **Images are references, never paths.** `image`, `iso`, `kernel` and
   `initrd` hold a single name that matches an image's *reference* in TeraLab
-  (editable on the Images page). Absolute paths are never written.
+  (editable on the Images page). Absolute paths are never written. On a
+  `kind: docker` node, `image` is the container reference (for example
+  `frrouting/frr:10.0.1`) and is stored verbatim; it is not an image-store
+  reference.
 - **Text and picture nodes** are not written as `<node>` entries: text becomes
   an EVE-NG `<textobject>`; pictures live in `<extensions>`.
 - **`<extensions>`** is TeraLab-only, versioned JSON. EVE-NG ignores it. It is
@@ -107,7 +110,9 @@ What is preserved but not emulated:
 - Cloud/NAT/OVS network types (`pnetX`, `nat0`, `internal`, `ovs`) are kept in
   the file and shown in the editor, but TeraLab runs them as isolated bridges.
   It never changes host networking.
-- Docker nodes and EVE-NG's built-in Ethernet switch import as visible nodes
+- Docker nodes import with their stored `image` (a container reference, not an
+  image-store file) and start when Docker is available on the agent host.
+  EVE-NG's built-in Ethernet switch and cloud nodes import as visible nodes
   but have no engine and are never started.
 - EVE-NG config sets beyond the default set are preserved as opaque XML.
 
@@ -125,8 +130,9 @@ Limits:
 | Type | Meaning |
 |---|---|
 | `image_unmapped` | The node references an image that is not in the store; map it on the Images page or in the Inspector |
+| `image_missing` | Docker node with no container reference in the node or template; it will not start |
 | `network_unsupported` | Cloud/NAT/OVS network; it will run as an isolated bridge |
-| `node_unsupported` | Docker/Ethernet-switch/cloud node; it will not start |
+| `node_unsupported` | Ethernet-switch or cloud node (a type the agent cannot run); it will not start |
 | `interface_gap` | Unconnected EVE-NG ports were reconstructed from the port layout |
 | `port_limit` | The node exceeded 16 interfaces |
 | `extensions_invalid` | A malformed TeraLab extension block was ignored |
