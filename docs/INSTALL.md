@@ -117,6 +117,25 @@ and open a console when the `docker` CLI and daemon are available on the agent
 host. The `.unl` format is unchanged: an EVE-NG docker node imports with its
 stored `image` (a container reference) and starts.
 
+In the editor:
+
+- The add-node picker lists every `kind: docker` template in **Ready to
+  deploy**, because a container template needs no image-store mapping. Its tile
+  reads `docker · <options.docker.image>`.
+- Adding such a template sets the node image to the template's container
+  reference.
+- The Inspector shows Type `docker` and a free-text **Image** field for the
+  container reference. Images already pulled on the agent host are offered as
+  suggestions while typing (`GET /api/v2/docker/images`); an empty field keeps
+  using the template default. If Docker is unavailable the field still works,
+  simply without suggestions.
+- ISO, NIC driver, serial ports, startup config and the VNC console option are
+  hidden for docker nodes; containers use none of them and the console is
+  telnet only.
+- Switching a node's type to or from docker clears the image field, and
+  applying a docker template fills it from `options.docker.image`, so a
+  container reference never ends up in a store-image field.
+
 Template example (`/etc/teralab/templates/frr.yaml`):
 
 ```yaml

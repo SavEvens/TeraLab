@@ -93,6 +93,10 @@ for VNC the generated password.
 - `POST /api/v2/labs/{id}/networks` with `{"networks":[{"id":"0"}]}`.
 - `POST /api/v2/labs/{id}/networks/cleanup`.
 - `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol/docker availability.
+- `GET /api/v2/docker/images` lists container images already pulled on the
+  agent host (`reference`, `id`, `size`, `created`) for the node Inspector.
+  Any authenticated user may call it; it never pulls or deletes an image.
+  Docker or the agent being unavailable returns 502.
 - `GET /api/v2/system/host` reports load, CPU usage (`cpu_usage_percent`),
   disk, nodes, engines, and host interfaces.
 - `GET /api/v2/labs/{id}/nodes` reports per-node `state` and `ready`; `ready`
