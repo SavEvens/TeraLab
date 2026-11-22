@@ -9,13 +9,6 @@ const SCRIPT_URL = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render
 
 let loader = null
 
-// Cloudflare prefixes site keys by widget mode: 1x managed, 2x non-interactive
-// and 3x invisible. An invisible widget renders no challenge and produces no
-// token on its own, so the login view has to call execute() before submitting.
-export function isInvisibleSiteKey(siteKey) {
-  return typeof siteKey === 'string' && /^\s*3x/.test(siteKey)
-}
-
 export function loadTurnstile() {
   if (typeof window !== 'undefined' && window.turnstile) return Promise.resolve(window.turnstile)
   if (loader) return loader

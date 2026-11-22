@@ -30,11 +30,10 @@
         >{{ busyAction === 'guest' ? 'Preparing demo…' : 'Enter demo' }}</button>
       </section>
 
-      <div v-if="turnstile.enabled" class="auth-captcha" :class="{ 'is-invisible': invisibleTurnstile }">
+      <div v-if="turnstile.enabled" class="auth-captcha">
         <div ref="captchaEl" class="cf-turnstile" data-test="turnstile" aria-label="Security check"></div>
         <p v-if="turnstileError" class="error" role="alert" data-test="turnstile-error">{{ turnstileError }}</p>
         <p v-else-if="turnstileStatus === 'loading'" class="hint" role="status">Loading the security check…</p>
-        <p v-else-if="invisibleTurnstile" class="hint" role="status" data-test="turnstile-hint">The security check runs when you continue.</p>
       </div>
 
       <div v-if="demo.enabled" class="auth-divider" aria-hidden="true"><span>or sign in</span></div>
@@ -63,7 +62,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { guestLogin, login } from '../stores/session'
 import { notify } from '../stores/toasts'
-import { isInvisibleSiteKey, loadTurnstile } from '../turnstile'
+import { loadTurnstile } from '../turnstile'
 
 const username = ref('')
 const password = ref('')
@@ -89,7 +88,6 @@ const requestedMode = computed(() => {
 })
 const demoPrimary = computed(() => demo.value.enabled && requestedMode.value === 'demo')
 const captchaBlocked = computed(() => turnstile.value.enabled && turnstileStatus.value === 'error')
-const invisibleTurnstile = computed(() => isInvisibleSiteKey(turnstile.value.site_key))
 
 onMounted(async () => {
   await loadHealth()
@@ -98,6 +96,9 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  // Release a pending token request so its timer cannot fire after the widget
+  // is gone; the promise resolves empty and no request is sent.
+  settleTokenRequest('')
   if (widgetId === null || !widgetApi?.remove) return
   try {
     widgetApi.remove(widgetId)
@@ -196,17 +197,21 @@ function settleTokenRequest(token) {
   pending.resolve(token || '')
 }
 
-// Managed and non-interactive widgets deliver a token through the render
-// callback. Invisible widgets stay silent until execute() runs, so the submit
-// handlers await that token here instead of checking a ref that is always empty.
+// Token acquisition is deliberately key-type agnostic: Cloudflare decides
+// whether a site key renders visible, non-interactive, or execute-on-demand.
+// Some widgets deliver a token through the render callback on their own, while
+// others stay silent until execute() runs. Driving execute() when a widget
+// exists is safe in both cases (a visible widget that is mid-challenge treats
+// it as a no-op) and the submitted token always comes from the render callback.
 function requestToken(timeoutMs = 15000) {
   if (!turnstile.value.enabled) return Promise.resolve('')
   if (turnstileToken.value) return Promise.resolve(turnstileToken.value)
-  if (!invisibleTurnstile.value) return Promise.resolve('')
   if (captchaBlocked.value) return Promise.resolve('')
-  if (widgetId === null || typeof widgetApi?.execute !== 'function') return Promise.resolve('')
-
   if (pendingTokenRequest) return pendingTokenRequest.promise
+
+  // Without an execute-capable widget there is no way to obtain a token, so
+  // fail closed immediately rather than waiting for a callback that cannot come.
+  if (widgetId === null || typeof widgetApi?.execute !== 'function') return Promise.resolve('')
 
   let resolveRequest
   const promise = new Promise((resolve) => { resolveRequest = resolve })
@@ -219,7 +224,8 @@ function requestToken(timeoutMs = 15000) {
   try {
     widgetApi.execute(widgetId)
   } catch {
-    settleTokenRequest('')
+    // A visible widget may already be running its challenge; the render
+    // callback still delivers the token when the visitor completes it.
   }
   return promise
 }
@@ -386,10 +392,6 @@ async function submit() {
 
 .auth-captcha .cf-turnstile {
   min-height: 65px;
-}
-
-.auth-captcha.is-invisible .cf-turnstile {
-  min-height: 0;
 }
 
 .auth-captcha .hint,
