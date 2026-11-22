@@ -110,6 +110,36 @@ try {
   await page.waitForURL(`**/ui/labs`)
   const loginMs = Date.now() - loginStart
 
+  // Navigation shell: exactly three rail destinations, version only in the
+  // rail footer, and the footer survives the narrow/collapsed rail.
+  const railLinks = (await page.locator('.rail .rail-link').allTextContents()).map((text) => text.trim())
+  const railFooter = (await page.locator('.rail-footer').innerText()).replace(/\s+/g, ' ').trim()
+  const topbarVersionBadges = await page.locator('.topbar .badge.version').count()
+  const versionBadges = await page.locator('.badge.version').count()
+  const workspaceNames = await page.locator('.workspace-name').count()
+
+  await page.setViewportSize({ width: 900, height: 1000 })
+  const narrowRailVisible = await page.locator('.rail').isVisible()
+  const narrowFooterVisible = await page.locator('.rail-footer').isVisible()
+  const narrowFooterText = (await page.locator('.rail-footer').innerText()).replace(/\s+/g, ' ').trim()
+  await page.setViewportSize({ width: 1440, height: 1000 })
+
+  // Legacy deep links land on the new destinations with the right tab.
+  await page.goto(`http://127.0.0.1:${uiPort}/ui/templates`)
+  await page.waitForURL(/\/ui\/appliances\?tab=templates$/)
+  const templatesTabSelected = await page.getByRole('tab', { name: 'Templates' }).getAttribute('aria-selected')
+  const templatesOwnHead = await page.locator('.templates .page-head').count()
+  await page.getByRole('tab', { name: 'Images' }).click()
+  await page.waitForURL(/\/ui\/appliances\?tab=images$/)
+  const imagesOwnHeading = await page.locator('.images-view h1').count()
+
+  await page.goto(`http://127.0.0.1:${uiPort}/ui/about`)
+  await page.waitForURL(/\/ui\/system\?tab=About$/)
+  const aboutTabSelected = await page.getByRole('tab', { name: 'About' }).getAttribute('aria-selected')
+  const aboutText = await page.locator('.system-view .about-view').innerText()
+  const aboutOwnHead = await page.locator('.about-view .page-head').count()
+  const aboutDots = await page.locator('.about-view .dot').count()
+
   // System page smoke: host, settings, logs, and tokens.
   await page.getByRole('link', { name: 'System' }).click()
   await page.waitForURL('**/ui/system')
@@ -122,14 +152,27 @@ try {
   await page.locator('.token-form input').first().fill('e2e token')
   await page.getByRole('button', { name: 'Create token' }).click()
   await page.waitForFunction(() => document.querySelector('.token-once')?.textContent.includes('tl_mock_token'), null, { timeout: 10000 })
-  await page.getByRole('link', { name: 'About' }).click()
-  await page.waitForURL('**/ui/about')
-  const aboutText = await page.locator('.about-view').innerText()
-  const aboutBadge = (await page.locator('.about-view .page-head .badge').innerText()).trim()
-  const aboutDots = await page.locator('.about-view .dot').count()
+  await page.getByRole('tab', { name: 'About' }).click()
+  await page.waitForURL(/\/ui\/system\?tab=About$/)
+  const aboutTabAfterTokens = await page.getByRole('tab', { name: 'About' }).getAttribute('aria-selected')
   await page.getByRole('link', { name: 'Labs', exact: true }).click()
   await page.waitForURL('**/ui/labs')
   await page.waitForSelector('.lab-table tbody tr')
+
+  // Create project dialog: name plus optional folder.
+  await page.getByRole('button', { name: 'Create project' }).click()
+  await page.waitForSelector('.create-project')
+  await page.locator('.create-project input[aria-label="Project name"]').fill('Dialog Lab')
+  await page.locator('.create-project input[aria-label="Project folder"]').fill('e2e-folder')
+  await page.locator('.create-project').getByRole('button', { name: 'Create', exact: true }).click()
+  await page.waitForFunction(() => !document.querySelector('.create-project'), null, { timeout: 10000 })
+  await page.waitForFunction(() => document.querySelector('.lab-table tbody')?.textContent.includes('Dialog Lab'), null, { timeout: 10000 })
+  const createdState = await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()
+  const createdLab = (createdState.createdLabs || []).find((candidate) => candidate.name === 'Dialog Lab')
+  const createdLabPath = createdLab?.path
+  const createdLabFolder = createdState.lastMove?.folder
+  const createDialogClosed = await page.locator('.create-project').count()
+
   const labsStatusBefore = await page.locator('[data-lab-status="lab1"]').innerText()
   const stopButtonsBefore = await page.getByRole('button', { name: '■ Stop' }).count()
   const formatBadge = await page.locator('.lab-table .badge.format').first().innerText()
@@ -143,8 +186,10 @@ try {
   await page.locator('.import-report').getByRole('button', { name: 'Close' }).click()
 
   // Images: upload, rename, map a template.
-  await page.getByRole('link', { name: 'Images' }).click()
-  await page.waitForURL('**/ui/images')
+  await page.getByRole('link', { name: 'Appliances' }).click()
+  await page.waitForURL('**/ui/appliances')
+  await page.getByRole('tab', { name: 'Images' }).click()
+  await page.waitForURL(/\/ui\/appliances\?tab=images$/)
   const imageFile = path.join(outDir, 'base.qcow2')
   writeFileSync(imageFile, 'QFI\xfb' + '\0'.repeat(64))
   await page.locator('.images-view input[type=file]').setInputFiles(imageFile)
@@ -438,8 +483,10 @@ try {
 
   await page.getByRole('link', { name: '← Labs' }).click()
   await page.waitForURL('**/ui/labs')
-  await page.getByRole('link', { name: 'Images' }).click()
-  await page.waitForURL('**/ui/images')
+  await page.getByRole('link', { name: 'Appliances' }).click()
+  await page.waitForURL('**/ui/appliances')
+  await page.getByRole('tab', { name: 'Images' }).click()
+  await page.waitForURL(/\/ui\/appliances\?tab=images$/)
   await page.waitForSelector('.images-view tbody tr', { timeout: 10000 })
   let remainingImages = await page.locator('.images-view tbody tr').count()
   while (remainingImages > 0) {
@@ -609,9 +656,25 @@ try {
     stopButtonsBefore,
     stopButtonsRunning,
     stopButtonsAfter,
+    railLinks,
+    railFooter,
+    topbarVersionBadges,
+    versionBadges,
+    workspaceNames,
+    narrowRailVisible,
+    narrowFooterVisible,
+    narrowFooterText,
+    templatesTabSelected,
+    templatesOwnHead,
+    imagesOwnHeading,
+    aboutTabSelected,
+    aboutTabAfterTokens,
+    aboutOwnHead,
     aboutText: aboutText.replace(/\s+/g, ' ').trim().slice(0, 120),
-    aboutBadge,
     aboutDots,
+    createdLabPath,
+    createdLabFolder,
+    createDialogClosed,
     systemHost: systemHost.replace(/\s+/g, ' ').trim().slice(0, 240),
     systemVersionBadges,
     systemPayloadCards,
@@ -686,7 +749,24 @@ try {
   if (systemPayloadCards !== 0 || systemHost.includes('Host status payload')) throw new Error('system host tab still shows the raw JSON payload card')
   if (!/CPU usage/i.test(systemHost) || !/\d+(?:\.\d+)?%/.test(systemHost)) throw new Error(`system host tab has no CPU usage percentage: ${systemHost}`)
   if (aboutDots !== 0) throw new Error('about page still shows status dots')
-  if (!/^v\d+\.\d+(?:\.\d+)?(?:-[0-9a-z.]+)?$/i.test(aboutBadge)) throw new Error(`about page version badge missing: ${aboutBadge}`)
+  const normalizedRailLinks = railLinks.map((text) => text.toUpperCase())
+  if (normalizedRailLinks.length !== 3 || normalizedRailLinks.join(',') !== 'LABS,APPLIANCES,SYSTEM') {
+    throw new Error(`rail should list exactly Labs/Appliances/System: ${JSON.stringify(railLinks)}`)
+  }
+  if (topbarVersionBadges !== 0 || versionBadges !== 0) throw new Error(`version badge still rendered outside the rail footer: ${topbarVersionBadges}/${versionBadges}`)
+  if (workspaceNames !== 0) throw new Error('workspace name chrome is still rendered')
+  if (!/1\.6-dev/i.test(railFooter)) throw new Error(`rail footer is missing the version: ${railFooter}`)
+  if (!narrowRailVisible || !narrowFooterVisible) throw new Error('collapsed rail hides its footer')
+  if (!/1\.6-dev/i.test(narrowFooterText)) throw new Error(`collapsed rail footer is missing the version: ${narrowFooterText}`)
+  if (/system online/i.test(narrowFooterText)) throw new Error(`collapsed rail footer still shows the status words: ${narrowFooterText}`)
+  if (templatesTabSelected !== 'true' || templatesOwnHead !== 0) throw new Error(`/templates redirect did not select the embedded Templates tab: ${templatesTabSelected}/${templatesOwnHead}`)
+  if (imagesOwnHeading !== 0) throw new Error('embedded Images view still renders its own heading')
+  if (aboutTabSelected !== 'true' || aboutTabAfterTokens !== 'true' || aboutOwnHead !== 0) {
+    throw new Error(`/about redirect did not select the embedded About tab: ${aboutTabSelected}/${aboutTabAfterTokens}/${aboutOwnHead}`)
+  }
+  if (createDialogClosed !== 0) throw new Error('create project dialog stayed open after success')
+  if (!createdLab || !createdLabPath?.includes('e2e-folder/')) throw new Error(`created project landed in the wrong folder: ${createdLabPath}`)
+  if (createdLabFolder !== 'e2e-folder') throw new Error(`move request used the wrong folder: ${createdLabFolder}`)
   if (!editorButtons.includes('+ Add link')) throw new Error(`top bar missing + Add link: ${editorButtons}`)
   if (editorButtons.includes('Save') || editorButtons.includes('Validate') || editorButtons.some((text) => /^Align/.test(text))) {
     throw new Error(`removed editor controls still present: ${editorButtons}`)

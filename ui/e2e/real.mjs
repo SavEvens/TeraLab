@@ -88,8 +88,10 @@ try {
   await page.waitForURL('**/ui/labs')
 
   // Template duplicate and YAML import against the real API.
-  await page.getByRole('link', { name: 'Templates' }).click()
-  await page.waitForURL('**/ui/templates')
+  await page.getByRole('link', { name: 'Appliances' }).click()
+  await page.waitForURL('**/ui/appliances')
+  await page.getByRole('tab', { name: 'Templates' }).click()
+  await page.waitForURL(/\/ui\/appliances\?tab=templates$/)
   await page.waitForFunction(() => document.querySelectorAll('.palette li').length > 40, null, { timeout: 20000 })
   const beforeTemplates = await page.locator('.palette li').count()
   await page.locator('.palette li', { hasText: 'linux' }).first().click()

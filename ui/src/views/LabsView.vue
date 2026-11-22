@@ -8,18 +8,13 @@
     @drop.prevent="dropImport"
   >
     <div class="page-head">
-      <span class="crumbs">Workspace /</span>
       <h1>Labs</h1>
       <span class="badge">{{ labs.length }} total</span>
       <div class="spacer"></div>
       <input v-model="search" class="search" placeholder="Search labs" aria-label="Search labs" />
     </div>
     <div class="toolbar">
-      <form class="create" @submit.prevent="create">
-        <input v-model="newName" placeholder="New lab name" aria-label="New lab name" required />
-        <input v-model="newFolder" placeholder="Folder (optional)" aria-label="Folder" />
-        <button type="submit">Create</button>
-      </form>
+      <button @click="openCreate">Create project</button>
       <label class="button">
         Import .unl
         <input type="file" accept=".unl,application/xml" hidden @change="importLab" />
@@ -70,8 +65,39 @@
         </tr>
       </tbody>
     </table>
-    <p v-if="!labs.length" class="empty">No labs yet. Create one, drop a `.unl` file, or import one.</p>
+    <p v-if="!labs.length" class="empty">No labs yet. Create a project, drop a `.unl` file, or import one.</p>
     <p v-else-if="!filteredLabs.length" class="empty">No labs match “{{ search }}”.</p>
+
+    <div v-if="createOpen" class="modal-backdrop" @click.self="closeCreate" @keydown.esc="closeCreate">
+      <div class="modal create-project" role="dialog" aria-modal="true" aria-labelledby="create-project-title">
+        <h2 id="create-project-title">Create project</h2>
+        <form @submit.prevent="create">
+          <label>Name
+            <input
+              ref="nameInput"
+              v-model="newName"
+              aria-label="Project name"
+              placeholder="New project name"
+              autocomplete="off"
+              required
+            />
+          </label>
+          <label>Folder (optional)
+            <input
+              v-model="newFolder"
+              aria-label="Project folder"
+              placeholder="Folder (optional)"
+              autocomplete="off"
+            />
+          </label>
+          <p v-if="createError" class="error" role="alert">{{ createError }}</p>
+          <div class="row">
+            <button type="button" class="ghost" :disabled="creating" @click="closeCreate">Cancel</button>
+            <button type="submit" :disabled="creating">{{ creating ? 'Creating…' : 'Create' }}</button>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <div v-if="importReport.length" class="modal-backdrop" @click.self="importReport = []">
       <div class="modal import-report" role="dialog" aria-modal="true" aria-label="Import report">
@@ -111,7 +137,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../stores/toasts'
 
@@ -122,6 +148,10 @@ const dragging = ref(false)
 const search = ref('')
 const newName = ref('')
 const newFolder = ref('')
+const createOpen = ref(false)
+const creating = ref(false)
+const createError = ref('')
+const nameInput = ref(null)
 const error = ref('')
 const importReport = ref([])
 const stopping = ref(new Set())
@@ -180,15 +210,39 @@ async function purge(entry) {
   }
 }
 
+async function openCreate() {
+  createError.value = ''
+  createOpen.value = true
+  await nextTick()
+  nameInput.value?.focus()
+}
+
+function closeCreate() {
+  if (creating.value) return
+  createOpen.value = false
+  createError.value = ''
+  newName.value = ''
+  newFolder.value = ''
+}
+
 async function create() {
+  if (creating.value) return
+  if (!newName.value.trim()) {
+    createError.value = 'A project name is required.'
+    return
+  }
+  creating.value = true
+  createError.value = ''
   try {
-    const lab = (await api.createLab({ name: newName.value, networks: [], nodes: [] })).data
-    newName.value = ''
+    const lab = (await api.createLab({ name: newName.value.trim(), networks: [], nodes: [] })).data
     if (newFolder.value.trim()) await api.moveLab(lab.id, newFolder.value.trim())
     notify('success', 'Lab created')
+    creating.value = false
+    closeCreate()
     await load()
   } catch (exception) {
-    error.value = exception.message
+    creating.value = false
+    createError.value = exception.message
   }
 }
 

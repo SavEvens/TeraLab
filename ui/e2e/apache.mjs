@@ -158,8 +158,10 @@ try {
   if (imported) created.labs.push(imported.id)
 
   // Templates: duplicate, import, export through the UI.
-  await page.getByRole('link', { name: 'Templates' }).click()
-  await page.waitForURL('**/ui/templates')
+  await page.getByRole('link', { name: 'Appliances' }).click()
+  await page.waitForURL('**/ui/appliances')
+  await page.getByRole('tab', { name: 'Templates' }).click()
+  await page.waitForURL(/\/ui\/appliances\?tab=templates$/)
   await page.waitForFunction(() => document.querySelectorAll('.palette li').length > 40, null, { timeout: 20000 })
   await page.locator('.palette li', { hasText: 'linux' }).first().click()
   await page.waitForSelector('.template-editor textarea')
@@ -184,10 +186,10 @@ try {
   if (!exported.endsWith('.yaml')) throw new Error(`template export filename invalid: ${exported}`)
 
   // Images: upload, rename, map template through the UI.
-  await page.getByRole('link', { name: 'Labs', exact: true }).click()
-  await page.waitForURL('**/ui/labs')
-  await page.getByRole('link', { name: 'Images' }).click()
-  await page.waitForURL('**/ui/images')
+  await page.getByRole('link', { name: 'Appliances' }).click()
+  await page.waitForURL('**/ui/appliances')
+  await page.getByRole('tab', { name: 'Images' }).click()
+  await page.waitForURL(/\/ui\/appliances\?tab=images$/)
   const beforeImageIds = new Set((await call('GET', '/images')).data.map((image) => image.id))
   await page.locator('.images-view input[type=file]').setInputFiles(qcow2)
   await page.getByRole('button', { name: 'Upload' }).click()

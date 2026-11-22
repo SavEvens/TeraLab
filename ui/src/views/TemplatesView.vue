@@ -1,8 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
   <section class="templates">
-    <div class="page-head">
-      <span class="crumbs">Workspace /</span>
+    <div v-if="!embedded" class="page-head">
       <h1>Templates</h1>
       <span class="badge">{{ templates.length }} total</span>
       <div class="spacer"></div>
@@ -60,6 +59,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../stores/toasts'
+
+defineProps({
+  embedded: { type: Boolean, default: false }
+})
 
 const templates = ref([])
 const selected = ref(null)
