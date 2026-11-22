@@ -21,6 +21,66 @@ function body(request) {
   })
 }
 
+// Multipart imports are detected from the raw request so the mock can mirror
+// the API's extension-then-content routing without a parser dependency.
+function rawBody(request) {
+  return new Promise((resolve) => {
+    let data = ''
+    request.on('data', (chunk) => { data += chunk })
+    request.on('end', () => resolve(data))
+  })
+}
+
+const YAML_SOURCE = `schema: 1
+name: YAML Source Lab
+nodes:
+  R1:
+    template: iol
+  R2:
+    template: iol
+networks:
+  lan-a: {}
+links:
+  - [R1.e0/0, R2.e0/0]
+`
+
+function yamlName(text) {
+  const match = /(?:^|\r?\n)name:\s*([^\r\n]+)/.exec(text)
+  return match ? match[1].trim().replace(/^["']|["']$/g, '') : ''
+}
+
+// Two-space keys are the node/network identities in the published format;
+// four-space keys are node fields. Enough to report the same counts as the
+// real validator for the generic documents used by the e2e suite.
+function yamlCounts(text) {
+  const nodes = new Set()
+  const networks = new Set()
+  let links = 0
+  let section = ''
+  for (const line of text.split(/\r?\n/)) {
+    const top = /^([A-Za-z0-9_.-]+):/.exec(line)
+    if (top) {
+      section = top[1]
+      continue
+    }
+    if (section === 'nodes') {
+      const match = /^  ([A-Za-z0-9_.-]+):/.exec(line)
+      if (match) nodes.add(match[1])
+    } else if (section === 'networks') {
+      const match = /^  ([A-Za-z0-9_.-]+):/.exec(line)
+      if (match) networks.add(match[1])
+    } else if (section === 'links' && /^  -/.test(line)) {
+      links += 1
+    }
+  }
+  return { nodes: nodes.size, networks: networks.size, links }
+}
+
+function yamlWarnings(text) {
+  if (!/(?:^|\r?\n)\s*image:\s*/m.test(text)) return []
+  return [{ type: 'image_unmapped', node: 'R1', message: 'image "base.qcow2" is not mapped to a stored image.' }]
+}
+
 export function startMockServer(port = 8099) {
   let conflict = false
   let trash = []
@@ -33,6 +93,9 @@ export function startMockServer(port = 8099) {
   let lastUserAction = null
   let createdLabs = []
   let lastMove = null
+  let yamlImportCount = 0
+  let lastValidate = null
+  let lastYamlApply = null
   let users = [
     { id: 'user1', username: 'admin', email: 'admin@example.test', name: 'Ada Admin', role: 'admin', expiration: -1, created_at: usersNow - 7200, updated_at: usersNow - 3600, session_count: 2, last_seen_at: usersNow - 60, lab_count: 1 },
     { id: 'user2', username: 'editor', email: 'editor@example.test', name: 'Ed Editor', role: 'editor', expiration: Math.floor((Date.now() + 30 * 86400000) / 1000), created_at: usersNow - 6000, updated_at: usersNow - 5000, session_count: 0, last_seen_at: null, lab_count: 2 },
@@ -114,10 +177,59 @@ export function startMockServer(port = 8099) {
     }
     if (request.method === 'GET' && path === '/__state') {
       return send(response, 200, {
-        lab: { name: lab.name, node_list: lab.node_list, network_list: lab.network_list },
+        lab: {
+          name: lab.name,
+          revision: lab.revision,
+          node_list: lab.node_list,
+          network_list: lab.network_list,
+          extensions: lab.extensions
+        },
         createdLabs: createdLabs.map((created) => ({ id: created.id, name: created.name, path: created.path })),
-        lastMove
+        lastMove,
+        lastValidate,
+        lastYamlApply
       })
+    }
+    if (request.method === 'POST' && (path === '/__yaml' || path === '/__yaml-stopped')) {
+      lab = {
+        ...lab,
+        id: 'lab1',
+        name: 'YAML Source Lab',
+        path: 'YAML-Source-Lab.unl',
+        revision: 2,
+        format: 'teralab-2',
+        description: '',
+        body: '',
+        lock: null,
+        running: false,
+        running_nodes: 0,
+        nodes: 2,
+        networks: 1,
+        network_list: [{ id: '1', name: 'lan-a', type: 'bridge' }],
+        node_list: [
+          {
+            id: '1', name: 'R1', type: 'iol', template: 'iol', image: '',
+            console: 'telnet', cpu: 1, ram: 256, uuid: '', platform: '', left: 120, top: 100,
+            interfaces: [{ id: 0, name: 'Ethernet0/0', type: 'ethernet', network_id: '1' }]
+          },
+          {
+            id: '2', name: 'R2', type: 'iol', template: 'iol', image: '',
+            console: 'telnet', cpu: 1, ram: 256, uuid: '', platform: '', left: 480, top: 100,
+            interfaces: [{ id: 0, name: 'Ethernet0/0', type: 'ethernet', network_id: '1' }]
+          }
+        ],
+        extensions: {
+          source: {
+            kind: 'yaml',
+            name: 'triangle.yaml',
+            sha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            revision: 2,
+            text: YAML_SOURCE
+          }
+        }
+      }
+      nodeStates.lab1 = path === '/__yaml' ? { 1: 'running', 2: 'stopped' } : {}
+      return send(response, 200, { ok: true })
     }
     if (request.method === 'GET' && path === '/__users-state') {
       return send(response, 200, { users, lastUserAction })
@@ -339,7 +451,7 @@ export function startMockServer(port = 8099) {
     if (path === '/api/v2/labs' && request.method === 'GET') {
       return send(response, 200, {
         data: [
-          { ...lab, node_list: undefined, network_list: undefined },
+          { ...lab, node_list: undefined, network_list: undefined, extensions: undefined },
           ...createdLabs.map((created) => ({ ...created, node_list: undefined, network_list: undefined }))
         ]
       })
@@ -376,6 +488,31 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { status: 'success', data: target })
     }
     if (path === '/api/v2/labs/import' && request.method === 'POST') {
+      const raw = await rawBody(request)
+      if (/filename="[^"]+\.ya?ml"/i.test(raw) || /(?:^|\r?\n)schema:\s*1\s*(?:\r?\n|$)/.test(raw)) {
+        const name = yamlName(raw) || 'YAML Lab'
+        const counts = yamlCounts(raw)
+        const imported = {
+          id: `yamllab${++yamlImportCount}`,
+          name,
+          owner: 'admin',
+          path: `${name.replace(/\s+/g, '-')}.unl`,
+          revision: 1,
+          format: 'teralab-2',
+          running: false,
+          running_nodes: 0,
+          nodes: counts.nodes,
+          networks: counts.networks,
+          node_list: [],
+          network_list: []
+        }
+        createdLabs.push(imported)
+        return send(response, 201, {
+          status: 'success',
+          data: imported,
+          meta: { warnings: yamlWarnings(raw) }
+        })
+      }
       return send(response, 201, {
         status: 'success',
         data: { ...lab, id: 'importlab', name: 'Imported Lab', path: 'Imported-Lab.unl', format: 'eve-ng', nodes: 0, networks: 0, node_list: [], network_list: [] },
@@ -384,6 +521,89 @@ export function startMockServer(port = 8099) {
           { type: 'network_unsupported', network: '2', message: 'Network "Cloud" uses type "pnet0".' }
         ] }
       })
+    }
+    if (path === '/api/v2/labs/validate' && request.method === 'POST') {
+      const input = await body(request)
+      const text = String(input.yaml || '')
+      const counts = yamlCounts(text)
+      const errors = []
+      if (!text.trim()) errors.push('YAML document is empty.')
+      const schema = /(?:^|\r?\n)schema:\s*([^\r\n]+)/.exec(text)
+      if (text.trim() && (!schema || schema[1].trim() !== '1')) errors.push('schema must be 1.')
+      lastValidate = { filename: input.filename || '', valid: errors.length === 0 }
+      return send(response, 200, {
+        data: {
+          valid: errors.length === 0,
+          errors,
+          warnings: yamlWarnings(text),
+          counts
+        }
+      })
+    }
+    const applyMatch = /^\/api\/v2\/labs\/([^/]+)\/apply$/.exec(path)
+    if (request.method === 'POST' && applyMatch) {
+      const id = decodeURIComponent(applyMatch[1])
+      const input = await body(request)
+      const states = nodeStates[id] || {}
+      if (Object.values(states).some((state) => state === 'running')) {
+        return send(response, 409, { message: 'Stop and wipe the lab before applying YAML.' })
+      }
+      if (Number(input.revision) !== Number(lab.revision)) {
+        return send(response, 409, {
+          message: 'The lab was modified by another session.',
+          details: { revision: lab.revision }
+        })
+      }
+      const text = String(input.yaml || '')
+      const counts = yamlCounts(text)
+      const revision = lab.revision + 1
+      const networkList = Array.from({ length: Math.max(0, counts.networks) }, (_, index) => ({
+        id: String(index + 1),
+        name: `net-${index + 1}`,
+        type: 'bridge'
+      }))
+      const nodeList = Array.from({ length: Math.max(0, counts.nodes) }, (_, index) => ({
+        id: String(index + 1),
+        name: `N${index + 1}`,
+        type: 'iol',
+        template: 'iol',
+        image: '',
+        console: 'telnet',
+        cpu: 1,
+        ram: 256,
+        uuid: '',
+        platform: '',
+        left: 120 + (index % 4) * 180,
+        top: 100 + Math.floor(index / 4) * 120,
+        interfaces: [{
+          id: 0,
+          name: 'Ethernet0/0',
+          type: 'ethernet',
+          network_id: networkList.length ? networkList[index % networkList.length].id : ''
+        }]
+      }))
+      lab = {
+        ...lab,
+        name: yamlName(text) || lab.name,
+        revision,
+        nodes: nodeList.length,
+        networks: networkList.length,
+        node_list: nodeList,
+        network_list: networkList,
+        extensions: {
+          ...lab.extensions,
+          source: {
+            kind: 'yaml',
+            name: input.filename || 'lab.yaml',
+            sha256: 'f'.repeat(64),
+            revision,
+            text
+          }
+        }
+      }
+      nodeStates[id] = {}
+      lastYamlApply = { id, filename: input.filename || 'lab.yaml', revision, yaml: text }
+      return send(response, 200, { status: 'success', data: lab, meta: { warnings: yamlWarnings(text) } })
     }
     if (path === '/api/v2/labs/trash' && request.method === 'GET') {
       return send(response, 200, { data: trash })

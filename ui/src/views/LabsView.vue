@@ -16,13 +16,13 @@
     <div class="toolbar">
       <button @click="openCreate">Create project</button>
       <label class="button">
-        Import .unl
-        <input type="file" accept=".unl,application/xml" hidden @change="importLab" />
+        Import lab
+        <input type="file" accept=".unl,.yaml,.yml,application/xml,application/yaml,text/yaml" hidden @change="importLab" />
       </label>
       <button class="ghost" @click="load">Refresh</button>
       <button class="ghost" @click="toggleTrash">Trash ({{ trash.length }})</button>
     </div>
-    <p v-if="dragging" class="drop-hint">Drop a `.unl` file to import it</p>
+    <p v-if="dragging" class="drop-hint">Drop a `.unl`, `.yaml`, or `.yml` file to import it</p>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
 
@@ -65,13 +65,45 @@
         </tr>
       </tbody>
     </table>
-    <p v-if="!labs.length" class="empty">No labs yet. Create a project, drop a `.unl` file, or import one.</p>
+    <p v-if="!labs.length" class="empty">No labs yet. Create a project, drop a `.unl` file, or import one. You can also create a project from pasted YAML.</p>
     <p v-else-if="!filteredLabs.length" class="empty">No labs match “{{ search }}”.</p>
 
     <div v-if="createOpen" class="modal-backdrop" @click.self="closeCreate" @keydown.esc="closeCreate">
-      <div class="modal create-project" role="dialog" aria-modal="true" aria-labelledby="create-project-title">
+      <div
+        class="modal create-project"
+        :class="{ 'yaml-mode': createMode === 'yaml' }"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-project-title"
+      >
         <h2 id="create-project-title">Create project</h2>
-        <form @submit.prevent="create">
+        <div class="create-mode" role="tablist" aria-label="Project source">
+          <button
+            id="create-mode-blank"
+            type="button"
+            role="tab"
+            aria-controls="create-panel-blank"
+            :aria-selected="createMode === 'blank'"
+            :class="{ active: createMode === 'blank' }"
+            @click="setCreateMode('blank')"
+          >Blank project</button>
+          <button
+            id="create-mode-yaml"
+            type="button"
+            role="tab"
+            aria-controls="create-panel-yaml"
+            :aria-selected="createMode === 'yaml'"
+            :class="{ active: createMode === 'yaml' }"
+            @click="setCreateMode('yaml')"
+          >From YAML</button>
+        </div>
+        <form
+          v-if="createMode === 'blank'"
+          id="create-panel-blank"
+          role="tabpanel"
+          aria-labelledby="create-mode-blank"
+          @submit.prevent="create"
+        >
           <label>Name
             <input
               ref="nameInput"
@@ -94,6 +126,66 @@
           <div class="row">
             <button type="button" class="ghost" :disabled="creating" @click="closeCreate">Cancel</button>
             <button type="submit" :disabled="creating">{{ creating ? 'Creating…' : 'Create' }}</button>
+          </div>
+        </form>
+        <form
+          v-else
+          id="create-panel-yaml"
+          class="yaml-form"
+          role="tabpanel"
+          aria-labelledby="create-mode-yaml"
+          @submit.prevent="createFromYaml"
+        >
+          <label>Lab YAML
+            <textarea
+              ref="yamlInput"
+              v-model="yamlText"
+              class="yaml-text"
+              aria-label="Lab YAML"
+              spellcheck="false"
+              placeholder="Paste lab YAML (schema 1; see docs/LAB-YAML.md)&#10;name: My lab&#10;nodes:&#10;  R1:&#10;    template: iol"
+              @keydown.ctrl.enter.prevent="createFromYaml"
+              @keydown.meta.enter.prevent="createFromYaml"
+            ></textarea>
+          </label>
+          <p class="hint">
+            The lab name comes from the YAML. Format reference: <code>docs/LAB-YAML.md</code> (schema 1).
+            <kbd>Ctrl</kbd>+<kbd>Enter</kbd> creates the lab.
+          </p>
+          <label>Folder (optional)
+            <input
+              v-model="newFolder"
+              aria-label="Project folder"
+              placeholder="Folder (optional)"
+              autocomplete="off"
+            />
+          </label>
+          <p v-if="yamlError" class="error" role="alert">{{ yamlError }}</p>
+          <div v-if="yamlValidation" class="yaml-validation" aria-live="polite">
+            <ul v-if="yamlValidation.errors.length" class="error yaml-errors" role="alert">
+              <li v-for="(entry, index) in yamlValidation.errors" :key="index">{{ entry }}</li>
+            </ul>
+            <p v-else-if="yamlValidation.valid" class="ok">Valid YAML</p>
+            <p v-else class="error" role="alert">The YAML is not valid.</p>
+            <ul v-if="yamlValidation.warnings.length" class="yaml-warnings" aria-label="YAML warnings">
+              <li v-for="(warning, index) in yamlValidation.warnings" :key="index">
+                <strong>{{ warning.type }}</strong>
+                <span>{{ warning.node ? `${warning.node}: ` : '' }}{{ warning.message }}</span>
+              </li>
+            </ul>
+            <p v-if="yamlCountsLabel" class="yaml-counts">{{ yamlCountsLabel }}</p>
+          </div>
+          <div class="row">
+            <button type="button" class="ghost" :disabled="creating" @click="closeCreate">Cancel</button>
+            <button
+              type="button"
+              class="ghost yaml-validate"
+              :disabled="!yamlText.trim() || validating || creating"
+              @click="validateYaml"
+            >{{ validating ? 'Validating…' : 'Validate' }}</button>
+            <button type="submit" :disabled="!yamlText.trim() || creating">
+              {{ creating ? 'Creating…' : 'Create from YAML' }}
+            </button>
           </div>
         </form>
       </div>
@@ -137,7 +229,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../stores/toasts'
 
@@ -149,13 +241,27 @@ const search = ref('')
 const newName = ref('')
 const newFolder = ref('')
 const createOpen = ref(false)
+const createMode = ref('blank')
 const creating = ref(false)
 const createError = ref('')
+const yamlText = ref('')
+const yamlValidation = ref(null)
+const validating = ref(false)
+const yamlError = ref('')
 const nameInput = ref(null)
+const yamlInput = ref(null)
 const error = ref('')
 const importReport = ref([])
 const stopping = ref(new Set())
 let refreshTimer = null
+const yamlCountsLabel = computed(() => {
+  const counts = yamlValidation.value?.counts
+  if (!counts) return ''
+  const nodes = Number.isFinite(Number(counts.nodes)) ? Number(counts.nodes) : 0
+  const networks = Number.isFinite(Number(counts.networks)) ? Number(counts.networks) : 0
+  const links = Number.isFinite(Number(counts.links)) ? Number(counts.links) : 0
+  return `${nodes} nodes · ${networks} networks · ${links} links`
+})
 const filteredLabs = computed(() => {
   const needle = search.value.trim().toLowerCase()
   if (!needle) return labs.value
@@ -212,6 +318,8 @@ async function purge(entry) {
 
 async function openCreate() {
   createError.value = ''
+  yamlError.value = ''
+  createMode.value = 'blank'
   createOpen.value = true
   await nextTick()
   nameInput.value?.focus()
@@ -220,10 +328,82 @@ async function openCreate() {
 function closeCreate() {
   if (creating.value) return
   createOpen.value = false
+  createMode.value = 'blank'
   createError.value = ''
+  yamlError.value = ''
+  yamlText.value = ''
+  yamlValidation.value = null
   newName.value = ''
   newFolder.value = ''
 }
+
+async function setCreateMode(mode) {
+  if (createMode.value === mode || creating.value) return
+  createMode.value = mode
+  createError.value = ''
+  yamlError.value = ''
+  await nextTick()
+  if (mode === 'yaml') yamlInput.value?.focus()
+  else nameInput.value?.focus()
+}
+
+async function validateYaml() {
+  const yaml = yamlText.value
+  if (!yaml.trim() || validating.value || creating.value) return
+  validating.value = true
+  yamlError.value = ''
+  try {
+    const response = await api.validateLabYaml({ yaml })
+    yamlValidation.value = normalizeValidation(response)
+  } catch (exception) {
+    yamlError.value = exception.message
+    yamlValidation.value = null
+  } finally {
+    validating.value = false
+  }
+}
+
+function normalizeValidation(response) {
+  const data = response?.data || {}
+  return {
+    valid: data.valid === true,
+    errors: Array.isArray(data.errors) ? data.errors : [],
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
+    counts: data.counts && typeof data.counts === 'object' ? data.counts : null
+  }
+}
+
+async function createFromYaml() {
+  if (creating.value) return
+  const yaml = yamlText.value
+  if (!yaml.trim()) {
+    yamlError.value = 'Paste lab YAML before creating the project.'
+    return
+  }
+  creating.value = true
+  yamlError.value = ''
+  try {
+    const file = new File([yaml], 'lab.yaml', { type: 'application/yaml' })
+    const response = await api.importLab(file)
+    const lab = response?.data
+    const warnings = Array.isArray(response?.meta?.warnings) ? response.meta.warnings : []
+    if (newFolder.value.trim() && lab?.id) await api.moveLab(lab.id, newFolder.value.trim())
+    creating.value = false
+    closeCreate()
+    notify('success', warnings.length
+      ? `Lab created from YAML with ${warnings.length} warning(s)`
+      : 'Lab created from YAML')
+    await load()
+  } catch (exception) {
+    creating.value = false
+    yamlError.value = exception.message
+  }
+}
+
+watch(yamlText, () => {
+  yamlValidation.value = null
+  yamlError.value = ''
+})
 
 async function create() {
   if (creating.value) return
@@ -368,8 +548,8 @@ async function dropImport(event) {
   dragging.value = false
   const file = event.dataTransfer?.files?.[0]
   if (!file) return
-  if (!file.name.endsWith('.unl')) {
-    error.value = 'Only .unl files can be imported.'
+  if (!/\.(unl|ya?ml)$/i.test(file.name || '')) {
+    error.value = 'Only .unl, .yaml, or .yml files can be imported.'
     return
   }
   await importFile(file)
