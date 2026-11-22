@@ -123,7 +123,26 @@ export function startMockServer(port = 8099) {
   // Per-node runtime state exposed by GET /labs/{id}/nodes. lab1 has one node
   // already running (Start is hidden) and one stopped (Start and Wipe shown).
   const nodeStates = { lab1: { 1: 'running', 2: 'stopped' } }
-  let settings = { timezone: 'UTC', session_ttl: 3600, max_upload_bytes: 33554432, console_default: 'telnet' }
+  let settings = {
+    timezone: 'UTC',
+    session_ttl: 3600,
+    max_upload_bytes: 33554432,
+    console_default: 'telnet',
+    demo_enabled: 0,
+    demo_landing: 'login',
+    demo_max_guests: 50,
+    demo_guest_ttl_hours: 48,
+    demo_guest_idle_hours: 6,
+    demo_max_nodes_per_lab: 5,
+    demo_allowed_templates: 'vpcs',
+    demo_max_ram_per_node: 1024,
+    demo_memory_floor_mb: 2048,
+    demo_idle_wipe_minutes: 120,
+    demo_sweep_interval: 300,
+    turnstile_enabled: 0,
+    turnstile_site_key: '3x00000000000000000000FF',
+    turnstile_secret_key: '1x0000000000000000000000000000000AA'
+  }
   let lab = {
     id: 'lab1',
     name: 'Editor Lab',

@@ -73,7 +73,7 @@
           </label>
         </div>
         <div class="row">
-          <button type="submit" :disabled="!canAdmin || saving">{{ saving ? 'Saving…' : 'Save settings' }}</button>
+          <button type="submit" :disabled="!canAdmin || !settingsLoaded || saving">{{ saving ? 'Saving…' : 'Save settings' }}</button>
           <span class="hint">Session and upload limits apply to new requests immediately.</span>
         </div>
       </form>
@@ -140,6 +140,107 @@
         </tbody>
       </table>
       <p v-if="!tokens.length" class="empty">No API tokens.</p>
+    </section>
+
+    <section v-show="active === 'Demo'" class="panel settings-panel demo-panel">
+      <form @submit.prevent="saveDemoSettings">
+        <h2>Demo access</h2>
+        <div class="field-grid">
+          <label>Demo mode
+            <select v-model.number="settingsForm.demo_enabled" aria-label="Demo mode">
+              <option :value="1">Enabled</option>
+              <option :value="0">Disabled</option>
+            </select>
+          </label>
+          <label>Landing for signed-out visitors
+            <select v-model="settingsForm.demo_landing" aria-label="Landing page for signed-out visitors">
+              <option value="login">Login page</option>
+              <option value="demo">Demo page</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint">Guests get ephemeral identities; no visitor account is created.</p>
+
+        <h2>Guest limits</h2>
+        <div class="field-grid">
+          <label>Max guest sessions
+            <input v-model.number="settingsForm.demo_max_guests" type="number" min="1" max="1000" aria-label="Max guest sessions" />
+          </label>
+          <label>Guest lifetime (hours)
+            <input v-model.number="settingsForm.demo_guest_ttl_hours" type="number" min="1" max="720" aria-label="Guest lifetime (hours)" />
+          </label>
+          <label>Guest idle timeout (hours)
+            <input v-model.number="settingsForm.demo_guest_idle_hours" type="number" min="1" max="72" aria-label="Guest idle timeout (hours)" />
+          </label>
+          <label>Max nodes per guest lab
+            <input v-model.number="settingsForm.demo_max_nodes_per_lab" type="number" min="1" max="16" aria-label="Max nodes per guest lab" />
+          </label>
+          <label>Max RAM per node (MB)
+            <input v-model.number="settingsForm.demo_max_ram_per_node" type="number" min="64" max="4096" aria-label="Max RAM per node (MB)" />
+          </label>
+          <label>Host memory floor (MB)
+            <input v-model.number="settingsForm.demo_memory_floor_mb" type="number" min="256" max="65536" aria-label="Host memory floor (MB)" />
+          </label>
+          <label>Idle lab wipe (minutes)
+            <input v-model.number="settingsForm.demo_idle_wipe_minutes" type="number" min="15" max="1440" aria-label="Idle lab wipe (minutes)" />
+          </label>
+          <label>Guest sweep interval (seconds)
+            <input v-model.number="settingsForm.demo_sweep_interval" type="number" min="60" max="3600" aria-label="Guest sweep interval (seconds)" />
+          </label>
+        </div>
+
+        <h2>Allowed templates</h2>
+        <p class="hint">Guests can only add nodes from the selected templates.</p>
+        <div class="demo-templates" role="group" aria-label="Allowed templates">
+          <div v-for="template in demoTemplates" :key="template.id" class="check-row">
+            <input
+              :id="`demo-template-${template.id}`"
+              v-model="demoTemplatesSelected"
+              type="checkbox"
+              :value="template.id"
+            />
+            <label :for="`demo-template-${template.id}`">{{ template.name }}</label>
+          </div>
+        </div>
+        <p v-if="demoTemplatesError" class="error">{{ demoTemplatesError }}</p>
+        <p v-else-if="!demoTemplates.length" class="hint">No templates available.</p>
+
+        <h2>Turnstile</h2>
+        <div class="field-grid">
+          <label>Turnstile
+            <select v-model.number="settingsForm.turnstile_enabled" aria-label="Turnstile">
+              <option :value="1">Enabled</option>
+              <option :value="0">Disabled</option>
+            </select>
+          </label>
+          <label>Site key
+            <input v-model="settingsForm.turnstile_site_key" aria-label="Turnstile site key" autocomplete="off" maxlength="128" />
+          </label>
+          <label>Secret key
+            <span class="secret-field">
+              <input
+                v-model="turnstileSecret"
+                type="password"
+                aria-label="Turnstile secret key"
+                autocomplete="new-password"
+                placeholder="leave blank to keep"
+                maxlength="128"
+              />
+              <span v-if="secretConfigured" class="badge">configured</span>
+            </span>
+          </label>
+        </div>
+        <p v-if="secretConfigured" class="hint">A secret is configured. Leave the field empty to keep it; typing a value replaces it.</p>
+        <p class="turnstile-warning" role="note">
+          The shipped defaults are Cloudflare's public testing keys. Replace the site and secret keys before
+          exposing the demo publicly.
+        </p>
+
+        <div class="row">
+          <button type="submit" :disabled="!canAdmin || !settingsLoaded || saving">{{ saving ? 'Saving…' : 'Save demo settings' }}</button>
+          <span class="hint">These limits apply to guest sessions on the demo tier.</span>
+        </div>
+      </form>
     </section>
 
     <section v-show="active === 'Users'" class="panel users-panel">
@@ -326,11 +427,33 @@ import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
 import AboutView from './AboutView.vue'
 
+const DEMO_INT_KEYS = [
+  'demo_enabled', 'demo_max_guests', 'demo_guest_ttl_hours', 'demo_guest_idle_hours',
+  'demo_max_nodes_per_lab', 'demo_max_ram_per_node', 'demo_memory_floor_mb',
+  'demo_idle_wipe_minutes', 'demo_sweep_interval', 'turnstile_enabled'
+]
+const DEMO_DEFAULTS = {
+  demo_enabled: 0,
+  demo_landing: 'login',
+  demo_max_guests: 50,
+  demo_guest_ttl_hours: 48,
+  demo_guest_idle_hours: 6,
+  demo_max_nodes_per_lab: 5,
+  demo_allowed_templates: 'vpcs',
+  demo_max_ram_per_node: 1024,
+  demo_memory_floor_mb: 2048,
+  demo_idle_wipe_minutes: 120,
+  demo_sweep_interval: 300,
+  turnstile_enabled: 0,
+  turnstile_site_key: '3x00000000000000000000FF'
+}
+
 const route = useRoute()
 const router = useRouter()
 const host = ref(null)
-const settingsForm = ref({ timezone: 'UTC', console_default: 'telnet', session_ttl: 3600, max_upload_bytes: 33554432 })
+const settingsForm = ref({ ...DEMO_DEFAULTS, timezone: 'UTC', console_default: 'telnet', session_ttl: 3600, max_upload_bytes: 33554432 })
 const saving = ref(false)
+const settingsLoaded = ref(false)
 const error = ref('')
 const logSource = ref('api')
 const logLines = ref([])
@@ -347,10 +470,19 @@ const addUser = ref(emptyAddUser())
 const editUser = ref({ open: false, user: null, saving: false, form: emptyUserForm() })
 const resetPassword = ref({ open: false, user: null, saving: false, password: '', generated: '' })
 const deleteUser = ref({ open: false, user: null, saving: false, deleteLabs: false })
+const demoTemplates = ref([])
+const demoTemplatesLoaded = ref(false)
+const demoTemplatesError = ref('')
+const demoTemplatesSelected = ref([])
+const turnstileSecret = ref('')
+const secretConfigured = ref(false)
 const canAdmin = computed(() => session.user?.role === 'admin')
 const tabs = computed(() => {
   const list = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
-  if (canAdmin.value) list.push('Users')
+  if (canAdmin.value) {
+    list.push('Users')
+    list.push('Demo')
+  }
   list.push('About')
   return list
 })
@@ -378,6 +510,43 @@ const cpuUsage = computed(() => {
 })
 const editingSelf = computed(() => !!editUser.value.user && isSelf(editUser.value.user))
 const timezones = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : ['UTC']
+
+function splitTemplateCsv(value) {
+  const raw = Array.isArray(value) ? value.join(',') : String(value ?? '')
+  return [...new Set(raw.split(',').map((part) => part.trim()).filter(Boolean))]
+}
+
+function templateCsv(values) {
+  return [...new Set((values || []).map((value) => String(value).trim()).filter(Boolean))].join(',')
+}
+
+function applySettingsData(data) {
+  const next = { ...DEMO_DEFAULTS, ...(data || {}) }
+  for (const key of DEMO_INT_KEYS) next[key] = Number(next[key])
+  if (!['login', 'demo'].includes(next.demo_landing)) next.demo_landing = DEMO_DEFAULTS.demo_landing
+  secretConfigured.value = typeof next.turnstile_secret_key === 'string' && next.turnstile_secret_key !== ''
+  delete next.turnstile_secret_key
+  next.demo_allowed_templates = templateCsv(splitTemplateCsv(next.demo_allowed_templates))
+  settingsForm.value = next
+  demoTemplatesSelected.value = splitTemplateCsv(next.demo_allowed_templates)
+}
+
+async function loadDemoTemplates() {
+  if (!canAdmin.value || demoTemplatesLoaded.value) return
+  demoTemplatesError.value = ''
+  try {
+    const list = (await api.templates()).data || []
+    demoTemplates.value = list.map((template) => ({
+      id: String(template.id),
+      name: template.name || String(template.id)
+    }))
+    demoTemplatesLoaded.value = true
+    const available = new Set(demoTemplates.value.map((template) => template.id))
+    demoTemplatesSelected.value = [...new Set(demoTemplatesSelected.value)].filter((id) => available.has(id))
+  } catch (exception) {
+    demoTemplatesError.value = exception?.message || 'Templates could not be loaded.'
+  }
+}
 
 function emptyUserForm() {
   return { email: '', name: '', expiration: '', role: 'user' }
@@ -439,7 +608,8 @@ async function loadHost() {
 }
 
 async function loadSettings() {
-  settingsForm.value = (await api.settings()).data
+  applySettingsData((await api.settings()).data)
+  settingsLoaded.value = true
 }
 
 async function loadLogs() {
@@ -469,16 +639,41 @@ async function loadAll() {
     error.value = exception.message
   }
   if (canAdmin.value && (active.value === 'Users' || usersLoaded.value)) await refreshUsers()
+  if (canAdmin.value && active.value === 'Demo') loadDemoTemplates()
+}
+
+function settingsPayload() {
+  return { ...settingsForm.value, demo_allowed_templates: templateCsv(demoTemplatesSelected.value) }
 }
 
 async function saveSettings() {
   saving.value = true
   error.value = ''
   try {
-    settingsForm.value = (await api.saveSettings(settingsForm.value)).data
+    applySettingsData((await api.saveSettings(settingsPayload())).data)
     notify('success', 'Settings saved')
   } catch (exception) {
     error.value = exception.message
+  } finally {
+    saving.value = false
+  }
+}
+
+async function saveDemoSettings() {
+  saving.value = true
+  error.value = ''
+  const typedSecret = turnstileSecret.value.trim() !== ''
+  try {
+    const payload = settingsPayload()
+    if (typedSecret) payload.turnstile_secret_key = turnstileSecret.value
+    applySettingsData((await api.saveSettings(payload)).data)
+    if (typedSecret) secretConfigured.value = true
+    turnstileSecret.value = ''
+    notify('success', 'Demo settings saved')
+  } catch (exception) {
+    const message = exception?.message || 'Request failed'
+    error.value = message
+    notify('error', message)
   } finally {
     saving.value = false
   }
@@ -685,6 +880,7 @@ async function removeUser() {
 
 watch(active, (tab) => {
   if (tab === 'Users' && canAdmin.value) refreshUsers()
+  if (tab === 'Demo' && canAdmin.value) loadDemoTemplates()
 })
 
 onMounted(loadAll)

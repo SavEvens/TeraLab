@@ -625,6 +625,27 @@ describe('ImagesView', () => {
 })
 
 
+const settingsFixture = () => ({
+  timezone: 'UTC',
+  console_default: 'telnet',
+  session_ttl: 3600,
+  max_upload_bytes: 33554432,
+  demo_enabled: 1,
+  demo_landing: 'demo',
+  demo_max_guests: 25,
+  demo_guest_ttl_hours: 12,
+  demo_guest_idle_hours: 2,
+  demo_max_nodes_per_lab: 4,
+  demo_allowed_templates: 'vpcs,linux',
+  demo_max_ram_per_node: 768,
+  demo_memory_floor_mb: 4096,
+  demo_idle_wipe_minutes: 60,
+  demo_sweep_interval: 120,
+  turnstile_enabled: 1,
+  turnstile_site_key: 'site-key',
+  turnstile_secret_key: 'configured-secret'
+})
+
 const usersFixture = () => [
   {
     id: 'user1', username: 'admin', email: 'admin@example.test', name: 'Ada Admin', role: 'admin',
@@ -659,15 +680,30 @@ function systemTestRouter() {
   })
 }
 
-async function mountSystemView() {
+async function mountSystemApp() {
   const router = systemTestRouter()
   await router.push('/system')
   await router.isReady()
   const wrapper = mount(SystemView, { global: { plugins: [router] } })
   await flushPromises()
-  const usersTab = wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'Users')
-  await usersTab.trigger('click')
+  return wrapper
+}
+
+async function openSystemTab(wrapper, name) {
+  const tab = wrapper.findAll('[role="tab"]').find((candidate) => candidate.text() === name)
+  await tab.trigger('click')
   await flushPromises()
+}
+
+async function mountSystemView() {
+  const wrapper = await mountSystemApp()
+  await openSystemTab(wrapper, 'Users')
+  return wrapper
+}
+
+async function mountSystemDemoView() {
+  const wrapper = await mountSystemApp()
+  await openSystemTab(wrapper, 'Demo')
   return wrapper
 }
 
@@ -681,22 +717,25 @@ describe('SystemView users', () => {
     api.host.mockResolvedValue({
       data: { load1: 0.1, load5: 0.1, load15: 0.1, cpu_usage_percent: 5, disk_free_bytes: 1, disk_total_bytes: 2, nodes: [], engines: [], interfaces: [] }
     })
-    api.settings.mockResolvedValue({ data: { timezone: 'UTC', console_default: 'telnet', session_ttl: 3600, max_upload_bytes: 33554432 } })
+    api.settings.mockResolvedValue({ data: settingsFixture() })
     api.logs.mockResolvedValue({ data: { lines: [] } })
     api.tokens.mockResolvedValue({ data: [] })
     api.users.mockResolvedValue({ data: usersFixture() })
     api.version.mockResolvedValue({ product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://example.test', components: [] })
   })
 
-  it('hides the Users tab from non-admins', async () => {
+  it('hides the Users and Demo tabs from non-admins', async () => {
     session.user = { id: 'user3', username: 'viewer', role: 'user' }
     const router = systemTestRouter()
     await router.push('/system')
     await router.isReady()
     const wrapper = mount(SystemView, { global: { plugins: [router] } })
     await flushPromises()
-    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).not.toContain('Users')
+    const tabNames = wrapper.findAll('[role="tab"]').map((tab) => tab.text())
+    expect(tabNames).not.toContain('Users')
+    expect(tabNames).not.toContain('Demo')
     expect(api.users).not.toHaveBeenCalled()
+    expect(api.templates).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -896,6 +935,171 @@ describe('SystemView users', () => {
 
     expect(wrapper.find('.edit-user-modal').exists()).toBe(true)
     expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('last administrator cannot be demoted'))).toBe(true)
+    wrapper.unmount()
+  })
+})
+
+describe('SystemView demo', () => {
+  beforeEach(() => {
+    session.user = { id: 'user1', username: 'admin', role: 'admin' }
+    api.host.mockResolvedValue({
+      data: { load1: 0.1, load5: 0.1, load15: 0.1, cpu_usage_percent: 5, disk_free_bytes: 1, disk_total_bytes: 2, nodes: [], engines: [], interfaces: [] }
+    })
+    api.settings.mockResolvedValue({ data: settingsFixture() })
+    api.logs.mockResolvedValue({ data: { lines: [] } })
+    api.tokens.mockResolvedValue({ data: [] })
+    api.users.mockResolvedValue({ data: usersFixture() })
+    api.version.mockResolvedValue({ product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://example.test', components: [] })
+    api.templates.mockResolvedValue({
+      data: [
+        { id: 'vpcs', name: 'VPCS', kind: 'vpcs' },
+        { id: 'linux', name: 'Linux', kind: 'qemu' },
+        { id: 'iol', name: 'Cisco IOL', kind: 'iol' }
+      ]
+    })
+    api.saveSettings.mockResolvedValue({ data: settingsFixture() })
+  })
+
+  it('shows the demo tab to admins and loads templates lazily', async () => {
+    const wrapper = await mountSystemApp()
+    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toContain('Demo')
+    expect(api.templates).not.toHaveBeenCalled()
+
+    await openSystemTab(wrapper, 'Demo')
+
+    expect(api.templates).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('select[aria-label="Demo mode"]').element.value).toBe('1')
+    expect(wrapper.find('select[aria-label="Landing page for signed-out visitors"]').element.value).toBe('demo')
+    expect(wrapper.find('input[aria-label="Max guest sessions"]').element.value).toBe('25')
+    expect(wrapper.find('input[aria-label="Guest lifetime (hours)"]').element.value).toBe('12')
+    expect(wrapper.find('input[aria-label="Guest idle timeout (hours)"]').element.value).toBe('2')
+    expect(wrapper.find('input[aria-label="Max nodes per guest lab"]').element.value).toBe('4')
+    expect(wrapper.find('input[aria-label="Max RAM per node (MB)"]').element.value).toBe('768')
+    expect(wrapper.find('input[aria-label="Host memory floor (MB)"]').element.value).toBe('4096')
+    expect(wrapper.find('input[aria-label="Idle lab wipe (minutes)"]').element.value).toBe('60')
+    expect(wrapper.find('input[aria-label="Guest sweep interval (seconds)"]').element.value).toBe('120')
+    expect(wrapper.find('select[aria-label="Turnstile"]').element.value).toBe('1')
+    expect(wrapper.find('input[aria-label="Turnstile site key"]').element.value).toBe('site-key')
+
+    const labels = wrapper.findAll('.demo-panel label').map((label) => label.text())
+    for (const text of [
+      'Max guest sessions', 'Guest lifetime (hours)', 'Guest idle timeout (hours)',
+      'Max nodes per guest lab', 'Max RAM per node (MB)', 'Host memory floor (MB)',
+      'Idle lab wipe (minutes)', 'Guest sweep interval (seconds)'
+    ]) {
+      expect(labels.some((label) => label.includes(text))).toBe(true)
+    }
+
+    const allowlist = wrapper.find('[role="group"][aria-label="Allowed templates"]')
+    expect(allowlist.text()).toContain('VPCS')
+    expect(allowlist.text()).toContain('Linux')
+    expect(allowlist.text()).toContain('Cisco IOL')
+    expect(wrapper.find('#demo-template-vpcs').element.checked).toBe(true)
+    expect(wrapper.find('#demo-template-linux').element.checked).toBe(true)
+    expect(wrapper.find('#demo-template-iol').element.checked).toBe(false)
+
+    const secret = wrapper.find('input[aria-label="Turnstile secret key"]')
+    expect(secret.element.value).toBe('')
+    expect(wrapper.find('.secret-field .badge').text()).toBe('configured')
+    expect(wrapper.text()).toContain("Cloudflare's public testing keys")
+    wrapper.unmount()
+  })
+
+  it('keeps both save buttons disabled until settings load', async () => {
+    let resolveSettings
+    api.settings.mockReturnValue(new Promise((resolve) => { resolveSettings = resolve }))
+
+    const router = systemTestRouter()
+    await router.push('/system')
+    await router.isReady()
+    const wrapper = mount(SystemView, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const settingsSave = wrapper.find('.settings-panel:not(.demo-panel) button[type="submit"]')
+    const demoSave = wrapper.find('.demo-panel button[type="submit"]')
+    expect(settingsSave.element.disabled).toBe(true)
+    expect(demoSave.element.disabled).toBe(true)
+
+    resolveSettings({ data: settingsFixture() })
+    await flushPromises()
+
+    expect(settingsSave.element.disabled).toBe(false)
+    expect(demoSave.element.disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('saves numeric, enum and csv fields and omits an unchanged secret', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    await wrapper.find('select[aria-label="Demo mode"]').setValue('0')
+    await wrapper.find('select[aria-label="Landing page for signed-out visitors"]').setValue('login')
+    await wrapper.find('input[aria-label="Max guest sessions"]').setValue('100')
+    await wrapper.find('input[aria-label="Guest lifetime (hours)"]').setValue('24')
+    await wrapper.find('input[aria-label="Guest idle timeout (hours)"]').setValue('3')
+    await wrapper.find('input[aria-label="Max nodes per guest lab"]').setValue('6')
+    await wrapper.find('input[aria-label="Max RAM per node (MB)"]').setValue('512')
+    await wrapper.find('input[aria-label="Host memory floor (MB)"]').setValue('8192')
+    await wrapper.find('input[aria-label="Idle lab wipe (minutes)"]').setValue('90')
+    await wrapper.find('input[aria-label="Guest sweep interval (seconds)"]').setValue('600')
+    await wrapper.find('select[aria-label="Turnstile"]').setValue('0')
+    await wrapper.find('input[aria-label="Turnstile site key"]').setValue('new-site-key')
+    await wrapper.find('#demo-template-vpcs').setValue(false)
+    await wrapper.find('#demo-template-iol').setValue(true)
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+    const payload = api.saveSettings.mock.calls[0][0]
+    expect(payload).toMatchObject({
+      demo_enabled: 0,
+      demo_landing: 'login',
+      demo_max_guests: 100,
+      demo_guest_ttl_hours: 24,
+      demo_guest_idle_hours: 3,
+      demo_max_nodes_per_lab: 6,
+      demo_max_ram_per_node: 512,
+      demo_memory_floor_mb: 8192,
+      demo_idle_wipe_minutes: 90,
+      demo_sweep_interval: 600,
+      turnstile_enabled: 0,
+      turnstile_site_key: 'new-site-key'
+    })
+    expect(payload.demo_allowed_templates).toBe('linux,iol')
+    expect('turnstile_secret_key' in payload).toBe(false)
+    expect(toasts.some((toast) => toast.kind === 'success' && toast.message.includes('Demo settings saved'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('sends the secret only when the admin types a replacement', async () => {
+    const wrapper = await mountSystemDemoView()
+    const secret = wrapper.find('input[aria-label="Turnstile secret key"]')
+
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+    expect('turnstile_secret_key' in api.saveSettings.mock.calls[0][0]).toBe(false)
+
+    await secret.setValue('replacement-secret')
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).toHaveBeenCalledTimes(2)
+    expect(api.saveSettings.mock.calls[1][0].turnstile_secret_key).toBe('replacement-secret')
+    expect(wrapper.find('input[aria-label="Turnstile secret key"]').element.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('keeps invalid server values visible', async () => {
+    api.saveSettings.mockRejectedValue(new Error('demo_guest_ttl_hours must be between 1 and 720.'))
+    const wrapper = await mountSystemDemoView()
+
+    await wrapper.find('input[aria-label="Guest lifetime (hours)"]').setValue('0')
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('p.error[role="alert"]').text()).toContain('demo_guest_ttl_hours must be between 1 and 720.')
+    expect(wrapper.find('input[aria-label="Guest lifetime (hours)"]').element.value).toBe('0')
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('demo_guest_ttl_hours'))).toBe(true)
     wrapper.unmount()
   })
 })
