@@ -52,9 +52,15 @@ final class SystemController
 
     public function settings(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
-        $this->access->user($request);
+        $user = $this->access->user($request);
+        $values = $this->settings->all();
+        if (!$this->access->isAdmin($user)) {
+            // The Turnstile secret is write-only for non-admins: they may see
+            // every other setting, but never the credential itself.
+            unset($values['turnstile_secret_key']);
+        }
 
-        return Json::response($response, ['data' => $this->settings->all()]);
+        return Json::response($response, ['data' => $values]);
     }
 
     public function updateSettings(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
