@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 TeraLab contributors
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
@@ -22,15 +22,22 @@ vi.mock('../src/stores/session', () => ({
 
 vi.mock('../src/stores/toasts', () => ({ notify: vi.fn() }))
 
-vi.mock('../src/turnstile', () => ({ loadTurnstile: vi.fn() }))
+vi.mock('../src/turnstile', async (importOriginal) => {
+  const actual = await importOriginal()
+  return { ...actual, loadTurnstile: vi.fn() }
+})
 
 import { api } from '../src/api'
 import { guestLogin, login } from '../src/stores/session'
 import { loadTurnstile } from '../src/turnstile'
 import LoginView from '../src/views/LoginView.vue'
 
+const INVISIBLE_KEY = '3x00000000000000000000FF'
+const MANAGED_KEY = 'site-key-1'
+
 beforeEach(() => {
   vi.resetAllMocks()
+  delete window.turnstile
   api.health.mockResolvedValue({
     status: 'ok',
     demo: { enabled: false, landing: 'login' },
@@ -40,18 +47,32 @@ beforeEach(() => {
   login.mockResolvedValue({ user: { id: 'user1', role: 'admin' }, csrf_token: 'csrf' })
 })
 
-function fakeTurnstile() {
+afterEach(() => {
+  vi.useRealTimers()
+  delete window.turnstile
+})
+
+// The view receives the real Cloudflare Turnstile API shape. window.turnstile
+// is stubbed because the loader returns it directly when present.
+function fakeTurnstile({ execute = true } = {}) {
   const state = { options: null }
   const widget = {
-    render: vi.fn((element, options) => {
+    render: vi.fn((_element, options) => {
       state.options = options
       return 'widget-1'
     }),
     reset: vi.fn(),
     remove: vi.fn()
   }
-  loadTurnstile.mockResolvedValue(widget)
-  return { widget, token: (value) => state.options.callback(value) }
+  if (execute) widget.execute = vi.fn()
+  window.turnstile = widget
+  loadTurnstile.mockImplementation(() => Promise.resolve(window.turnstile))
+  return {
+    widget,
+    token: (value) => state.options.callback(value),
+    fail: () => state.options['error-callback'](),
+    options: () => state.options
+  }
 }
 
 async function mountLogin(url = '/login') {
@@ -70,6 +91,13 @@ async function mountLogin(url = '/login') {
   await flushPromises()
   await flushPromises()
   return { wrapper, router }
+}
+
+function healthWith({ demoEnabled = false, landing = 'login', siteKey = MANAGED_KEY } = {}) {
+  api.health.mockResolvedValue({
+    demo: { enabled: demoEnabled, landing },
+    turnstile: { enabled: true, site_key: siteKey }
+  })
 }
 
 describe('LoginView', () => {
@@ -117,44 +145,37 @@ describe('LoginView', () => {
     expect(router.currentRoute.value.fullPath).toBe('/labs/lab1')
   })
 
-  it('renders one widget and sends its token with the guest submit', async () => {
-    api.health.mockResolvedValue({
-      demo: { enabled: true, landing: 'demo' },
-      turnstile: { enabled: true, site_key: 'site-key-1' }
-    })
+  it('sends a managed widget callback token without executing it', async () => {
+    healthWith({ demoEnabled: true, landing: 'demo' })
     const { widget, token } = fakeTurnstile()
     const { wrapper, router } = await mountLogin()
     expect(widget.render).toHaveBeenCalledTimes(1)
-    expect(widget.render.mock.calls[0][1].sitekey).toBe('site-key-1')
+    expect(widget.render.mock.calls[0][1].sitekey).toBe(MANAGED_KEY)
     token('guest-token')
     await wrapper.get('button[data-test="enter-demo"]').trigger('click')
     await flushPromises()
+    expect(widget.execute).not.toHaveBeenCalled()
     expect(guestLogin).toHaveBeenCalledWith('guest-token')
     expect(widget.reset).toHaveBeenCalledWith('widget-1')
     expect(router.currentRoute.value.name).toBe('labs')
   })
 
   it('sends the captcha token with a credential login', async () => {
-    api.health.mockResolvedValue({
-      demo: { enabled: false, landing: 'login' },
-      turnstile: { enabled: true, site_key: 'site-key-1' }
-    })
-    const { token } = fakeTurnstile()
+    healthWith({ landing: 'login' })
+    const { widget, token } = fakeTurnstile()
     const { wrapper, router } = await mountLogin('/login?next=/labs')
     token('login-token')
     await wrapper.get('input[autocomplete="username"]').setValue('admin')
     await wrapper.get('input[type="password"]').setValue('S3cret!')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
+    expect(widget.execute).not.toHaveBeenCalled()
     expect(login).toHaveBeenCalledWith('admin', 'S3cret!', 'login-token')
     expect(router.currentRoute.value.name).toBe('labs')
   })
 
   it('fails closed and keeps submits disabled when the script cannot load', async () => {
-    api.health.mockResolvedValue({
-      demo: { enabled: true, landing: 'demo' },
-      turnstile: { enabled: true, site_key: 'site-key-1' }
-    })
+    healthWith({ demoEnabled: true, landing: 'demo' })
     loadTurnstile.mockRejectedValue(new Error('blocked'))
     const { wrapper } = await mountLogin()
     expect(wrapper.get('[data-test="turnstile-error"]').text()).toMatch(/could not be loaded/i)
@@ -164,24 +185,19 @@ describe('LoginView', () => {
     expect(login).not.toHaveBeenCalled()
   })
 
-  it('refuses to submit a captcha-gated action without a token', async () => {
-    api.health.mockResolvedValue({
-      demo: { enabled: true, landing: 'demo' },
-      turnstile: { enabled: true, site_key: 'site-key-1' }
-    })
-    fakeTurnstile()
+  it('refuses to submit a managed captcha-gated action without a token', async () => {
+    healthWith({ demoEnabled: true, landing: 'demo' })
+    const { widget } = fakeTurnstile()
     const { wrapper } = await mountLogin()
     await wrapper.get('form').trigger('submit')
     await flushPromises()
+    expect(widget.execute).not.toHaveBeenCalled()
     expect(login).not.toHaveBeenCalled()
     expect(wrapper.get('[data-test="auth-error"]').text()).toMatch(/complete the security check/i)
   })
 
-  it('resets the widget after a failed guest entry', async () => {
-    api.health.mockResolvedValue({
-      demo: { enabled: true, landing: 'demo' },
-      turnstile: { enabled: true, site_key: 'site-key-1' }
-    })
+  it('resets the widget after a failed guest entry and does not reuse its token', async () => {
+    healthWith({ demoEnabled: true, landing: 'demo' })
     const { widget, token } = fakeTurnstile()
     guestLogin.mockRejectedValue(new Error('The demo is full.'))
     const { wrapper } = await mountLogin()
@@ -191,5 +207,93 @@ describe('LoginView', () => {
     expect(guestLogin).toHaveBeenCalledWith('guest-token')
     expect(widget.reset).toHaveBeenCalledWith('widget-1')
     expect(wrapper.get('[data-test="auth-error"]').text()).toBe('The demo is full.')
+
+    await wrapper.get('button[data-test="enter-demo"]').trigger('click')
+    await flushPromises()
+    expect(guestLogin).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="auth-error"]').text()).toMatch(/complete the security check/i)
+  })
+
+  it('executes an invisible widget and sends the token from its callback', async () => {
+    healthWith({ demoEnabled: true, landing: 'demo', siteKey: INVISIBLE_KEY })
+    const { widget, token, options } = fakeTurnstile()
+    const { wrapper, router } = await mountLogin()
+    expect(widget.render.mock.calls[0][1].sitekey).toBe(INVISIBLE_KEY)
+    expect(options().callback).toBeTypeOf('function')
+
+    await wrapper.get('button[data-test="enter-demo"]').trigger('click')
+    await flushPromises()
+    expect(widget.execute).toHaveBeenCalledTimes(1)
+    expect(widget.execute).toHaveBeenCalledWith('widget-1')
+    expect(guestLogin).not.toHaveBeenCalled()
+    expect(wrapper.get('button[data-test="enter-demo"]').attributes('disabled')).toBeDefined()
+
+    token('invisible-token')
+    await flushPromises()
+    await flushPromises()
+    expect(guestLogin).toHaveBeenCalledWith('invisible-token')
+    expect(widget.reset).toHaveBeenCalledWith('widget-1')
+    expect(router.currentRoute.value.name).toBe('labs')
+  })
+
+  it('executes an invisible widget for credential sign-in too', async () => {
+    healthWith({ landing: 'login', siteKey: INVISIBLE_KEY })
+    const { widget, token } = fakeTurnstile()
+    const { wrapper, router } = await mountLogin('/login?next=/labs')
+    await wrapper.get('input[autocomplete="username"]').setValue('admin')
+    await wrapper.get('input[type="password"]').setValue('S3cret!')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(widget.execute).toHaveBeenCalledWith('widget-1')
+    expect(login).not.toHaveBeenCalled()
+
+    token('login-token')
+    await flushPromises()
+    await flushPromises()
+    expect(login).toHaveBeenCalledWith('admin', 'S3cret!', 'login-token')
+    expect(router.currentRoute.value.name).toBe('labs')
+  })
+
+  it('fails closed when an invisible challenge reports an error', async () => {
+    healthWith({ demoEnabled: true, landing: 'demo', siteKey: INVISIBLE_KEY })
+    const { widget, fail } = fakeTurnstile()
+    const { wrapper } = await mountLogin()
+    await wrapper.get('button[data-test="enter-demo"]').trigger('click')
+    await flushPromises()
+    expect(widget.execute).toHaveBeenCalledTimes(1)
+
+    fail()
+    await flushPromises()
+    expect(guestLogin).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="auth-error"]').text()).toMatch(/security check failed/i)
+    expect(wrapper.get('button[data-test="enter-demo"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('fails closed when an invisible challenge times out', async () => {
+    healthWith({ demoEnabled: true, landing: 'demo', siteKey: INVISIBLE_KEY })
+    const { widget } = fakeTurnstile()
+    const { wrapper } = await mountLogin()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await wrapper.get('button[data-test="enter-demo"]').trigger('click')
+    await flushPromises()
+    expect(widget.execute).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(15000)
+    await flushPromises()
+    expect(guestLogin).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="auth-error"]').text()).toMatch(/complete the security check/i)
+    expect(widget.reset).toHaveBeenCalledWith('widget-1')
+    expect(wrapper.get('button[data-test="enter-demo"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('fails closed when an invisible widget cannot execute', async () => {
+    healthWith({ demoEnabled: true, landing: 'demo', siteKey: INVISIBLE_KEY })
+    const { widget } = fakeTurnstile({ execute: false })
+    const { wrapper } = await mountLogin()
+    await wrapper.get('button[data-test="enter-demo"]').trigger('click')
+    await flushPromises()
+    expect(widget.execute).toBeUndefined()
+    expect(guestLogin).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="auth-error"]').text()).toMatch(/complete the security check/i)
   })
 })
