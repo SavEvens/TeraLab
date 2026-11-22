@@ -242,7 +242,8 @@ for VNC the generated password.
   turns true when the guest answers on its console, not when the process
   starts.
 - `GET /api/v2/system/logs?source=api|agent` tails logs (admin).
-- `GET|PUT /api/v2/system/settings` reads/updates runtime settings (admin).
+- `GET|PUT /api/v2/system/settings` reads/updates runtime settings; see
+  [System settings](#system-settings).
 - `GET /api/v2/system/backup` downloads a zip; `POST /api/v2/system/restore`
   restores labs/templates/settings/metadata and stages the database.
 - `GET|POST /api/v2/system/tokens` and `DELETE /system/tokens/{id}` manage
@@ -279,6 +280,53 @@ for VNC the generated password.
 - `POST /api/v2/maintenance/reconcile` reclaims orphaned resources; it also
   removes the run directories of labs that no longer exist, using the live
   lab list (trash excluded) as the keep-set.
+
+## System settings
+
+`GET /api/v2/system/settings` (any authenticated user) returns
+`{"data":{…}}` with the built-in defaults overlaid by the stored values.
+`PUT /api/v2/system/settings` (admin, `X-CSRF-Token`) accepts any subset of the
+keys below, ignores keys it does not know, and returns 422 when no supported key
+is present. A successful write answers `{"status":"success","data":{…}}` with
+the full map. Integer settings accept JSON numbers or numeric strings and are
+returned as JSON numbers; out-of-range values return 422 naming the key and its
+accepted range.
+
+| Key | Type | Default | Bounds / values |
+|---|---|---|---|
+| `timezone` | string | `UTC` | an IANA id from PHP's `timezone_identifiers_list()` |
+| `console_default` | string | `telnet` | `telnet` or `vnc` |
+| `session_ttl` | integer | `3600` | 300–86400 s |
+| `max_upload_bytes` | integer | `2147483648` | 1 MiB–10 GiB (1048576–10737418240) |
+| `demo_enabled` | integer `0`/`1` | `0` | Demo tier on or off |
+| `demo_landing` | string | `login` | Signed-out landing: `login` or `demo` |
+| `demo_max_guests` | integer | `50` | 1–1000 concurrent guest sessions |
+| `demo_guest_ttl_hours` | integer | `48` | 1–720; total guest lifetime |
+| `demo_guest_idle_hours` | integer | `6` | 1–72; guest idle timeout |
+| `demo_max_nodes_per_lab` | integer | `5` | 1–16 nodes per guest lab |
+| `demo_allowed_templates` | string, CSV of template ids | `vpcs` | at most 32 ids, each `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`; entries are trimmed, empties dropped, duplicates removed, order preserved; ids that do not resolve to a template are ignored by the guest guard |
+| `demo_max_ram_per_node` | integer | `1024` | 64–4096 MB per node |
+| `demo_memory_floor_mb` | integer | `2048` | 256–65536 MB host-memory floor reserved for the demo tier |
+| `demo_idle_wipe_minutes` | integer | `120` | 15–1440; idle time before a guest lab is wiped |
+| `demo_sweep_interval` | integer | `300` | 60–3600 s between guest sweeps |
+| `turnstile_enabled` | integer `0`/`1` | `0` | Require a Turnstile token |
+| `turnstile_site_key` | string | `3x00000000000000000000FF` | 0–128 printable ASCII characters; `""` stores “not configured” and overrides the default |
+| `turnstile_secret_key` | string | `1x0000000000000000000000000000000AA` | 0–128 printable ASCII characters; `""` stores “not configured” and overrides the default; omitted from `GET` responses for non-admin users |
+
+The first four keys pre-date the demo tier and keep their earlier
+defaults, types, and bounds. `demo_allowed_templates` is a single
+comma-separated string, not a JSON array. The demo and Turnstile keys are
+stored and validated even when `demo_enabled` is `0`.
+
+Omit a key from the `PUT` body to leave its stored value unchanged; send `""`
+for a Turnstile key to clear it. `demo_enabled` and `turnstile_enabled` also
+accept JSON booleans and the strings `"0"`/`"1"`.
+
+**Turnstile keys:** the shipped `turnstile_site_key` and `turnstile_secret_key`
+are Cloudflare's public Turnstile *testing* credentials. They always validate
+and give no bot protection. Replace both with keys from your own Turnstile
+widget before the demo is reachable from the internet, and never commit real
+keys to the repository.
 
 ## API tokens
 

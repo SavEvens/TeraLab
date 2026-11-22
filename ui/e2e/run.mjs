@@ -162,6 +162,12 @@ try {
   const systemVersionBadges = await page.locator('.system-view .page-head .badge').count()
   const systemPayloadCards = await page.locator('.system-grid').first().locator('pre.log-view').count()
   await page.getByRole('tab', { name: 'Settings' }).click()
+  const adminDemoTabCount = await page.getByRole('tab', { name: 'Demo', exact: true }).count()
+  await page.getByRole('tab', { name: 'Demo', exact: true }).click()
+  await page.locator('.demo-panel select[aria-label="Demo mode"]').waitFor({ state: 'visible' })
+  await page.waitForFunction(() => document.querySelectorAll('.demo-templates input').length >= 2, null, { timeout: 10000 })
+  const demoPanelTemplates = await page.locator('.demo-templates input').count()
+  const demoSecretStatus = (await page.locator('.demo-panel .secret-field .badge').innerText()).trim()
   await page.getByRole('tab', { name: 'Tokens' }).click()
   await page.locator('.token-form input').first().fill('e2e token')
   await page.getByRole('button', { name: 'Create token' }).click()
@@ -730,6 +736,7 @@ try {
   await page.waitForURL('**/ui/system')
   await page.waitForSelector('[role="tab"]')
   const viewerHasUsersTab = await page.getByRole('tab', { name: 'Users' }).count()
+  const viewerHasDemoTab = await page.getByRole('tab', { name: 'Demo', exact: true }).count()
   const usersForbidden = await page.evaluate(async () => (await fetch('/api/v2/users', { credentials: 'same-origin' })).status)
   const remainingUsernames = (await (await fetch(`http://127.0.0.1:${mockPort}/__users-state`)).json()).users.map((user) => user.username)
 
@@ -880,7 +887,11 @@ try {
     typedAddSecretPanel,
     typedResetAction,
     typedResetSecretPanel,
+    adminDemoTabCount,
+    demoPanelTemplates,
+    demoSecretStatus,
     viewerHasUsersTab,
+    viewerHasDemoTab,
     usersForbidden,
     remainingUsernames,
     pageErrors: errors
@@ -1085,7 +1096,11 @@ try {
     throw new Error(`typed reset reported a generated password: ${JSON.stringify(typedResetAction)}`)
   }
   if (typedResetSecretPanel !== 0) throw new Error('typed reset showed a one-time password panel')
+  if (adminDemoTabCount !== 1) throw new Error(`admin Demo tab count is ${adminDemoTabCount}`)
+  if (demoPanelTemplates < 2) throw new Error(`demo allowlist loaded ${demoPanelTemplates} templates`)
+  if (demoSecretStatus !== 'configured') throw new Error(`demo secret status is ${demoSecretStatus}`)
   if (viewerHasUsersTab !== 0) throw new Error('non-admin still sees the Users tab')
+  if (viewerHasDemoTab !== 0) throw new Error('non-admin still sees the Demo tab')
   if (usersForbidden !== 403) throw new Error(`GET /api/v2/users returned ${usersForbidden} for a non-admin`)
   if (remainingUsernames.some((username) => username === 'e2e-editor' || username === 'e2e-temp')) {
     throw new Error(`deleted users are still listed: ${JSON.stringify(remainingUsernames)}`)

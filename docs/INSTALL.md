@@ -108,6 +108,9 @@ nodes. Every user can change their own password from the top bar.
 
 There are no default accounts, no telemetry, and no `setcap` usage.
 
+Demo-tier limits and the Turnstile keys live in **System → Demo**; no guest
+sign-in flow exists yet, so those settings only store the policy.
+
 ## Engines
 
 - QEMU: distribution package, unprivileged `teralab-vm`, cgroup limits.

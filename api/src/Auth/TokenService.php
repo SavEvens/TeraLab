@@ -8,6 +8,7 @@ namespace TeraLab\Api\Auth;
 
 use PDO;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\System\DemoPolicy;
 
 final class TokenService
 {
@@ -93,7 +94,8 @@ final class TokenService
     public function authenticate(string $token): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT t.id, t.scopes, t.expires_at, u.id AS user_id, u.username, u.role, u.email, u.name '
+            'SELECT t.id, t.scopes, t.expires_at, u.id AS user_id, u.username, u.role, u.email, u.name, '
+            . 'u.expiration, u.guest '
             . 'FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = :hash'
         );
         $statement->execute([':hash' => hash('sha256', $token)]);
@@ -103,6 +105,12 @@ final class TokenService
         }
         if ($row['expires_at'] !== null && (int) $row['expires_at'] < time()) {
             return null;
+        }
+        // Bearer tokens must not outlive the account they belong to. Guest
+        // accounts always carry an expiration, so this is what ends a guest
+        // token when the guest session expires.
+        if ((int) $row['expiration'] >= 0 && (int) $row['expiration'] < time()) {
+            throw new HttpException(403, 'This account has expired.');
         }
         $update = $this->pdo->prepare('UPDATE api_tokens SET last_used_at = :now WHERE id = :id');
         $update->execute([':now' => time(), ':id' => (string) $row['id']]);
@@ -114,6 +122,8 @@ final class TokenService
                 'role' => $row['role'],
                 'email' => $row['email'],
                 'name' => $row['name'],
+                'expiration' => (int) $row['expiration'],
+                'guest' => DemoPolicy::isGuest($row),
             ],
             'scopes' => array_values(array_filter(explode(',', (string) $row['scopes']))),
         ];

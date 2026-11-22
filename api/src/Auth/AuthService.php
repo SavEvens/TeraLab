@@ -10,6 +10,7 @@ use PDO;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\BusyRetry;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\SettingsService;
 
 final class AuthService
@@ -152,7 +153,7 @@ final class AuthService
     {
         $statement = $this->pdo->prepare(
             'SELECT s.id_hash, s.csrf_hash, s.expires_at, s.last_seen_at, '
-            . 'u.id, u.username, u.email, u.name, u.role, u.expiration '
+            . 'u.id, u.username, u.email, u.name, u.role, u.expiration, u.guest '
             . 'FROM sessions s JOIN users u ON u.id = s.user_id '
             . 'WHERE s.id_hash = :id_hash'
         );
@@ -313,6 +314,8 @@ final class AuthService
             'email' => is_string($email) ? $email : null,
             'name' => is_string($name) ? $name : null,
             'role' => (string) $user['role'],
+            'expiration' => (int) ($user['expiration'] ?? -1),
+            'guest' => DemoPolicy::isGuest($user),
         ];
     }
 }
