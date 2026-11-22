@@ -17,7 +17,7 @@ final class Json
     /**
      * @return array<string, mixed>
      */
-    public static function body(ServerRequestInterface $request): array
+    public static function body(ServerRequestInterface $request, int $maxBytes = self::MAX_BODY_BYTES): array
     {
         $contentType = strtolower($request->getHeaderLine('Content-Type'));
         if ($contentType !== '' && !str_contains($contentType, 'application/json')) {
@@ -25,7 +25,7 @@ final class Json
         }
 
         $raw = (string) $request->getBody();
-        if (strlen($raw) > self::MAX_BODY_BYTES) {
+        if (strlen($raw) > $maxBytes) {
             throw new HttpException(413, 'Request body is too large.');
         }
         if ($raw === '') {

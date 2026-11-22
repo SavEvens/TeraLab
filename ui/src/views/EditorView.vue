@@ -60,6 +60,12 @@
             <button class="ghost" :disabled="!canUndo" title="Undo (Ctrl+Z)" @click="undo">↶</button>
             <button class="ghost" :disabled="!canRedo" title="Redo (Ctrl+Y)" @click="redo">↷</button>
             <button class="ghost" @click="openSnapshots">Snapshots</button>
+            <button
+              v-if="yamlSource?.text"
+              class="ghost yaml-source-button"
+              title="Edit YAML source"
+              @click="yamlPanelOpen = true"
+            >YAML</button>
             <button class="ghost" @click="run('start')">▶ Start lab</button>
             <button class="ghost" @click="run('stop')">■ Stop lab</button>
             <button class="danger" @click="run('wipe')">Wipe lab</button>
@@ -159,6 +165,19 @@
       @close="contextMenu = null"
     />
 
+    <YamlSourcePanel
+      :open="yamlPanelOpen"
+      :lab-id="id"
+      :source="yamlSource?.text || ''"
+      :filename="yamlSource?.name || 'lab.yaml'"
+      :sha256="yamlSource?.sha256 || ''"
+      :marker-revision="Number(yamlSource?.revision || 0)"
+      :revision="Number(revision)"
+      :node-states="nodeStates"
+      @applied="onYamlApplied"
+      @close="yamlPanelOpen = false"
+    />
+
     <div v-if="conflict" class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true">
         <h2>Save conflict</h2>
@@ -186,6 +205,7 @@ import LinkEdge from '../components/LinkEdge.vue'
 import TemplatePicker from '../components/TemplatePicker.vue'
 import AddLinkDialog from '../components/AddLinkDialog.vue'
 import ContextMenu from '../components/ContextMenu.vue'
+import YamlSourcePanel from '../components/YamlSourcePanel.vue'
 import TextNode from '../components/TextNode.vue'
 import PictureNode from '../components/PictureNode.vue'
 import { api } from '../api'
@@ -208,6 +228,8 @@ const images = ref([])
 const dockerImages = ref([])
 const selected = ref(null)
 const revision = ref(1)
+const labExtensions = ref({})
+const yamlPanelOpen = ref(false)
 const labName = ref('')
 const dirty = ref(false)
 const saving = ref(false)
@@ -246,6 +268,7 @@ const saveLabel = computed(() => {
   return savedAt.value ? `Saved ${savedAt.value.toLocaleTimeString()}` : 'Saved'
 })
 const linkNodes = computed(() => nodes.value.filter((node) => node.type === 'lab'))
+const yamlSource = computed(() => labExtensions.value?.source || null)
 let autosaveTimer = null
 let suppressWatch = true
 
@@ -362,6 +385,7 @@ async function load() {
     const data = (await api.lab(props.id)).data
     labName.value = data.name
     revision.value = data.revision || 1
+    labExtensions.value = data.extensions && typeof data.extensions === 'object' ? data.extensions : {}
     networks.value = (data.network_list || []).map((network) => ({ ...network }))
     nodes.value = (data.node_list || []).map(buildNode)
     showMinimap.value = nodes.value.length <= 80
@@ -914,6 +938,17 @@ async function save({ silent = false } = {}) {
 async function reload() {
   conflict.value = null
   autosavePaused.value = false
+  await load()
+}
+
+// Apply bumps the revision on the server. Reuse the reload path instead of
+// saving over the rebuild, and clear any conflict so the editor cannot loop.
+async function onYamlApplied() {
+  yamlPanelOpen.value = false
+  conflict.value = null
+  autosavePaused.value = false
+  dirty.value = false
+  window.clearTimeout(autosaveTimer)
   await load()
 }
 

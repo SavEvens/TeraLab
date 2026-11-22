@@ -14,6 +14,20 @@ const mockPort = 8099
 const outDir = process.env.TERALAB_E2E_OUT || path.join(os.tmpdir(), 'teralab-ui-e2e')
 mkdirSync(outDir, { recursive: true })
 
+// Generic, distributable YAML: template ids and a store reference only.
+const yamlDocument = (name, { nodes = 2, networks = 1, image = false } = {}) => {
+  const lines = ['schema: 1', `name: ${name}`]
+  if (image) lines.push('defaults:', '  template: iol', '  image: base.qcow2')
+  lines.push('nodes:')
+  for (let index = 1; index <= nodes; index += 1) lines.push(`  R${index}:`, '    template: iol')
+  if (networks) lines.push('networks:', '  lan-a: {}')
+  lines.push('links:', '  - [R1.e0/0, R2.e0/0]')
+  return `${lines.join('\n')}\n`
+}
+const YAML_FILE_DOCUMENT = yamlDocument('YAML File Lab', { image: true })
+const YAML_PASTE_DOCUMENT = yamlDocument('Paste YAML Lab', { nodes: 3, image: true })
+const YAML_APPLIED_DOCUMENT = yamlDocument('YAML Applied Lab', { nodes: 3 })
+
 const mock = await startMockServer(mockPort)
 const env = {
   ...process.env,
@@ -185,6 +199,39 @@ try {
   const importReport = await page.locator('.import-report').innerText()
   await page.locator('.import-report').getByRole('button', { name: 'Close' }).click()
 
+  // The same import control accepts YAML; detection is server-side.
+  await page.locator('.toolbar input[type=file]').setInputFiles({
+    name: 'generic-lab.yaml',
+    mimeType: 'application/yaml',
+    buffer: Buffer.from(YAML_FILE_DOCUMENT)
+  })
+  await page.waitForSelector('.import-report')
+  const yamlImportReport = (await page.locator('.import-report').innerText()).replace(/\s+/g, ' ').trim()
+  await page.locator('.import-report').getByRole('button', { name: 'Close' }).click()
+  await page.waitForFunction(() => [...document.querySelectorAll('.lab-table tbody tr')].some((row) => row.textContent.includes('YAML File Lab')), null, { timeout: 10000 })
+
+  // Paste-YAML is the second mode of the Create project dialog: validate in
+  // place, then create through the virtual-file import path and move it.
+  await page.getByRole('button', { name: 'Create project' }).click()
+  await page.getByRole('tab', { name: 'From YAML' }).click()
+  const yamlNameFieldHidden = await page.locator('.create-project input[aria-label="Project name"]').count()
+  await page.locator('.create-project textarea[aria-label="Lab YAML"]').fill(YAML_PASTE_DOCUMENT)
+  await page.locator('.create-project input[aria-label="Project folder"]').fill('yaml-folder')
+  await page.locator('.create-project').getByRole('button', { name: 'Validate' }).click()
+  await page.waitForFunction(() => document.querySelector('.yaml-counts')?.textContent.includes('3 nodes'), null, { timeout: 10000 })
+  const pasteValidationText = (await page.locator('.create-project .yaml-validation').innerText()).replace(/\s+/g, ' ').trim()
+  const pasteWarningCount = await page.locator('.create-project .yaml-warnings li').count()
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].length === 0, null, { timeout: 10000 }).catch(() => {})
+  await page.locator('.create-project').getByRole('button', { name: 'Create from YAML' }).click()
+  await page.waitForFunction(() => !document.querySelector('.create-project'), null, { timeout: 10000 })
+  await page.waitForFunction(() => document.querySelector('.lab-table tbody')?.textContent.includes('Paste YAML Lab'), null, { timeout: 10000 })
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /created from YAML with 1 warning/i.test(toast.textContent || '')), null, { timeout: 10000 })
+  const pasteToast = (await page.locator('.toasts').innerText()).replace(/\s+/g, ' ').trim()
+  const pasteState = await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()
+  const pasteLab = (pasteState.createdLabs || []).find((candidate) => candidate.name === 'Paste YAML Lab')
+  const pasteFolder = pasteState.lastMove?.folder
+  const pasteDialogClosed = await page.locator('.create-project').count()
+
   // Images: upload, rename, map a template.
   await page.getByRole('link', { name: 'Appliances' }).click()
   await page.waitForURL('**/ui/appliances')
@@ -220,6 +267,7 @@ try {
   await page.waitForSelector('.lab-node')
   const editorMs = Date.now() - editorStart
   const editorButtons = (await page.locator('.editor button').allTextContents()).map((text) => text.trim())
+  const yamlButtonWithoutMarker = await page.locator('.ed-actions').getByRole('button', { name: 'YAML', exact: true }).count()
   const addLinkTop = await page.locator('.ed-actions button').filter({ hasText: '+ Add link' }).count()
   const addLinkBottom = await page.locator('.ed-bottom button').filter({ hasText: 'Add link' }).count()
   const addLinkEnabled = await page.locator('.ed-actions button').filter({ hasText: '+ Add link' }).isEnabled()
@@ -481,6 +529,74 @@ try {
   const linkedRemaining = prunedState.node_list.map((node) => ({ id: node.id, network_id: node.interfaces[0]?.network_id ?? null }))
   const linkedNetworksAfterSave = prunedState.network_list.length
 
+  // YAML source panel: hidden without a marker, Apply greyed while a node runs
+  // or the text is unchanged, then apply and staleness after a canvas edit.
+  await fetch(`http://127.0.0.1:${mockPort}/__yaml`, { method: 'POST' })
+  await page.goto(`http://127.0.0.1:${uiPort}/ui/labs/lab1`)
+  await page.waitForFunction(() => document.querySelectorAll('.lab-node').length === 2, null, { timeout: 15000 })
+  const yamlButtonWithMarker = await page.locator('.ed-actions').getByRole('button', { name: 'YAML', exact: true }).count()
+  await page.locator('.ed-actions').getByRole('button', { name: 'YAML', exact: true }).click()
+  await page.waitForSelector('.yaml-panel')
+  const yamlPanelMarker = (await page.locator('.yaml-panel .yaml-marker').innerText()).replace(/\s+/g, ' ').trim()
+  const yamlRunningHint = (await page.locator('.yaml-panel .yaml-running').innerText()).trim()
+  const yamlApplyDisabledRunning = await page.locator('.yaml-panel .yaml-apply').isDisabled()
+  await page.locator('.yaml-panel').getByRole('button', { name: 'Close' }).click()
+  await page.waitForFunction(() => !document.querySelector('.yaml-panel'))
+
+  await fetch(`http://127.0.0.1:${mockPort}/__yaml-stopped`, { method: 'POST' })
+  await page.goto(`http://127.0.0.1:${uiPort}/ui/labs/lab1`)
+  await page.waitForFunction(() => document.querySelectorAll('.lab-node').length === 2, null, { timeout: 15000 })
+  await page.locator('.ed-actions').getByRole('button', { name: 'YAML', exact: true }).click()
+  await page.waitForSelector('.yaml-panel')
+  const yamlApplyDisabledUnchanged = await page.locator('.yaml-panel .yaml-apply').isDisabled()
+  await page.locator('.yaml-panel textarea[aria-label="Lab YAML source"]').fill(YAML_APPLIED_DOCUMENT)
+  await page.locator('.yaml-panel').getByRole('button', { name: 'Validate' }).click()
+  await page.waitForFunction(() => document.querySelector('.yaml-panel .yaml-counts')?.textContent.includes('3 nodes'), null, { timeout: 10000 })
+  const yamlValidateText = (await page.locator('.yaml-panel .yaml-validation').innerText()).replace(/\s+/g, ' ').trim()
+  const yamlApplyEnabled = await page.locator('.yaml-panel .yaml-apply').isEnabled()
+  await page.locator('.yaml-panel .yaml-apply').click()
+  await page.waitForFunction(() => !document.querySelector('.yaml-panel'), null, { timeout: 15000 })
+  await page.waitForFunction(() => document.querySelectorAll('.lab-node').length === 3, null, { timeout: 15000 })
+  const appliedState = await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()
+  const appliedLabName = appliedState.lab.name
+  const appliedRevision = appliedState.lab.revision
+  const appliedSourceName = appliedState.lab.extensions?.source?.name
+  const appliedNodeCount = appliedState.lab.node_list.length
+
+  // A canvas edit bumps the lab revision; the marker stays behind, so the panel
+  // warns and a later Apply replaces the canvas state.
+  await page.locator('.ed-topbar input.lab-name').fill('Canvas Edited')
+  const staleDeadline = Date.now() + 12000
+  let staleState = appliedState
+  while (staleState.lab.revision <= appliedRevision && Date.now() < staleDeadline) {
+    await sleep(250)
+    staleState = await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()
+  }
+  await page.locator('.ed-actions').getByRole('button', { name: 'YAML', exact: true }).click()
+  await page.waitForSelector('.yaml-panel .yaml-stale', { timeout: 10000 })
+  const yamlStaleText = (await page.locator('.yaml-panel .yaml-stale').innerText()).trim()
+  const yamlReapplyText = (await page.locator('.yaml-panel .yaml-reapply').innerText()).trim()
+  const yamlStaleApplyEnabled = await page.locator('.yaml-panel .yaml-apply').isEnabled()
+  const staleSource = await page.locator('.yaml-panel textarea[aria-label="Lab YAML source"]').inputValue()
+  await page.locator('.yaml-panel .yaml-apply').click()
+  await page.waitForFunction(() => !document.querySelector('.yaml-panel'), null, { timeout: 15000 })
+  const resolvedDeadline = Date.now() + 12000
+  let resolvedState = staleState
+  while (resolvedState.lab.revision <= staleState.lab.revision && Date.now() < resolvedDeadline) {
+    await sleep(250)
+    resolvedState = await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()
+  }
+  const canvasEditOverwritten = resolvedState.lab.name === 'YAML Applied Lab'
+  const resolvedRevision = resolvedState.lab.revision
+  const reappliedUnchanged = resolvedState.lastYamlApply?.yaml === staleSource
+  await page.waitForFunction(() => document.querySelectorAll('.lab-node').length === 3, null, { timeout: 15000 })
+  await page.locator('.ed-actions').getByRole('button', { name: 'YAML', exact: true }).click()
+  await page.waitForSelector('.yaml-panel')
+  const yamlStaleAfterReapply = await page.locator('.yaml-panel .yaml-stale').count()
+  const yamlReapplyAfterReapply = await page.locator('.yaml-panel .yaml-reapply').count()
+  await page.locator('.yaml-panel').getByRole('button', { name: 'Close' }).click()
+  await page.waitForFunction(() => !document.querySelector('.yaml-panel'))
+
   await page.getByRole('link', { name: '← Labs' }).click()
   await page.waitForURL('**/ui/labs')
   await page.getByRole('link', { name: 'Appliances' }).click()
@@ -675,6 +791,34 @@ try {
     createdLabPath,
     createdLabFolder,
     createDialogClosed,
+    yamlImportReport,
+    yamlNameFieldHidden,
+    pasteValidationText,
+    pasteWarningCount,
+    pasteToast,
+    pasteLabPath: pasteLab?.path,
+    pasteFolder,
+    pasteDialogClosed,
+    yamlButtonWithoutMarker,
+    yamlButtonWithMarker,
+    yamlPanelMarker,
+    yamlRunningHint,
+    yamlApplyDisabledRunning,
+    yamlApplyDisabledUnchanged,
+    yamlValidateText,
+    yamlApplyEnabled,
+    appliedLabName,
+    appliedRevision,
+    appliedSourceName,
+    appliedNodeCount,
+    yamlStaleText,
+    yamlReapplyText,
+    yamlStaleApplyEnabled,
+    canvasEditOverwritten,
+    resolvedRevision,
+    reappliedUnchanged,
+    yamlStaleAfterReapply,
+    yamlReapplyAfterReapply,
     systemHost: systemHost.replace(/\s+/g, ' ').trim().slice(0, 240),
     systemVersionBadges,
     systemPayloadCards,
@@ -767,6 +911,48 @@ try {
   if (createDialogClosed !== 0) throw new Error('create project dialog stayed open after success')
   if (!createdLab || !createdLabPath?.includes('e2e-folder/')) throw new Error(`created project landed in the wrong folder: ${createdLabPath}`)
   if (createdLabFolder !== 'e2e-folder') throw new Error(`move request used the wrong folder: ${createdLabFolder}`)
+  if (!/image_unmapped/i.test(yamlImportReport)) {
+    throw new Error(`YAML file import report incomplete: ${yamlImportReport}`)
+  }
+  if (yamlNameFieldHidden !== 0) throw new Error('paste-YAML mode still shows the project name field')
+  if (pasteWarningCount < 1 || !/image_unmapped/.test(pasteValidationText)) {
+    throw new Error(`paste-YAML validation did not show warnings: ${pasteValidationText}`)
+  }
+  if (!/3 nodes/.test(pasteValidationText) || !/1 networks/.test(pasteValidationText) || !/1 links/.test(pasteValidationText)) {
+    throw new Error(`paste-YAML validation counts are wrong: ${pasteValidationText}`)
+  }
+  if (!pasteLab?.path?.includes('yaml-folder/')) throw new Error(`paste-YAML project landed in the wrong folder: ${pasteLab?.path}`)
+  if (pasteFolder !== 'yaml-folder') throw new Error(`paste-YAML move used the wrong folder: ${pasteFolder}`)
+  if (pasteDialogClosed !== 0) throw new Error('paste-YAML dialog stayed open after success')
+  if (!/created from YAML with 1 warning/i.test(pasteToast)) throw new Error(`paste-YAML warning toast missing: ${pasteToast}`)
+  if (yamlButtonWithoutMarker !== 0) throw new Error('YAML button is shown for a lab without a source marker')
+  if (yamlButtonWithMarker !== 1) throw new Error('YAML button is missing for a lab with a source marker')
+  if (!/triangle\.yaml/.test(yamlPanelMarker) || !/sha256:aaaaaaaaaaaa/.test(yamlPanelMarker)) {
+    throw new Error(`YAML panel marker metadata is wrong: ${yamlPanelMarker}`)
+  }
+  if (!/Stop and wipe/.test(yamlRunningHint) || !yamlApplyDisabledRunning) {
+    throw new Error(`Apply is not disabled while a node runs: ${yamlRunningHint}/${yamlApplyDisabledRunning}`)
+  }
+  if (!yamlApplyDisabledUnchanged) throw new Error('Apply is enabled while the YAML text is unchanged')
+  if (!/3 nodes/.test(yamlValidateText) || !/1 networks/.test(yamlValidateText)) {
+    throw new Error(`editor YAML validation counts are wrong: ${yamlValidateText}`)
+  }
+  if (!yamlApplyEnabled) throw new Error('Apply is disabled for a valid, changed, stopped lab')
+  if (appliedLabName !== 'YAML Applied Lab' || appliedRevision < 3 || appliedNodeCount !== 3) {
+    throw new Error(`apply did not replace the lab: ${appliedLabName}/${appliedRevision}/${appliedNodeCount}`)
+  }
+  if (appliedSourceName !== 'triangle.yaml') throw new Error(`apply did not restamp the source name: ${appliedSourceName}`)
+  if (!/canvas has changed since this YAML was applied/.test(yamlStaleText)) {
+    throw new Error(`staleness warning missing: ${yamlStaleText}`)
+  }
+  if (!yamlStaleApplyEnabled) throw new Error('Apply is disabled for an unchanged stale source')
+  if (!/replace the canvas changes/.test(yamlReapplyText)) throw new Error(`re-apply confirmation missing: ${yamlReapplyText}`)
+  if (!canvasEditOverwritten) throw new Error('apply did not win over the canvas edit')
+  if (!reappliedUnchanged) throw new Error('re-apply did not post the unchanged stored YAML')
+  if (!(resolvedRevision > appliedRevision)) throw new Error(`resolve apply did not bump the revision: ${appliedRevision} -> ${resolvedRevision}`)
+  if (yamlStaleAfterReapply !== 0 || yamlReapplyAfterReapply !== 0) {
+    throw new Error(`staleness warning did not clear after re-apply: ${yamlStaleAfterReapply}/${yamlReapplyAfterReapply}`)
+  }
   if (!editorButtons.includes('+ Add link')) throw new Error(`top bar missing + Add link: ${editorButtons}`)
   if (editorButtons.includes('Save') || editorButtons.includes('Validate') || editorButtons.some((text) => /^Align/.test(text))) {
     throw new Error(`removed editor controls still present: ${editorButtons}`)

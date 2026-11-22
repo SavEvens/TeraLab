@@ -84,6 +84,12 @@ The navigation rail has three destinations: **Labs**, **Appliances**
 (Templates and Images tabs) and **System** (including About). The running
 version is shown in the rail footer.
 
+Import a lab from **Labs → Import** (or drag-drop) as a `.unl`, `.yaml`, or
+`.yml` file, or use **Create project → From YAML** to paste YAML, validate it,
+and create the lab in an optional folder. Labs created from YAML show a
+**YAML** source panel in the editor; applying an edited source requires every
+node to be stopped. See [`LAB-YAML.md`](LAB-YAML.md) for the format.
+
 ### Users
 
 The administrator manages accounts from **System → Users**: add a user, choose

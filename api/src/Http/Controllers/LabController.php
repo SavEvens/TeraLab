@@ -19,6 +19,12 @@ use TeraLab\Api\Labs\LabService;
 
 final class LabController
 {
+    /**
+     * Validate/apply carry a full YAML document in JSON; allow the 10 MB YAML
+     * cap plus JSON escaping overhead.
+     */
+    private const YAML_BODY_BYTES = 26214400;
+
     public function __construct(
         private readonly LabRepository $labs,
         private readonly LabService $service,
@@ -103,14 +109,200 @@ final class LabController
         }
         $user = $this->access->user($request);
         $this->access->requireRole($user, 'editor');
-        $lab = $this->service->import($file, $this->author($request), (string) $user['id']);
-        $this->audit->log((string) $user['id'], $this->ip($request), 'lab.import', (string) $lab['id'], 'success');
 
+        $filename = (string) ($file->getClientFilename() ?? '');
+        $contents = $this->uploadContents($file);
+        $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
+        $source = match (true) {
+            in_array($extension, ['yaml', 'yml'], true) => 'yaml',
+            $extension === 'unl' => 'unl',
+            default => $this->looksLikeXml($contents) ? 'unl' : 'yaml',
+        };
+
+        if ($source === 'yaml') {
+            $lab = $this->service->importYaml(
+                $contents,
+                $filename !== '' ? $filename : 'lab.yaml',
+                $this->author($request),
+                (string) $user['id'],
+            );
+            $this->audit->log(
+                (string) $user['id'],
+                $this->ip($request),
+                'lab.import',
+                (string) $lab['id'],
+                'success',
+                ['source' => 'yaml'],
+            );
+
+            return $this->importResponse($response, $lab);
+        }
+
+        $stream = $file->getStream();
+        $stream->rewind();
+        try {
+            $lab = $this->service->import($file, $this->author($request), (string) $user['id']);
+        } catch (HttpException|\RuntimeException $xmlError) {
+            if ($this->looksLikeXml($contents)) {
+                throw $xmlError;
+            }
+            try {
+                $lab = $this->service->importYaml(
+                    $contents,
+                    $filename !== '' ? $filename : 'lab.yaml',
+                    $this->author($request),
+                    (string) $user['id'],
+                );
+            } catch (HttpException|\RuntimeException $yamlError) {
+                throw new HttpException(
+                    422,
+                    'The file is neither a valid lab export nor a valid YAML lab. XML: '
+                        . $xmlError->getMessage() . ' YAML: ' . $yamlError->getMessage(),
+                );
+            }
+            $this->audit->log(
+                (string) $user['id'],
+                $this->ip($request),
+                'lab.import',
+                (string) $lab['id'],
+                'success',
+                ['source' => 'yaml'],
+            );
+
+            return $this->importResponse($response, $lab);
+        }
+        $this->audit->log(
+            (string) $user['id'],
+            $this->ip($request),
+            'lab.import',
+            (string) $lab['id'],
+            'success',
+            ['source' => 'unl'],
+        );
+
+        return $this->importResponse($response, $lab);
+    }
+
+    public function validate(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $body = Json::body($request, self::YAML_BODY_BYTES);
+        $yaml = $body['yaml'] ?? null;
+        if (!is_string($yaml)) {
+            throw new HttpException(422, 'yaml is required.');
+        }
+        $filename = $body['filename'] ?? null;
+        if ($filename !== null && !is_string($filename)) {
+            throw new HttpException(422, 'filename must be text.');
+        }
+        $target = is_string($filename) && trim($filename) !== '' ? $filename : 'lab.yaml';
+        $result = $this->service->validateYaml($yaml, $target);
+        $this->audit->log(
+            (string) $user['id'],
+            $this->ip($request),
+            'lab.validate',
+            $this->auditFilename($target),
+            'success',
+            ['valid' => $result['valid'], 'nodes' => $result['counts']['nodes'], 'networks' => $result['counts']['networks']],
+        );
+
+        return Json::response($response, ['status' => 'success', 'data' => $result]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
+    public function apply(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $body = Json::body($request, self::YAML_BODY_BYTES);
+        $yaml = $body['yaml'] ?? null;
+        if (!is_string($yaml)) {
+            throw new HttpException(422, 'yaml is required.');
+        }
+        $filename = $body['filename'] ?? null;
+        if ($filename !== null && !is_string($filename)) {
+            throw new HttpException(422, 'filename must be text.');
+        }
+        $revision = $body['revision'] ?? null;
+        if ($revision !== null && !is_int($revision)) {
+            throw new HttpException(422, 'revision must be an integer.');
+        }
+        $applied = $this->service->applyYaml(
+            (string) $lab['id'],
+            $yaml,
+            is_string($filename) ? $filename : null,
+            is_int($revision) ? $revision : null,
+            (string) $user['id'],
+            $this->access->isAdmin($user),
+        );
+        $this->audit->log(
+            (string) $user['id'],
+            $this->ip($request),
+            'lab.apply',
+            (string) $lab['id'],
+            'success',
+            ['revision' => $applied['revision'] ?? null],
+        );
+
+        return Json::response($response, [
+            'status' => 'success',
+            'data' => $applied,
+            'meta' => ['warnings' => $applied['warnings'] ?? []],
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $lab
+     */
+    private function importResponse(ResponseInterface $response, array $lab): ResponseInterface
+    {
         return Json::response($response, [
             'status' => 'success',
             'data' => $lab,
             'meta' => ['warnings' => $lab['warnings'] ?? []],
         ], 201);
+    }
+
+    private function uploadContents(\Psr\Http\Message\UploadedFileInterface $file): string
+    {
+        if ($file->getError() !== UPLOAD_ERR_OK) {
+            throw new HttpException(400, 'The lab upload did not complete.');
+        }
+        $stream = $file->getStream();
+        $stream->rewind();
+        $contents = $stream->getContents();
+        if ($contents === '' || strlen($contents) > 10485760) {
+            throw new HttpException(422, 'The lab file is empty or too large.');
+        }
+
+        return $contents;
+    }
+
+    /**
+     * Audit details are client-controlled; keep them short and path-free.
+     */
+    private function auditFilename(string $filename): string
+    {
+        $name = basename(trim($filename));
+        if ($name === '' || $name === '.' || $name === '..') {
+            return 'lab.yaml';
+        }
+        if (preg_match('//u', $name) !== 1 || preg_match('/[\x00-\x1F\x7F]/', $name) === 1) {
+            return 'lab.yaml';
+        }
+
+        return mb_strcut($name, 0, 128, 'UTF-8');
+    }
+
+    private function looksLikeXml(string $contents): bool
+    {
+        $contents = (string) preg_replace('/^\xEF\xBB\xBF/', '', $contents);
+
+        return str_starts_with(ltrim($contents), '<');
     }
 
     /**

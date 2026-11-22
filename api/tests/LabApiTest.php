@@ -269,6 +269,387 @@ final class LabApiTest extends TestCase
         self::assertSame(200, $this->request('GET', '/api/v2/labs/' . $labID)->getStatusCode());
     }
 
+    public function testYamlImportCreatesLabWithProvenanceAndWarnings(): void
+    {
+        $this->writeBuiltinTemplate('iol');
+        $yaml = <<<'YAML'
+        schema: 1
+        name: YAML Import
+        author: YAML Author
+        description: Imported description
+        tags: [yaml, import]
+        defaults:
+          template: iol
+          image: missing-image.bin
+          ports: 2
+        links:
+          - [R1.e0/0, R2.e0/0]
+        nodes:
+          R1:
+            ram: 768
+            config: |
+              hostname R1
+          R2: {}
+        YAML;
+
+        $response = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($yaml, 'yml-lab.yaml'));
+        self::assertSame(201, $response->getStatusCode(), (string) $response->getBody());
+        $body = $this->json($response);
+        $lab = $body['data'];
+        self::assertSame('YAML Import', $lab['name']);
+        self::assertSame('YAML Author', $lab['author']);
+        self::assertSame(2, $lab['nodes']);
+        self::assertSame(1, $lab['networks']);
+        self::assertSame(['yaml', 'import'], $lab['tags']);
+        self::assertSame(1, $lab['revision']);
+        $types = array_column($body['meta']['warnings'], 'type');
+        self::assertContains('image_unmapped', $types);
+
+        $statement = $this->pdo->prepare('SELECT details_json FROM audit_log WHERE action = :action AND target = :target');
+        $statement->execute([':action' => 'lab.import', ':target' => (string) $lab['id']]);
+        $details = (string) $statement->fetchColumn();
+        self::assertStringContainsString('"source":"yaml"', $details);
+
+        $show = $this->json($this->request('GET', '/api/v2/labs/' . $lab['id']))['data'];
+        $source = $show['extensions']['source'];
+        self::assertSame('yaml', $source['kind']);
+        self::assertSame('yml-lab.yaml', $source['name']);
+        self::assertSame(1, $source['revision']);
+        self::assertSame(hash('sha256', $yaml), $source['sha256']);
+        self::assertSame($yaml, $source['text']);
+        self::assertSame('hostname R1', trim((string) $show['node_list'][0]['config']));
+    }
+
+    public function testYamlImportDetectionUsesExtensionThenContent(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+        $yaml = "schema: 1\nname: Sniffed YAML\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n";
+
+        $byContent = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($yaml, 'lab.dat'));
+        self::assertSame(201, $byContent->getStatusCode(), (string) $byContent->getBody());
+        self::assertSame('Sniffed YAML', $this->json($byContent)['data']['name']);
+
+        $xml = (string) file_get_contents(__DIR__ . '/fixtures/sample.unl');
+        $byXmlContent = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($xml, 'lab.dat'));
+        self::assertSame(201, $byXmlContent->getStatusCode(), (string) $byXmlContent->getBody());
+        self::assertNotSame('Sniffed YAML', $this->json($byXmlContent)['data']['name']);
+    }
+
+    public function testImportFallsBackToYamlAndReportsBothErrors(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+        $yaml = "schema: 1\nname: Wrong Extension\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n";
+
+        $fallback = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($yaml, 'lab.unl'));
+        self::assertSame(201, $fallback->getStatusCode(), (string) $fallback->getBody());
+        self::assertSame('Wrong Extension', $this->json($fallback)['data']['name']);
+
+        $broken = $this->request(
+            'POST',
+            '/api/v2/labs/import',
+            [],
+            [],
+            null,
+            $this->upload("schema: 1\nname: Broken\nnodes: [\n", 'broken.unl'),
+        );
+        self::assertSame(422, $broken->getStatusCode());
+        $message = (string) $this->json($broken)['message'];
+        self::assertStringContainsString('XML:', $message);
+        self::assertStringContainsString('YAML:', $message);
+    }
+
+    public function testValidateEndpointCompilesWithoutWriting(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+        $before = count($this->json($this->request('GET', '/api/v2/labs'))['data']);
+
+        $valid = $this->request('POST', '/api/v2/labs/validate', [
+            'yaml' => "schema: 1\nname: Dry Run\ndefaults: {template: vpcs, image: absent.bin}\nnodes: {PC1: {}}\n",
+            'filename' => 'dry-run.yaml',
+        ]);
+        self::assertSame(200, $valid->getStatusCode(), (string) $valid->getBody());
+        $data = $this->json($valid)['data'];
+        self::assertTrue($data['valid']);
+        self::assertSame([], $data['errors']);
+        self::assertSame(['nodes' => 1, 'networks' => 0, 'links' => 0], $data['counts']);
+        self::assertContains('image_unmapped', array_column($data['warnings'], 'type'));
+
+        $invalid = $this->request('POST', '/api/v2/labs/validate', [
+            'yaml' => "schema: 1\nname: Bad\nnodes:\n  R1:\n    template: nope\n",
+        ]);
+        self::assertSame(200, $invalid->getStatusCode());
+        $bad = $this->json($invalid)['data'];
+        self::assertFalse($bad['valid']);
+        self::assertNotEmpty($bad['errors']);
+        self::assertStringContainsString('Node "R1"', (string) $bad['errors'][0]);
+        self::assertSame([], $bad['warnings']);
+
+        self::assertSame(422, $this->request('POST', '/api/v2/labs/validate', [])->getStatusCode());
+        self::assertSame($before, count($this->json($this->request('GET', '/api/v2/labs'))['data']));
+    }
+
+    public function testApplyReplacesTopologyPreservesIdentityAndCleansOrphans(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+        $first = "schema: 1\nname: Applied Lab\ndescription: v1\ntags: [yaml]\ndefaults: {template: vpcs}\n"
+            . "networks: {lan: {}}\nnodes:\n  R1:\n    links: {e0: lan}\n  R2:\n    links: {e0: lan}\n";
+        $import = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($first, 'first.yaml'));
+        self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
+        $lab = $this->json($import)['data'];
+        $labID = (string) $lab['id'];
+
+        $moved = $this->request('POST', '/api/v2/labs/' . $labID . '/move', ['folder' => 'demo']);
+        self::assertSame(200, $moved->getStatusCode(), (string) $moved->getBody());
+        $movedLab = $this->json($moved)['data'];
+        $createdAt = $movedLab['created_at'];
+        $owner = $movedLab['owner'];
+        $path = $movedLab['path'];
+        self::assertStringStartsWith('demo/', $path);
+
+        $second = "schema: 1\nname: Applied Lab v2\ndescription: v2\ntags: [yaml, v2]\n"
+            . "defaults: {template: vpcs}\nnetworks: {lan: {}}\nnodes:\n  R1:\n    links: {e0: lan}\n";
+        $apply = $this->request('POST', '/api/v2/labs/' . $labID . '/apply', [
+            'yaml' => $second,
+            'filename' => 'second.yaml',
+            'revision' => 1,
+        ]);
+        self::assertSame(200, $apply->getStatusCode(), (string) $apply->getBody());
+        self::assertNotContains(
+            'run_state_reset',
+            array_column($this->json($apply)['meta']['warnings'], 'type'),
+        );
+        $applied = $this->json($apply)['data'];
+        self::assertSame($labID, $applied['id']);
+        self::assertSame($path, $applied['path']);
+        self::assertSame($owner, $applied['owner']);
+        self::assertSame($createdAt, $applied['created_at']);
+        self::assertSame(2, $applied['revision']);
+        self::assertSame('Applied Lab v2', $applied['name']);
+        self::assertSame(['yaml', 'v2'], $applied['tags']);
+
+        $show = $this->json($this->request('GET', '/api/v2/labs/' . $labID))['data'];
+        self::assertSame(['R1'], array_column($show['node_list'], 'name'));
+        self::assertSame(['1'], array_column($show['node_list'], 'id'));
+        self::assertSame('second.yaml', $show['extensions']['source']['name']);
+        self::assertSame(2, $show['extensions']['source']['revision']);
+        self::assertSame($second, $show['extensions']['source']['text']);
+
+        $orphanID = substr((string) preg_replace('/[^A-Za-z0-9_.-]/', '-', $labID), 0, 60) . '-2';
+        $wiped = [];
+        foreach ($this->calls as $call) {
+            if ($call['path'] === '/v1/node.wipe' || $call['path'] === '/v1/node.stop') {
+                $wiped[] = (string) ($call['payload']['id'] ?? '');
+            }
+        }
+        self::assertContains($orphanID, $wiped);
+        self::assertNotContains($labID . '-1', $wiped);
+    }
+
+    public function testApplyRejectsRunningLabAndStaleRevision(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+        $yaml = "schema: 1\nname: Guarded Lab\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n";
+        $import = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($yaml, 'guarded.yaml'));
+        $lab = $this->json($import)['data'];
+        $labID = (string) $lab['id'];
+
+        self::assertSame(202, $this->request('POST', '/api/v2/labs/' . $labID . '/start')->getStatusCode());
+        $running = $this->request('POST', '/api/v2/labs/' . $labID . '/apply', ['yaml' => $yaml]);
+        self::assertSame(409, $running->getStatusCode());
+        self::assertSame(
+            'Stop and wipe the lab before applying YAML.',
+            (string) $this->json($running)['message'],
+        );
+
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $labID . '/stop')->getStatusCode());
+        $save = $this->request('PUT', '/api/v2/labs/' . $labID, ['name' => 'Guarded Lab 2', 'revision' => 1]);
+        self::assertSame(200, $save->getStatusCode());
+        self::assertSame(2, $this->json($save)['data']['revision']);
+
+        $stale = $this->request('POST', '/api/v2/labs/' . $labID . '/apply', [
+            'yaml' => $yaml,
+            'revision' => 1,
+        ]);
+        self::assertSame(409, $stale->getStatusCode());
+        self::assertSame(2, $this->json($stale)['details']['revision'] ?? null);
+
+        $fresh = $this->request('POST', '/api/v2/labs/' . $labID . '/apply', [
+            'yaml' => $yaml,
+            'revision' => 2,
+        ]);
+        self::assertSame(200, $fresh->getStatusCode(), (string) $fresh->getBody());
+        self::assertSame(3, $this->json($fresh)['data']['revision']);
+    }
+
+    public function testUnlImportAndSaveRemainUnchanged(): void
+    {
+        $xml = (string) file_get_contents(__DIR__ . '/fixtures/sample.unl');
+        $import = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($xml, 'classic.unl'));
+        self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
+        $lab = $this->json($import)['data'];
+        self::assertArrayNotHasKey('extensions', $lab);
+        self::assertSame(1, $lab['revision']);
+
+        $save = $this->request('PUT', '/api/v2/labs/' . $lab['id'], ['revision' => 1, 'description' => 'saved']);
+        self::assertSame(200, $save->getStatusCode(), (string) $save->getBody());
+        $saved = $this->json($save)['data'];
+        self::assertSame(2, $saved['revision']);
+        self::assertSame('saved', $saved['description']);
+
+        $export = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/export');
+        self::assertSame(200, $export->getStatusCode());
+        self::assertStringContainsString('<lab ', (string) $export->getBody());
+    }
+
+    public function testImportRejectsXmlUnsafeTextWithoutWriting(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+        $yaml = "schema: 1\nname: Unsafe import\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n"
+            . "description: \"\\x01\"\n";
+
+        $response = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($yaml, 'unsafe.yaml'));
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('description', (string) $this->json($response)['message']);
+
+        $author = "schema: 1\nname: Unsafe author\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\nauthor: \"\\x01\"\n";
+        $authorResponse = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($author, 'author.yaml'));
+        self::assertSame(422, $authorResponse->getStatusCode());
+        self::assertStringContainsString('author', (string) $this->json($authorResponse)['message']);
+
+        $tag = "schema: 1\nname: Unsafe tag\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\ntags: [\"\\x01\"]\n";
+        $tagResponse = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($tag, 'tag.yaml'));
+        self::assertSame(422, $tagResponse->getStatusCode());
+        self::assertStringContainsString('tags', (string) $this->json($tagResponse)['message']);
+
+        $node = "schema: 1\nname: Unsafe node\ndefaults: {template: vpcs}\nnodes:\n  PC1:\n    image: \"\\x01\"\n";
+        $nodeResponse = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($node, 'node.yaml'));
+        self::assertSame(422, $nodeResponse->getStatusCode());
+        self::assertStringContainsString('Node "PC1": image', (string) $this->json($nodeResponse)['message']);
+
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+        self::assertSame([], glob($this->root . '/labs/.lab-*') ?: []);
+        self::assertSame([], $this->json($this->request('GET', '/api/v2/labs'))['data']);
+    }
+
+    public function testOversizedDescriptionAndConfigAreRejectedBeforeWritingOrApplying(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+
+        // Just under the YAML cap, but the serialized .unl crosses 10 MB.
+        $description = str_repeat('x', 10485500);
+        $oversized = "schema: 1\nname: Oversized\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n"
+            . "description: |\n  " . $description . "\n";
+        self::assertLessThanOrEqual(10485760, strlen($oversized));
+
+        $response = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($oversized, 'oversized.yaml'));
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('10 MB .unl limit', (string) $this->json($response)['message']);
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+        self::assertSame([], glob($this->root . '/labs/.lab-*') ?: []);
+
+        $bigConfig = str_repeat('a', 1048577);
+        $configYaml = "schema: 1\nname: Big config\ndefaults: {template: vpcs}\nnodes:\n  PC1:\n"
+            . "    config: \"" . $bigConfig . "\"\n";
+        $configResponse = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($configYaml, 'config.yaml'));
+        self::assertSame(422, $configResponse->getStatusCode(), (string) $configResponse->getBody());
+        self::assertStringContainsString('larger than 1 MB', (string) $this->json($configResponse)['message']);
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+
+        $normal = "schema: 1\nname: Apply Guard\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n";
+        $import = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($normal, 'guard.yaml'));
+        self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
+        $lab = $this->json($import)['data'];
+        $path = (string) $lab['path'];
+
+        $apply = $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/apply', [
+            'yaml' => $oversized,
+            'filename' => 'oversized.yaml',
+            'revision' => 1,
+        ]);
+        self::assertSame(422, $apply->getStatusCode(), (string) $apply->getBody());
+        self::assertStringContainsString('10 MB .unl limit', (string) $this->json($apply)['message']);
+
+        $show = $this->json($this->request('GET', '/api/v2/labs/' . $lab['id']))['data'];
+        self::assertSame(1, $show['revision']);
+        self::assertSame('Apply Guard', $show['name']);
+        self::assertSame($path, $show['path']);
+    }
+
+    public function testApplyReorderedTopologyWipesAllRunState(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+        $first = "schema: 1\nname: Reordered\ndefaults: {template: vpcs}\nnetworks: {lan: {}}\nnodes:\n"
+            . "  A:\n    links: {e0: lan}\n  B:\n    links: {e0: lan}\n  C:\n    links: {e0: lan}\n";
+        $import = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($first, 'ordered.yaml'));
+        self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
+        $lab = $this->json($import)['data'];
+        $labID = (string) $lab['id'];
+
+        $second = "schema: 1\nname: Reordered\ndefaults: {template: vpcs}\nnetworks: {lan: {}}\nnodes:\n"
+            . "  C:\n    links: {e0: lan}\n  A:\n    links: {e0: lan}\n  B:\n    links: {e0: lan}\n";
+        $apply = $this->request('POST', '/api/v2/labs/' . $labID . '/apply', [
+            'yaml' => $second,
+            'filename' => 'reordered.yaml',
+            'revision' => 1,
+        ]);
+        self::assertSame(200, $apply->getStatusCode(), (string) $apply->getBody());
+        $body = $this->json($apply);
+        self::assertSame(['C', 'A', 'B'], array_column($this->json($this->request('GET', '/api/v2/labs/' . $labID))['data']['node_list'], 'name'));
+        self::assertContains('run_state_reset', array_column($body['meta']['warnings'], 'type'));
+
+        $wiped = [];
+        foreach ($this->calls as $call) {
+            if ($call['path'] === '/v1/node.wipe') {
+                $wiped[] = (string) ($call['payload']['id'] ?? '');
+            }
+        }
+        foreach (['1', '2', '3'] as $nodeID) {
+            self::assertContains($labID . '-' . $nodeID, $wiped);
+        }
+
+        // Renaming a node in place must also invalidate every old run dir: id 2
+        // now means A2, so inheriting A's directory would be wrong.
+        $renamed = "schema: 1\nname: Reordered\ndefaults: {template: vpcs}\nnetworks: {lan: {}}\nnodes:\n"
+            . "  C:\n    links: {e0: lan}\n  A2:\n    links: {e0: lan}\n  B:\n    links: {e0: lan}\n";
+        $renameApply = $this->request('POST', '/api/v2/labs/' . $labID . '/apply', [
+            'yaml' => $renamed,
+            'filename' => 'renamed.yaml',
+            'revision' => 2,
+        ]);
+        self::assertSame(200, $renameApply->getStatusCode(), (string) $renameApply->getBody());
+        self::assertContains('run_state_reset', array_column($this->json($renameApply)['meta']['warnings'], 'type'));
+        self::assertSame(
+            ['C', 'A2', 'B'],
+            array_column($this->json($this->request('GET', '/api/v2/labs/' . $labID))['data']['node_list'], 'name'),
+        );
+
+        $wipedAfterRename = [];
+        foreach ($this->calls as $call) {
+            if ($call['path'] === '/v1/node.wipe') {
+                $wipedAfterRename[] = (string) ($call['payload']['id'] ?? '');
+            }
+        }
+        foreach (['1', '2', '3'] as $nodeID) {
+            self::assertContains($labID . '-' . $nodeID, $wipedAfterRename);
+        }
+    }
+
+    public function testTagTruncationKeepsUtf8Intact(): void
+    {
+        $this->writeBuiltinTemplate('vpcs');
+        $tag = str_repeat("\xC3\xA9", 15) . 'a' . "\xC3\xA9"; // 33 bytes; byte 32 splits the last é
+        self::assertSame(33, strlen($tag));
+        $yaml = "schema: 1\nname: Multibyte tags\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n"
+            . "tags: [\"" . $tag . "\"]\n";
+
+        $import = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($yaml, 'tags.yaml'));
+        self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
+        $stored = (string) $this->json($import)['data']['tags'][0];
+        self::assertSame(1, preg_match('//u', $stored));
+        self::assertSame(str_repeat("\xC3\xA9", 15) . 'a', $stored);
+        self::assertLessThanOrEqual(32, strlen($stored));
+    }
+
     /**
      * @param list<array<string, mixed>> $labs
      * @return array<string, mixed>
@@ -333,6 +714,17 @@ final class LabApiTest extends TestCase
         self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
 
         return [$this->cookie($response), (string) $this->json($response)['csrf_token']];
+    }
+
+    private function writeBuiltinTemplate(string $id): void
+    {
+        $directory = $this->root . '/data/templates';
+        if (!is_dir($directory)) {
+            mkdir($directory, 0770, true);
+        }
+        $path = dirname(__DIR__) . '/templates/builtin/' . $id . '.yaml';
+        self::assertFileExists($path);
+        file_put_contents($directory . '/' . $id . '.yaml', (string) file_get_contents($path));
     }
 
     private function registerImage(string $reference): void

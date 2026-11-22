@@ -103,6 +103,8 @@ export const api = {
     form.append('file', file)
     return request('/labs/import', { method: 'POST', body: form })
   },
+  validateLabYaml: (payload) => request('/labs/validate', { method: 'POST', body: payload }),
+  applyLabYaml: (id, payload) => request(`/labs/${encodeURIComponent(id)}/apply`, { method: 'POST', body: payload }),
   exportLab: (id) => request(`/labs/${encodeURIComponent(id)}/export`, { raw: true }),
   startLab: (id) => request(`/labs/${encodeURIComponent(id)}/start`, { method: 'POST' }),
   stopLab: (id) => request(`/labs/${encodeURIComponent(id)}/stop`, { method: 'POST' }),

@@ -81,9 +81,11 @@ address; passwords are never logged.
 | GET | `/api/v2/labs/{id}` | Metadata and revision |
 | PUT | `/api/v2/labs/{id}` | Save; send `revision` for conflict detection |
 | DELETE | `/api/v2/labs/{id}` | Delete a stopped lab |
-| POST | `/api/v2/labs/import` | Import a `.unl` (multipart `file`) |
+| POST | `/api/v2/labs/import` | Import a `.unl` or YAML lab (multipart `file`) |
+| POST | `/api/v2/labs/validate` | Dry-run compile YAML; writes nothing |
 | GET | `/api/v2/labs/{id}/export` | Export a `.unl` |
 | POST | `/api/v2/labs/{id}/duplicate` | Copy topology into a new lab |
+| POST | `/api/v2/labs/{id}/apply` | Replace a stopped lab's topology and metadata from YAML |
 | POST | `/api/v2/labs/{id}/start` | Create networks and start all nodes |
 | POST | `/api/v2/labs/{id}/stop` | Stop all nodes and remove lab bridges |
 | POST | `/api/v2/labs/{id}/wipe` | Stop, wipe node state, and remove bridges |
@@ -107,6 +109,94 @@ Create, save and import enforce the link invariant: a network must have at least
 two attached interfaces. Deleting a node detaches the remaining end, and any
 network left with fewer than two attachments is removed from `network_list` (and
 dangling `network_id` references are cleared). The `.unl` format is unchanged.
+
+`.unl` remains the only stored format. YAML is an authoring layer compiled into
+the same lab model on import and apply; see [`LAB-YAML.md`](LAB-YAML.md).
+
+### YAML labs
+
+`POST /api/v2/labs/import` detects YAML by a `.yaml`/`.yml` extension; `.unl`
+selects the XML parser; any other extension is sniffed (content whose first
+non-whitespace byte is `<` is XML, otherwise YAML). A failing XML parse of a
+non-XML-looking file is retried as YAML. If both fail, the `422` message
+contains both errors, prefixed `XML:` and `YAML:`. YAML imports are created
+through the normal create pipeline: new lab id, revision 1, uploader as owner,
+and the YAML `author` when present. The audit entry is `lab.import` with
+`{"source":"yaml"}`.
+
+The YAML input cap and the compiled `.unl` cap are separate. The input cap is
+10 MB of YAML; the compiled lab is XML with base64 configs and the embedded
+source. A YAML under 10 MB that would serialize to a `.unl` over 10 MB is
+rejected with `422` before a lab is created.
+
+`POST /api/v2/labs/validate` (editor role, CSRF) is a dry run. It compiles and
+resolves templates but writes nothing:
+
+```json
+{"yaml": "schema: 1\nname: Dry run\n…", "filename": "dry-run.yaml"}
+```
+
+It returns HTTP 200 even when the document is invalid; `yaml` is required
+(`422` otherwise):
+
+```json
+{
+  "status": "success",
+  "data": {
+    "valid": false,
+    "errors": ["Node \"R1\": template \"nope\" was not found."],
+    "warnings": [],
+    "counts": {"nodes": 0, "networks": 0, "links": 0}
+  }
+}
+```
+
+`counts.links` counts cabled interface ends (a point-to-point entry contributes
+2), and `counts.networks` is pre-prune: the link invariant can drop a declared
+network with fewer than two attachments when the lab is actually stored.
+
+`POST /api/v2/labs/{id}/apply` (editor role, CSRF, lab access) replaces a
+stopped lab's name, description, body, tags, nodes and networks from YAML:
+
+```json
+{"yaml": "schema: 1\nname: Rebuilt\n…", "filename": "rebuilt.yaml", "revision": 7}
+```
+
+Only `yaml` is required. `filename` supplies the provenance file name
+(otherwise the existing name is kept, or `lab.yaml` for a lab without a
+marker); `revision` makes the call conditional on the current lab revision. On
+success it preserves the lab id, path/folder, owner and `created_at`,
+increments `revision` by one, restamps the YAML provenance, and handles node
+run directories by identity: surviving ids keep their run dirs only when every
+surviving old id still names the same node; removed ids are wiped; a reorder or
+rename that changes what a surviving id refers to wipes **all** old node run
+directories to prevent cross-inheritance. Response:
+
+```json
+{"status": "success", "data": {"id": "…", "revision": 8, "…": "…"}, "meta": {"warnings": []}}
+```
+
+Errors: `409` if any node is not stopped (`Stop and wipe the lab before
+applying YAML.`) or if the supplied `revision` is stale (`details.revision` is
+the current revision); `422` on a compile error or when the compiled `.unl`
+would exceed 10 MB (nothing is written in either case); `404` for an unknown
+lab and `403` without access to it.
+
+Both import and apply report the same warning objects as `.unl` import in
+`meta.warnings`: `{"type","message","node"?,"network"?,"value"?}`. For YAML
+labs the practical warnings are `image_unmapped` (image not in the store) and
+`network_unsupported` (non-bridge network type); `image_missing` (docker node
+without a container reference) and `node_unsupported` (no engine for the type)
+are shared defensive/forward-compatible cases. Apply also reports
+`run_state_reset` when changed node order/names forced all old run directories
+to be wiped.
+
+YAML provenance is stored in the lab's `<extensions>` block and exposed by
+`GET /api/v2/labs/{id}` as `data.extensions.source`:
+`{kind: "yaml", name, sha256, revision, text}`. The editor's YAML source panel
+appears only when this marker exists. EVE-NG re-saves drop `<extensions>`, so
+the marker disappears after an EVE-NG round-trip; the lab itself remains a
+normal TeraLab v2 lab.
 
 Create example:
 

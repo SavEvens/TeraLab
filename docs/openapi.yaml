@@ -142,6 +142,91 @@ components:
               node: { type: string }
               network: { type: string }
               value: { type: string }
+    LabYamlWarning:
+      type: object
+      description: |
+        A compile/import warning shared with `.unl` import. Warnings never block
+        an import or apply.
+      required: [type, message]
+      properties:
+        type:
+          type: string
+          description: "For YAML labs: image_unmapped, image_missing, network_unsupported, or node_unsupported"
+        message: { type: string }
+        node: { type: string, description: "Node name, when the warning is node-specific" }
+        network: { type: string, description: "Network id, when the warning is network-specific" }
+        value: { type: string, description: "Offending image reference or network type" }
+    LabYamlCounts:
+      type: object
+      required: [nodes, networks, links]
+      properties:
+        nodes:
+          type: integer
+          minimum: 0
+          description: Compiled node count
+        networks:
+          type: integer
+          minimum: 0
+          description: Compiled network count before the link invariant prunes networks with fewer than two attachments
+        links:
+          type: integer
+          minimum: 0
+          description: Number of cabled interface ends; a point-to-point entry contributes 2
+    LabYamlValidateRequest:
+      type: object
+      required: [yaml]
+      properties:
+        yaml:
+          type: string
+          description: "The full YAML document (max 10 MB); see docs/LAB-YAML.md"
+        filename:
+          type: string
+          description: "Optional source file name for diagnostics; defaults to lab.yaml"
+    LabYamlValidation:
+      type: object
+      required: [valid, errors, warnings, counts]
+      properties:
+        valid: { type: boolean }
+        errors:
+          type: array
+          items: { type: string }
+          description: "The first compile error, when valid is false"
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/LabYamlWarning' }
+        counts: { $ref: '#/components/schemas/LabYamlCounts' }
+    LabYamlValidateResponse:
+      type: object
+      required: [status, data]
+      properties:
+        status: { type: string }
+        data: { $ref: '#/components/schemas/LabYamlValidation' }
+    LabYamlApplyRequest:
+      type: object
+      required: [yaml]
+      properties:
+        yaml:
+          type: string
+          description: "The full YAML document (max 10 MB input; the compiled .unl is also capped at 10 MB); see docs/LAB-YAML.md"
+        filename:
+          type: string
+          description: "Optional provenance file name; when omitted the existing name is kept"
+        revision:
+          type: integer
+          minimum: 1
+          description: "Optional expected revision; a mismatch returns 409"
+    LabYamlApplyResponse:
+      type: object
+      required: [status, data]
+      properties:
+        status: { type: string }
+        data: { $ref: '#/components/schemas/Lab' }
+        meta:
+          type: object
+          properties:
+            warnings:
+              type: array
+              items: { $ref: '#/components/schemas/LabYamlWarning' }
     User:
       type: object
       description: |
@@ -511,7 +596,23 @@ paths:
   /api/v2/labs/import:
     post:
       tags: [labs]
-      summary: Import a .unl file
+      summary: Import a .unl or YAML lab
+      description: |
+        Multipart upload in the `file` field. A `.yaml`/`.yml` extension selects
+        the YAML compiler; `.unl` selects the XML parser; any other extension is
+        sniffed (the first non-whitespace byte `<` means XML, otherwise YAML). A
+        failing XML parse of a non-XML-looking file is retried as YAML; when both
+        fail the 422 message contains both errors, prefixed `XML:` and `YAML:`.
+
+        Imported YAML labs are created through the normal create pipeline (new
+        id, revision 1, uploader as owner, YAML `author` when present) and carry
+        a `source` marker in the lab's `<extensions>` block. See
+        docs/LAB-YAML.md.
+
+        The 10 MB YAML input cap is separate from the 10 MB compiled `.unl` cap.
+        A YAML under 10 MB that would serialize to a larger `.unl` (base64
+        configs, topology XML, and the embedded source all count) is rejected
+        with 422 before a lab is created.
       requestBody:
         required: true
         content:
@@ -520,10 +621,13 @@ paths:
               type: object
               required: [file]
               properties:
-                file: { type: string, format: binary }
+                file:
+                  type: string
+                  format: binary
+                  description: "A `.unl`, `.yaml`, or `.yml` lab file (max 10 MB input; a compiled YAML lab is also capped at 10 MB)"
       responses:
         '201':
-          description: Imported (legacy TeraLab, UNetLab, EVE-NG or TeraLab v2)
+          description: Imported (legacy TeraLab, UNetLab, EVE-NG, TeraLab v2, or YAML)
           content:
             application/json:
               schema:
@@ -536,7 +640,34 @@ paths:
                     properties:
                       warnings:
                         type: array
-                        items: { type: object }
+                        items: { $ref: '#/components/schemas/LabYamlWarning' }
+        '403': { description: Editor role or CSRF required }
+        '413': { description: Request body too large }
+        '422': { description: "Empty/oversized file, YAML compile error, or compiled .unl over 10 MB; ambiguous XML+YAML failures include both messages" }
+  /api/v2/labs/validate:
+    post:
+      tags: [labs]
+      summary: Dry-run compile a YAML lab (no writes)
+      description: |
+        Requires the editor role and CSRF. Compiles and resolves templates but
+        writes nothing. Returns HTTP 200 even for an invalid document; `valid`
+        is false and `errors` holds the first compile error. `counts.networks`
+        is the compiled count before the link invariant prunes networks with
+        fewer than two attachments.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LabYamlValidateRequest' }
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LabYamlValidateResponse' }
+        '403': { description: Editor role or CSRF required }
+        '413': { description: Request body too large }
+        '422': { description: "Missing/non-string yaml, or non-text filename" }
   /api/v2/labs/trash:
     get:
       tags: [labs]
@@ -582,6 +713,47 @@ paths:
       summary: Move a stopped lab to trash
       responses:
         '200': { description: Trashed }
+  /api/v2/labs/{id}/apply:
+    post:
+      tags: [labs]
+      summary: Replace a stopped lab's topology and metadata from YAML
+      description: |
+        Requires the editor role, CSRF, and access to the lab. Compiles the YAML
+        with the same compiler as import and replaces the lab wholesale while
+        preserving its id, path/folder, owner, and created_at. Revision is
+        incremented by one and the YAML provenance marker is restamped. Every
+        node must be stopped first; otherwise 409.
+
+        Node run directories are keyed by compiled node id (declaration order).
+        Apply uses the node name to verify identity: it keeps run dirs only when
+        every surviving old id still names the same node, and wipes old ids
+        removed from the topology. If a reorder or rename makes a surviving id
+        refer to a different node, apply wipes all old node run directories
+        before writing to prevent cross-inheritance.
+
+        The compiled `.unl` must also be at most 10 MB (separate from the YAML
+        input cap); a larger result returns 422 before anything is written.
+
+        Pass `revision` to make the call conditional. A mismatch returns 409
+        with `details.revision` set to the current revision. Compile errors
+        return 422. See docs/LAB-YAML.md.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LabYamlApplyRequest' }
+      responses:
+        '200':
+          description: Applied; the refreshed lab metadata and warnings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LabYamlApplyResponse' }
+        '403': { description: "Editor role, CSRF, or lab access denied" }
+        '404': { description: Lab not found }
+        '409': { description: "A node is running or the supplied revision is stale" }
+        '422': { description: "Missing/non-string yaml, bad filename/revision type, YAML compile error, or compiled .unl over 10 MB" }
   /api/v2/labs/{id}/export:
     get:
       tags: [labs]

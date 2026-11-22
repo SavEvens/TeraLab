@@ -7,6 +7,10 @@ TeraLab stores every lab in a portable XML format that is a superset of the
 modern EVE-NG `.unl` format. The reader stays tolerant: it opens TeraLab v1.x
 and v2 files as well as legacy UNetLab and modern EVE-NG labs.
 
+To author a lab as YAML instead of XML, see [`LAB-YAML.md`](LAB-YAML.md).
+YAML is compiled into this format on import and apply; `.unl` remains the only
+stored format, and the save path is unchanged.
+
 ## Dialects
 
 | Dialect | Marker | Notes |
@@ -73,7 +77,13 @@ Import accepts all three. Save always writes v2.
 - **Text and picture nodes** are not written as `<node>` entries: text becomes
   an EVE-NG `<textobject>`; pictures live in `<extensions>`.
 - **`<extensions>`** is TeraLab-only, versioned JSON. EVE-NG ignores it. It is
-  where future TeraLab features will live.
+  where future TeraLab features will live. Labs imported or applied from YAML
+  also carry a provenance marker here:
+  `{"source":{"kind":"yaml","name":"…","sha256":"…","revision":N,"text":"…"}}`.
+  The marker stores the full YAML source and drives the editor's YAML source
+  panel; see [`LAB-YAML.md`](LAB-YAML.md#provenance-marker). EVE-NG re-saves
+  drop `<extensions>`, so the marker disappears after an EVE-NG round-trip
+  while the topology and configs survive.
 
 ## What the engines apply at boot
 
