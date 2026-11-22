@@ -752,6 +752,46 @@ try {
   })
   await setDemo({ enabled: true, landing: 'demo', max_guests: 0, turnstile: false })
   const guestFullStatus = (await fetch(`http://127.0.0.1:${mockPort}/api/v2/auth/guest`, { method: 'POST' })).status
+  await setDemo({ enabled: true, landing: 'demo', max_guests: 10, turnstile: true })
+  const guestWithoutTokenStatus = (await fetch(`http://127.0.0.1:${mockPort}/api/v2/auth/guest`, { method: 'POST' })).status
+
+  // The shipped 3x site key is an invisible widget: it emits no token until
+  // execute() runs. The mock refuses a tokenless guest request while Turnstile
+  // is on, so reaching the labs list through this stubbed widget proves the UI
+  // executed it and forwarded the callback token.
+  const captchaContext = await browser.newContext()
+  let invisibleHint = ''
+  let invisibleExecutions = 0
+  let invisibleWidgetId = ''
+  try {
+    const captchaPage = await captchaContext.newPage()
+    await captchaPage.addInitScript(() => {
+      window.__turnstileExecutions = 0
+      window.turnstile = {
+        render: (_element, options) => {
+          window.__turnstileOptions = options
+          return 'e2e-invisible-widget'
+        },
+        execute: (widgetId) => {
+          window.__turnstileExecutions += 1
+          window.__turnstileWidgetId = widgetId
+          setTimeout(() => window.__turnstileOptions?.callback?.('e2e-invisible-token'), 0)
+        },
+        reset: () => {},
+        remove: () => {}
+      }
+    })
+    await captchaPage.goto(`http://127.0.0.1:${uiPort}/ui/login`)
+    await captchaPage.getByRole('button', { name: 'Enter demo' }).waitFor({ timeout: 10000 })
+    await captchaPage.locator('[data-test="turnstile-hint"]').waitFor({ timeout: 10000 })
+    invisibleHint = (await captchaPage.locator('[data-test="turnstile-hint"]').innerText()).trim()
+    await captchaPage.getByRole('button', { name: 'Enter demo' }).click()
+    await captchaPage.waitForURL('**/ui/labs', { timeout: 10000 })
+    invisibleExecutions = await captchaPage.evaluate(() => window.__turnstileExecutions)
+    invisibleWidgetId = await captchaPage.evaluate(() => window.__turnstileWidgetId)
+  } finally {
+    await captchaContext.close()
+  }
   await setDemo({ enabled: true, landing: 'demo', max_guests: 10, turnstile: false })
   await page.reload()
   await page.getByRole('button', { name: 'Enter demo' }).waitFor({ timeout: 10000 })
@@ -920,6 +960,10 @@ try {
     remainingUsernames,
     guestDisabledStatus,
     guestFullStatus,
+    guestWithoutTokenStatus,
+    invisibleHint,
+    invisibleExecutions,
+    invisibleWidgetId,
     demoLandingUrl,
     demoPanelPrimary,
     guestEmpty,
@@ -1137,6 +1181,16 @@ try {
   }
   if (guestDisabledStatus !== 404) throw new Error(`guest endpoint returned ${guestDisabledStatus} while demo was disabled`)
   if (guestFullStatus !== 403) throw new Error(`guest endpoint returned ${guestFullStatus} when the demo was full`)
+  if (guestWithoutTokenStatus !== 422) {
+    throw new Error(`guest endpoint returned ${guestWithoutTokenStatus} without a Turnstile token`)
+  }
+  if (!/runs when you continue/i.test(invisibleHint)) {
+    throw new Error(`invisible Turnstile hint is missing: ${invisibleHint}`)
+  }
+  if (invisibleExecutions < 1) throw new Error('invisible Turnstile widget was not executed')
+  if (invisibleWidgetId !== 'e2e-invisible-widget') {
+    throw new Error(`invisible Turnstile execute got widget id ${invisibleWidgetId}`)
+  }
   if (!demoLandingUrl.includes('mode=demo') || !demoPanelPrimary) {
     throw new Error(`demo landing did not select the demo panel: ${demoLandingUrl} primary=${demoPanelPrimary}`)
   }

@@ -30,10 +30,11 @@
         >{{ busyAction === 'guest' ? 'Preparing demo…' : 'Enter demo' }}</button>
       </section>
 
-      <div v-if="turnstile.enabled" class="auth-captcha">
+      <div v-if="turnstile.enabled" class="auth-captcha" :class="{ 'is-invisible': invisibleTurnstile }">
         <div ref="captchaEl" class="cf-turnstile" data-test="turnstile" aria-label="Security check"></div>
         <p v-if="turnstileError" class="error" role="alert" data-test="turnstile-error">{{ turnstileError }}</p>
         <p v-else-if="turnstileStatus === 'loading'" class="hint" role="status">Loading the security check…</p>
+        <p v-else-if="invisibleTurnstile" class="hint" role="status" data-test="turnstile-hint">The security check runs when you continue.</p>
       </div>
 
       <div v-if="demo.enabled" class="auth-divider" aria-hidden="true"><span>or sign in</span></div>
@@ -62,7 +63,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { guestLogin, login } from '../stores/session'
 import { notify } from '../stores/toasts'
-import { loadTurnstile } from '../turnstile'
+import { isInvisibleSiteKey, loadTurnstile } from '../turnstile'
 
 const username = ref('')
 const password = ref('')
@@ -80,6 +81,7 @@ const route = useRoute()
 
 let widgetApi = null
 let widgetId = null
+let pendingTokenRequest = null
 
 const requestedMode = computed(() => {
   const mode = route.query.mode
@@ -87,6 +89,7 @@ const requestedMode = computed(() => {
 })
 const demoPrimary = computed(() => demo.value.enabled && requestedMode.value === 'demo')
 const captchaBlocked = computed(() => turnstile.value.enabled && turnstileStatus.value === 'error')
+const invisibleTurnstile = computed(() => isInvisibleSiteKey(turnstile.value.site_key))
 
 onMounted(async () => {
   await loadHealth()
@@ -143,6 +146,7 @@ async function mountCaptcha() {
       theme: 'dark',
       callback: (token) => {
         turnstileToken.value = token || ''
+        settleTokenRequest(turnstileToken.value)
         if (turnstileStatus.value === 'error') {
           turnstileStatus.value = 'ready'
           turnstileError.value = ''
@@ -151,9 +155,11 @@ async function mountCaptcha() {
       },
       'expired-callback': () => {
         turnstileToken.value = ''
+        settleTokenRequest('')
       },
       'timeout-callback': () => {
         turnstileToken.value = ''
+        settleTokenRequest('')
       },
       'error-callback': () => {
         failCaptcha('The security check failed. Reload the page and try again.')
@@ -167,6 +173,7 @@ async function mountCaptcha() {
 
 function failCaptcha(message) {
   turnstileToken.value = ''
+  settleTokenRequest('')
   turnstileStatus.value = 'error'
   turnstileError.value = message
 }
@@ -181,17 +188,59 @@ function resetCaptcha() {
   }
 }
 
-function captchaAllowsSubmit() {
-  if (!turnstile.value.enabled) return true
+function settleTokenRequest(token) {
+  const pending = pendingTokenRequest
+  if (!pending) return
+  pendingTokenRequest = null
+  clearTimeout(pending.timer)
+  pending.resolve(token || '')
+}
+
+// Managed and non-interactive widgets deliver a token through the render
+// callback. Invisible widgets stay silent until execute() runs, so the submit
+// handlers await that token here instead of checking a ref that is always empty.
+function requestToken(timeoutMs = 15000) {
+  if (!turnstile.value.enabled) return Promise.resolve('')
+  if (turnstileToken.value) return Promise.resolve(turnstileToken.value)
+  if (!invisibleTurnstile.value) return Promise.resolve('')
+  if (captchaBlocked.value) return Promise.resolve('')
+  if (widgetId === null || typeof widgetApi?.execute !== 'function') return Promise.resolve('')
+
+  if (pendingTokenRequest) return pendingTokenRequest.promise
+
+  let resolveRequest
+  const promise = new Promise((resolve) => { resolveRequest = resolve })
+  const timer = setTimeout(() => {
+    settleTokenRequest('')
+    // Let the widget start a fresh challenge on the next attempt.
+    resetCaptcha()
+  }, timeoutMs)
+  pendingTokenRequest = { promise, resolve: resolveRequest, timer }
+  try {
+    widgetApi.execute(widgetId)
+  } catch {
+    settleTokenRequest('')
+  }
+  return promise
+}
+
+// Returns the token to send, or null when the visitor must retry. A null
+// result always leaves the request unsent so a gated API call never fires
+// without a token.
+async function acquireToken() {
+  if (!turnstile.value.enabled) return ''
   if (captchaBlocked.value) {
     error.value = turnstileError.value || 'The security check is unavailable. Reload the page to try again.'
-    return false
+    return null
   }
-  if (!turnstileToken.value) {
+  const token = await requestToken()
+  if (token) return token
+  if (captchaBlocked.value) {
+    error.value = turnstileError.value || 'The security check is unavailable. Reload the page to try again.'
+  } else {
     error.value = 'Please complete the security check before continuing.'
-    return false
   }
-  return true
+  return null
 }
 
 function destination() {
@@ -202,11 +251,12 @@ function destination() {
 async function enterDemo() {
   if (busy.value) return
   error.value = ''
-  if (!captchaAllowsSubmit()) return
   busy.value = true
   busyAction.value = 'guest'
   try {
-    await guestLogin(turnstileToken.value)
+    const token = await acquireToken()
+    if (token === null) return
+    await guestLogin(token)
     resetCaptcha()
     notify('success', 'Entered the demo')
     await router.push(destination())
@@ -222,11 +272,12 @@ async function enterDemo() {
 async function submit() {
   if (busy.value) return
   error.value = ''
-  if (!captchaAllowsSubmit()) return
   busy.value = true
   busyAction.value = 'login'
   try {
-    await login(username.value, password.value, turnstileToken.value)
+    const token = await acquireToken()
+    if (token === null) return
+    await login(username.value, password.value, token)
     resetCaptcha()
     notify('success', 'Signed in')
     await router.push(destination())
@@ -335,6 +386,10 @@ async function submit() {
 
 .auth-captcha .cf-turnstile {
   min-height: 65px;
+}
+
+.auth-captcha.is-invisible .cf-turnstile {
+  min-height: 0;
 }
 
 .auth-captcha .hint,
