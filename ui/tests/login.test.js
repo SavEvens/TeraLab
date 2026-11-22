@@ -160,6 +160,9 @@ describe('LoginView', () => {
     const { wrapper, router } = await mountLogin()
     expect(widget.render).toHaveBeenCalledTimes(1)
     expect(widget.render.mock.calls[0][1].sitekey).toBe(ALWAYS_PASS_KEY)
+    // Cloudflare delivers a managed widget's token on its own, asynchronously.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await flushPromises()
     await wrapper.get('button[data-test="enter-demo"]').trigger('click')
     await flushPromises()
     expect(widget.execute).not.toHaveBeenCalled()
