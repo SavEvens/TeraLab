@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# Generic reference lab: two IOL routers plus one VPCS host on a shared LAN.
+schema: 1
+name: Mixed IOL and VPCS
+author: TeraLab contributors
+description: A routed WAN and an access LAN shared by an IOL router and a PC.
+tags: [iol, vpcs]
+
+layout:
+  mode: grid
+  spacing: 220
+
+defaults:
+  template: iol
+  image: x86_64_crb_linux-adventerprisek9-ms.bin
+
+networks:
+  lan:
+    name: Access LAN
+  wan: {}
+
+links:
+  - [R1.e0/0, R2.e0/0]
+
+nodes:
+  R1:
+    ports: 4
+    config: |
+      hostname R1
+    links:
+      e0/1: lan
+      e0/2: wan
+  R2:
+    ports: 4
+    links:
+      e0/1: wan
+  PC1:
+    template: vpcs
+    console: telnet
+    links:
+      eth0: lan

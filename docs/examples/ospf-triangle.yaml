@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# Generic reference lab: three IOL routers in OSPF area 0.
+schema: 1
+name: OSPF triangle
+author: TeraLab contributors
+description: |
+  Three IOL routers in OSPF area 0, one segment per router pair.
+tags: [ospf, ccna]
+
+layout:
+  mode: tree
+  root: R1
+
+defaults:
+  template: iol
+  image: x86_64_crb_linux-adventerprisek9-ms.bin
+  ram: 512
+  ports: 4
+
+networks:
+  lan-a: {}
+  lan-b:
+    name: Branch LAN
+    visibility: 0
+  mgmt: {}
+
+links:
+  - [R1.e0/0, R2.e0/0]
+  - endpoints: [R2.e0/1, R3.e0/0]
+    name: r2-r3
+
+nodes:
+  R1:
+    ram: 768
+    position: {left: 480, top: 160}
+    config: |
+      hostname R1
+      interface Ethernet0/1
+       ip address 10.0.12.1 255.255.255.252
+      router ospf 1
+       network 10.0.12.0 0.0.0.3 area 0
+    links:
+      e0/1: lan-a
+      e0/2: lan-b
+  R2:
+    config: |
+      hostname R2
+      interface Ethernet0/1
+       ip address 10.0.13.1 255.255.255.252
+    links:
+      e0/2: lan-a
+      e0/3: mgmt
+  R3:
+    links:
+      e0/1: lan-b
+      e0/2: mgmt

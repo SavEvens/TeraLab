@@ -21,6 +21,7 @@ use TeraLab\Api\Templates\TemplateRepository;
 final class LabService
 {
     private const TRASH_TTL = 2592000; // 30 days
+    private const MAX_UNL_BYTES = 10485760;
 
     /** Node types the agent can run. */
     private const ENGINES = ['qemu', 'vpcs', 'iol', 'dynamips', 'docker'];
@@ -34,6 +35,7 @@ final class LabService
         private readonly ImageReferences $images,
         private readonly ?SnapshotRepository $snapshots = null,
         private readonly ?TemplateRepository $templates = null,
+        private readonly ?LabYamlCompiler $yamlCompiler = null,
     ) {
     }
 
@@ -55,11 +57,16 @@ final class LabService
 
     /**
      * @param array<string, mixed> $input
+     * @param array<string, mixed>|null $extensions
      * @return array<string, mixed>
      */
-    public function create(array $input, ?string $author = null, ?string $ownerId = null): array
-    {
-        $name = $this->labName($input['name'] ?? null);
+    public function create(
+        array $input,
+        ?string $author = null,
+        ?string $ownerId = null,
+        ?array $extensions = null,
+    ): array {
+        $name = self::labName($input['name'] ?? null);
         [$nodes, $networks] = $this->pruneLinks(
             $this->normalizeNodes($input['nodes'] ?? []),
             $this->normalizeNetworks($input['networks'] ?? []),
@@ -82,6 +89,9 @@ final class LabService
             ], static fn (mixed $value): bool => is_string($value) && $value !== ''),
             'extra_xml' => [],
         ];
+        if ($extensions !== null && $extensions !== []) {
+            $lab['extensions'] = $extensions;
+        }
 
         $path = $this->targetPath($name, null);
         $lab = $this->write($path, $lab);
@@ -106,7 +116,7 @@ final class LabService
             ]);
         }
 
-        $lab['name'] = $this->labName($input['name'] ?? $lab['name']);
+        $lab['name'] = self::labName($input['name'] ?? $lab['name']);
         $lab['description'] = $this->text($input['description'] ?? $lab['description']);
         $lab['body'] = $this->text($input['body'] ?? $lab['body']);
         $nodes = array_key_exists('nodes', $input)
@@ -166,8 +176,164 @@ final class LabService
         $lab['attributes']['created_at'] = gmdate('c');
         $lab['attributes']['updated_at'] = gmdate('c');
 
-        $path = $this->targetPath($this->labName($lab['name']), null);
+        $path = $this->targetPath(self::labName($lab['name']), null);
         $lab = $this->write($path, $lab);
+
+        return $this->metadata($lab, $path);
+    }
+
+    /**
+     * Compile a YAML lab and store it through the ordinary create pipeline.
+     *
+     * @return array<string, mixed>
+     */
+    public function importYaml(
+        string $contents,
+        string $filename,
+        ?string $author = null,
+        ?string $ownerId = null,
+    ): array {
+        $compiled = $this->yamlCompiler()->compile($contents, $filename);
+        $payload = $compiled['payload'];
+        $yamlAuthor = $payload['author'] ?? null;
+        $effectiveAuthor = is_string($yamlAuthor) && $yamlAuthor !== '' ? $yamlAuthor : $author;
+        $source = $compiled['source'];
+        $source['revision'] = 1;
+
+        return $this->create($payload, $effectiveAuthor, $ownerId, ['source' => $source]);
+    }
+
+    /**
+     * Dry-run YAML compilation: resolves templates and reports the same
+     * warnings an import would produce. Nothing is written.
+     *
+     * @return array{
+     *   valid: bool,
+     *   errors: list<string>,
+     *   warnings: list<array<string, string>>,
+     *   counts: array{nodes: int, networks: int, links: int}
+     * }
+     */
+    public function validateYaml(string $contents, string $filename = 'lab.yaml'): array
+    {
+        $emptyCounts = ['nodes' => 0, 'networks' => 0, 'links' => 0];
+        try {
+            $compiled = $this->yamlCompiler()->compile($contents, $filename);
+        } catch (HttpException $exception) {
+            return [
+                'valid' => false,
+                'errors' => [$exception->getMessage()],
+                'warnings' => [],
+                'counts' => $emptyCounts,
+            ];
+        }
+        $synthetic = [
+            'node_list' => $compiled['payload']['nodes'] ?? [],
+            'network_list' => $compiled['payload']['networks'] ?? [],
+            'warnings' => [],
+        ];
+
+        return [
+            'valid' => true,
+            'errors' => [],
+            'warnings' => $this->warningsFor($synthetic),
+            'counts' => $compiled['counts'],
+        ];
+    }
+
+    /**
+     * Replace an existing lab's topology and metadata from YAML.
+     *
+     * The lab id, file path/folder, owner and created_at survive; revision
+     * increments by one and the YAML provenance marker is restamped. The lab
+     * is written and XML-validated first, then run state is reconciled: nodes
+     * that disappear are wiped, and any id -> name reassignment wipes every
+     * old node so a run dir can never be inherited by a different node.
+     * Requires every node to be stopped.
+     *
+     * @return array<string, mixed>
+     */
+    public function applyYaml(
+        string $id,
+        string $contents,
+        ?string $filename,
+        ?int $expectedRevision,
+        ?string $userId = null,
+        bool $isAdmin = false,
+    ): array {
+        [$lab, $path] = $this->load($id);
+        if ($userId !== null) {
+            $this->locks->assertEditable((string) $lab['id'], $userId, $isAdmin);
+        }
+        $revision = (int) $lab['revision'];
+        if ($expectedRevision !== null && $expectedRevision !== $revision) {
+            throw new HttpException(409, 'The lab was modified by another session.', [
+                'revision' => $revision,
+            ]);
+        }
+        $this->assertApplyStopped($lab);
+
+        $sourceName = $this->sourceName($lab, $filename);
+        $compiled = $this->yamlCompiler()->compile($contents, $sourceName);
+        $payload = $compiled['payload'];
+        [$nodes, $networks] = $this->pruneLinks(
+            $this->normalizeNodes($payload['nodes'] ?? []),
+            $this->normalizeNetworks($payload['networks'] ?? []),
+        );
+
+        $oldRuns = [];
+        foreach ($this->engineNodes($lab) as $node) {
+            $oldRuns[(string) $node['id']] = (string) ($node['name'] ?? $node['id']);
+        }
+        $newRuns = [];
+        foreach ($nodes as $node) {
+            if (!in_array((string) ($node['type'] ?? 'qemu'), self::ENGINES, true)) {
+                continue;
+            }
+            $newRuns[(string) $node['id']] = (string) ($node['name'] ?? $node['id']);
+        }
+
+        $revision++;
+        $lab['name'] = self::labName($payload['name'] ?? $lab['name']);
+        $lab['description'] = $this->text($payload['description'] ?? '');
+        $lab['body'] = $this->text($payload['body'] ?? '');
+        $yamlAuthor = $payload['author'] ?? null;
+        if (is_string($yamlAuthor) && $yamlAuthor !== '') {
+            $lab['author'] = $yamlAuthor;
+        }
+        $lab['node_list'] = $nodes;
+        $lab['network_list'] = $networks;
+        if (!is_array($lab['attributes'] ?? null)) {
+            $lab['attributes'] = [];
+        }
+        $tags = $this->tags($payload['tags'] ?? []);
+        if ($tags === '') {
+            unset($lab['attributes']['tags']);
+        } else {
+            $lab['attributes']['tags'] = $tags;
+        }
+        $extensions = is_array($lab['extensions'] ?? null) ? $lab['extensions'] : [];
+        $extensions['source'] = [
+            'kind' => 'yaml',
+            'name' => $sourceName,
+            'sha256' => hash('sha256', $contents),
+            'revision' => $revision,
+            'text' => $contents,
+        ];
+        $lab['extensions'] = $extensions;
+        $lab['revision'] = $revision;
+        $lab['attributes']['updated_at'] = gmdate('c');
+
+        // Write (and validate) the new lab before touching any run state, so
+        // a failed write cannot wipe a node that is still referenced.
+        $lab = $this->write($path, $lab);
+        $mappingPreserved = $this->cleanupRunState((string) $lab['id'], $oldRuns, $newRuns);
+        if (!$mappingPreserved && $oldRuns !== []) {
+            $lab['warnings'][] = [
+                'type' => 'run_state_reset',
+                'message' => 'Node ids no longer map to the same names; all previous node run state was wiped.',
+            ];
+        }
 
         return $this->metadata($lab, $path);
     }
@@ -262,7 +428,7 @@ final class LabService
     {
         [$lab] = $this->load($id);
         $lab['id'] = $this->uuid();
-        $lab['name'] = $this->labName($lab['name'] . ' copy');
+        $lab['name'] = self::labName($lab['name'] . ' copy');
         $lab['revision'] = 1;
         $lab['attributes']['owner'] = $ownerId;
         $lab['attributes']['created_at'] = gmdate('c');
@@ -1242,6 +1408,118 @@ final class LabService
         }
     }
 
+    /**
+     * @param array<string, mixed> $lab
+     */
+    private function assertApplyStopped(array $lab): void
+    {
+        foreach ($this->nodes((string) $lab['id'])['nodes'] as $node) {
+            if (($node['state'] ?? '') !== 'stopped') {
+                throw new HttpException(409, 'Stop and wipe the lab before applying YAML.');
+            }
+        }
+    }
+
+    /**
+     * Reconcile run dirs after an in-place rebuild.
+     *
+     * Run dirs are keyed by `<lab id>-<node id>`, so reusing a numeric id for a
+     * different node would inherit its disk. The rule is:
+     *  - every surviving id keeps its name -> wipe only the removed ids;
+     *  - any surviving id maps to a different name (or the mapping otherwise
+     *    changes) -> wipe ALL old ids, because no old run dir can be trusted.
+     * A missing agent node is already clean and is tolerated (404).
+     *
+     * @param array<string, string> $oldNodes Old engine node id => name.
+     * @param array<string, string> $newNodes New engine node id => name.
+     * @return bool True when the id -> name mapping was preserved.
+     */
+    private function cleanupRunState(string $labID, array $oldNodes, array $newNodes): bool
+    {
+        $mappingPreserved = true;
+        foreach ($oldNodes as $nodeID => $name) {
+            $nodeID = (string) $nodeID;
+            if (isset($newNodes[$nodeID]) && $newNodes[$nodeID] !== $name) {
+                $mappingPreserved = false;
+                break;
+            }
+        }
+
+        $wipe = [];
+        if ($mappingPreserved) {
+            foreach (array_keys($oldNodes) as $nodeID) {
+                $nodeID = (string) $nodeID;
+                if (!isset($newNodes[$nodeID])) {
+                    $wipe[] = $nodeID;
+                }
+            }
+        } else {
+            foreach (array_keys($oldNodes) as $nodeID) {
+                $wipe[] = (string) $nodeID;
+            }
+        }
+
+        foreach ($wipe as $nodeID) {
+            $agentID = $this->agentNodeID($labID, $nodeID);
+            try {
+                $this->agent->stop($agentID);
+            } catch (HttpException $exception) {
+                if ($exception->status !== 404) {
+                    throw $exception;
+                }
+            }
+            try {
+                $this->agent->wipe($agentID);
+            } catch (HttpException $exception) {
+                if ($exception->status !== 404) {
+                    throw $exception;
+                }
+            }
+        }
+
+        return $mappingPreserved;
+    }
+
+    /**
+     * @param array<string, mixed> $lab
+     */
+    private function sourceName(array $lab, ?string $filename): string
+    {
+        if ($filename !== null && trim($filename) !== '') {
+            return $this->safeSourceName($filename);
+        }
+        $extensions = is_array($lab['extensions'] ?? null) ? $lab['extensions'] : [];
+        $source = is_array($extensions['source'] ?? null) ? $extensions['source'] : [];
+        $name = $source['name'] ?? '';
+        if (is_string($name) && trim($name) !== '') {
+            return $this->safeSourceName($name);
+        }
+
+        return 'lab.yaml';
+    }
+
+    private function safeSourceName(string $filename): string
+    {
+        $name = basename(trim($filename));
+        if ($name === '' || $name === '.' || $name === '..') {
+            return 'lab.yaml';
+        }
+        if (preg_match('//u', $name) !== 1
+            || preg_match('/[\x00-\x1F\x7F]/', $name) === 1
+            || str_contains($name, "\u{FFFE}")
+            || str_contains($name, "\u{FFFF}")
+        ) {
+            return 'lab.yaml';
+        }
+
+        return $name;
+    }
+
+    private function yamlCompiler(): LabYamlCompiler
+    {
+        return $this->yamlCompiler ?? new LabYamlCompiler($this->templates ?? new TemplateRepository($this->config));
+    }
+
     private function safeStop(string $agentID): void
     {
         if ($agentID === '') {
@@ -1332,11 +1610,28 @@ final class LabService
     {
         $lab = $this->normaliseReferences($lab);
         $lab['format'] = 'teralab-2';
+        $xml = $this->writer->write($lab);
+        // Never commit output the parser would refuse to read back. This runs
+        // before tempnam(), so a rejected lab leaves no partial file behind.
+        if (strlen($xml) > self::MAX_UNL_BYTES) {
+            throw new HttpException(
+                422,
+                'Compiled lab exceeds the 10 MB .unl limit; reduce node configs or description size.'
+            );
+        }
+        $previous = libxml_use_internal_errors(true);
+        $document = new \DOMDocument();
+        $wellFormed = $document->loadXML($xml, LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+        if (!$wellFormed) {
+            throw new HttpException(422, 'The compiled lab is not well-formed XML.');
+        }
+
         $directory = dirname($path);
         if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
             throw new RuntimeException('Cannot create the lab directory.');
         }
-        $xml = $this->writer->write($lab);
         $temporary = tempnam($directory, '.lab-');
         if ($temporary === false) {
             throw new RuntimeException('Cannot create a temporary lab file.');
@@ -1402,7 +1697,7 @@ final class LabService
         return $path;
     }
 
-    private function labName(mixed $value): string
+    public static function labName(mixed $value): string
     {
         if (!is_string($value) || trim($value) === '') {
             throw new HttpException(422, 'Lab name is required.');
@@ -1431,7 +1726,7 @@ final class LabService
         $tags = [];
         foreach ($value as $tag) {
             if (is_string($tag) && trim($tag) !== '') {
-                $tags[] = substr(trim($tag), 0, 32);
+                $tags[] = mb_strcut(trim($tag), 0, 32, 'UTF-8');
             }
         }
 

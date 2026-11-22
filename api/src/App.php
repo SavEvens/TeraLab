@@ -48,6 +48,7 @@ use TeraLab\Api\Jobs\JobService;
 use TeraLab\Api\Labs\LabLocks;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\LabService;
+use TeraLab\Api\Labs\LabYamlCompiler;
 use TeraLab\Api\Labs\UnlParser;
 use TeraLab\Api\Labs\UnlWriter;
 use TeraLab\Api\Snapshots\SnapshotRepository;
@@ -97,7 +98,17 @@ final class App
                 ImageReferences $images,
                 SnapshotRepository $snapshots,
                 TemplateRepository $templates,
-            ): LabService => new LabService($config, $parser, $writer, $agent, $locks, $images, $snapshots, $templates)
+            ): LabService => new LabService(
+                $config,
+                $parser,
+                $writer,
+                $agent,
+                $locks,
+                $images,
+                $snapshots,
+                $templates,
+                new LabYamlCompiler($templates),
+            )
         );
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
         $container->set(RateLimiter::class, static fn (PDO $pdo): RateLimiter => new RateLimiter($pdo));
@@ -180,6 +191,10 @@ final class App
         $app->post('/api/v2/labs/import', fn ($request, $response) => $labs->import($request, $response))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/validate', fn ($request, $response) => $labs->validate($request, $response))
+            ->add($editorRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/labs/trash', fn ($request, $response) => $labs->trash($request, $response))
             ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/labs/trash/{id}', fn ($request, $response, array $args) => $labs->purge($request, $response, $args))
@@ -191,6 +206,10 @@ final class App
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->put('/api/v2/labs/{id}', fn ($request, $response, array $args) => $labs->save($request, $response, $args))
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/labs/{id}/apply', fn ($request, $response, array $args) => $labs->apply($request, $response, $args))
+            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/labs/{id}', fn ($request, $response, array $args) => $labs->delete($request, $response, $args))
