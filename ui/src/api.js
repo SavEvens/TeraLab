@@ -82,6 +82,7 @@ export const api = {
   version: () => request('/version'),
   setup: (payload) => request('/setup', { method: 'POST', body: payload }),
   login: (payload) => request('/auth/login', { method: 'POST', body: payload }),
+  guest: (payload) => request('/auth/guest', { method: 'POST', body: payload }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   me: () => request('/auth/me'),
   changePassword: (payload) => request('/auth/password', { method: 'POST', body: payload }),

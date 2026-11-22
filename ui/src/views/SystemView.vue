@@ -238,7 +238,10 @@
 
         <div class="row">
           <button type="submit" :disabled="!canAdmin || !settingsLoaded || saving">{{ saving ? 'Saving…' : 'Save demo settings' }}</button>
-          <span class="hint">These limits apply to guest sessions on the demo tier.</span>
+          <span class="hint">
+            The guest cap and Turnstile apply now; the node/template/RAM limits and idle/sweep
+            policy are stored settings and are enforced in the next demo steps.
+          </span>
         </div>
       </form>
     </section>

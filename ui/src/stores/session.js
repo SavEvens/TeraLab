@@ -25,20 +25,28 @@ export async function refreshSession() {
   }
 }
 
-export async function login(username, password) {
-  const data = await api.login({ username, password })
+function applySession(data) {
   session.user = data.user
   session.csrf = data.csrf_token
   setCsrf(data.csrf_token)
   return data
 }
 
+export async function login(username, password, turnstileToken = '') {
+  const payload = { username, password }
+  if (turnstileToken) payload['cf-turnstile-response'] = turnstileToken
+  return applySession(await api.login(payload))
+}
+
+// Demo entry mints an ephemeral guest identity; the API returns the same
+// session shape as a credential login.
+export async function guestLogin(turnstileToken = '') {
+  const payload = turnstileToken ? { 'cf-turnstile-response': turnstileToken } : {}
+  return applySession(await api.guest(payload))
+}
+
 export async function setup(username, password, email) {
-  const data = await api.setup({ username, password, email })
-  session.user = data.user
-  session.csrf = data.csrf_token
-  setCsrf(data.csrf_token)
-  return data
+  return applySession(await api.setup({ username, password, email }))
 }
 
 export async function logout() {

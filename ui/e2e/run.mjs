@@ -740,6 +740,30 @@ try {
   const usersForbidden = await page.evaluate(async () => (await fetch('/api/v2/users', { credentials: 'same-origin' })).status)
   const remainingUsernames = (await (await fetch(`http://127.0.0.1:${mockPort}/__users-state`)).json()).users.map((user) => user.username)
 
+  // Demo entry: disabled returns 404, the concurrency cap returns 403, and the
+  // enabled flow mints a guest with an isolated empty lab list.
+  const guestDisabledStatus = (await fetch(`http://127.0.0.1:${mockPort}/api/v2/auth/guest`, { method: 'POST' })).status
+  await page.getByRole('button', { name: 'Log out' }).click()
+  await page.waitForURL('**/ui/login')
+  const setDemo = (payload) => fetch(`http://127.0.0.1:${mockPort}/__demo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  await setDemo({ enabled: true, landing: 'demo', max_guests: 0, turnstile: false })
+  const guestFullStatus = (await fetch(`http://127.0.0.1:${mockPort}/api/v2/auth/guest`, { method: 'POST' })).status
+  await setDemo({ enabled: true, landing: 'demo', max_guests: 10, turnstile: false })
+  await page.reload()
+  await page.getByRole('button', { name: 'Enter demo' }).waitFor({ timeout: 10000 })
+  await page.waitForFunction(() => new URL(window.location.href).searchParams.get('mode') === 'demo', null, { timeout: 10000 })
+  const demoLandingUrl = page.url()
+  const demoPanelPrimary = await page.locator('[data-test="demo-panel"]').evaluate((element) => element.classList.contains('is-primary'))
+  await page.getByRole('button', { name: 'Enter demo' }).click()
+  await page.waitForURL('**/ui/labs')
+  await page.waitForFunction(() => document.querySelector('.labs .empty')?.textContent.includes('No labs yet'), null, { timeout: 10000 })
+  const guestEmpty = (await page.locator('.labs .empty').innerText()).trim()
+  const guestMe = await page.evaluate(async () => (await fetch('/api/v2/auth/me', { credentials: 'same-origin' })).json())
+
   const result = {
     loginMs,
     editorMs,
@@ -894,6 +918,12 @@ try {
     viewerHasDemoTab,
     usersForbidden,
     remainingUsernames,
+    guestDisabledStatus,
+    guestFullStatus,
+    demoLandingUrl,
+    demoPanelPrimary,
+    guestEmpty,
+    guestMe: guestMe.user,
     pageErrors: errors
   }
   console.log(JSON.stringify(result, null, 2))
@@ -1104,6 +1134,15 @@ try {
   if (usersForbidden !== 403) throw new Error(`GET /api/v2/users returned ${usersForbidden} for a non-admin`)
   if (remainingUsernames.some((username) => username === 'e2e-editor' || username === 'e2e-temp')) {
     throw new Error(`deleted users are still listed: ${JSON.stringify(remainingUsernames)}`)
+  }
+  if (guestDisabledStatus !== 404) throw new Error(`guest endpoint returned ${guestDisabledStatus} while demo was disabled`)
+  if (guestFullStatus !== 403) throw new Error(`guest endpoint returned ${guestFullStatus} when the demo was full`)
+  if (!demoLandingUrl.includes('mode=demo') || !demoPanelPrimary) {
+    throw new Error(`demo landing did not select the demo panel: ${demoLandingUrl} primary=${demoPanelPrimary}`)
+  }
+  if (!/No labs yet/.test(guestEmpty)) throw new Error(`guest lab list is not empty: ${guestEmpty}`)
+  if (guestMe.user?.role !== 'editor' || guestMe.user?.guest !== true || !/^g-[0-9a-f]{16}$/.test(guestMe.user?.username || '')) {
+    throw new Error(`guest session shape is wrong: ${JSON.stringify(guestMe.user)}`)
   }
   if (!/start/i.test(startToast)) throw new Error('start job toast missing')
   console.log('UI_E2E_OK')
