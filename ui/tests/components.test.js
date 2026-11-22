@@ -3,6 +3,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import AddLinkDialog from '../src/components/AddLinkDialog.vue'
 import Inspector from '../src/components/Inspector.vue'
 import TemplatePicker from '../src/components/TemplatePicker.vue'
@@ -36,7 +37,8 @@ vi.mock('../src/api', () => ({
     resetUserPassword: vi.fn(),
     revokeUserSessions: vi.fn(),
     deleteUser: vi.fn(),
-    changePassword: vi.fn()
+    changePassword: vi.fn(),
+    version: vi.fn()
   },
   uploadImageWithProgress: vi.fn(),
   setCsrf: vi.fn(),
@@ -650,8 +652,18 @@ const dateInputValue = (unix) => {
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`
 }
 
+function systemTestRouter() {
+  return createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/system', name: 'system', component: { template: '<div />' } }]
+  })
+}
+
 async function mountSystemView() {
-  const wrapper = mount(SystemView)
+  const router = systemTestRouter()
+  await router.push('/system')
+  await router.isReady()
+  const wrapper = mount(SystemView, { global: { plugins: [router] } })
   await flushPromises()
   const usersTab = wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'Users')
   await usersTab.trigger('click')
@@ -673,11 +685,15 @@ describe('SystemView users', () => {
     api.logs.mockResolvedValue({ data: { lines: [] } })
     api.tokens.mockResolvedValue({ data: [] })
     api.users.mockResolvedValue({ data: usersFixture() })
+    api.version.mockResolvedValue({ product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://example.test', components: [] })
   })
 
   it('hides the Users tab from non-admins', async () => {
     session.user = { id: 'user3', username: 'viewer', role: 'user' }
-    const wrapper = mount(SystemView)
+    const router = systemTestRouter()
+    await router.push('/system')
+    await router.isReady()
+    const wrapper = mount(SystemView, { global: { plugins: [router] } })
     await flushPromises()
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).not.toContain('Users')
     expect(api.users).not.toHaveBeenCalled()

@@ -31,6 +31,8 @@ export function startMockServer(port = 8099) {
   let nextUserId = 10
   let generatedCount = 0
   let lastUserAction = null
+  let createdLabs = []
+  let lastMove = null
   let users = [
     { id: 'user1', username: 'admin', email: 'admin@example.test', name: 'Ada Admin', role: 'admin', expiration: -1, created_at: usersNow - 7200, updated_at: usersNow - 3600, session_count: 2, last_seen_at: usersNow - 60, lab_count: 1 },
     { id: 'user2', username: 'editor', email: 'editor@example.test', name: 'Ed Editor', role: 'editor', expiration: Math.floor((Date.now() + 30 * 86400000) / 1000), created_at: usersNow - 6000, updated_at: usersNow - 5000, session_count: 0, last_seen_at: null, lab_count: 2 },
@@ -111,7 +113,11 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { ok: true })
     }
     if (request.method === 'GET' && path === '/__state') {
-      return send(response, 200, { lab: { name: lab.name, node_list: lab.node_list, network_list: lab.network_list } })
+      return send(response, 200, {
+        lab: { name: lab.name, node_list: lab.node_list, network_list: lab.network_list },
+        createdLabs: createdLabs.map((created) => ({ id: created.id, name: created.name, path: created.path })),
+        lastMove
+      })
     }
     if (request.method === 'GET' && path === '/__users-state') {
       return send(response, 200, { users, lastUserAction })
@@ -331,22 +337,43 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { data: { revoked } })
     }
     if (path === '/api/v2/labs' && request.method === 'GET') {
-      return send(response, 200, { data: [{ ...lab, node_list: undefined, network_list: undefined }] })
+      return send(response, 200, {
+        data: [
+          { ...lab, node_list: undefined, network_list: undefined },
+          ...createdLabs.map((created) => ({ ...created, node_list: undefined, network_list: undefined }))
+        ]
+      })
     }
     if (path === '/api/v2/labs' && request.method === 'POST') {
       const input = await body(request)
-      lab = {
-        ...lab,
-        id: 'newlab',
-        name: input.name || 'New Lab',
+      const name = input.name || 'New Lab'
+      const created = {
+        id: `newlab${createdLabs.length + 1}`,
+        name,
+        owner: 'admin',
+        path: `${name.replace(/\s+/g, '-')}.unl`,
         revision: 1,
-        node_list: [],
-        network_list: [],
+        format: 'teralab-2',
+        running: false,
+        running_nodes: 0,
         nodes: 0,
         networks: 0,
-        path: 'New-Lab.unl'
+        node_list: [],
+        network_list: []
       }
-      return send(response, 201, { status: 'success', data: lab })
+      createdLabs.push(created)
+      return send(response, 201, { status: 'success', data: created })
+    }
+    const moveMatch = /^\/api\/v2\/labs\/([^/]+)\/move$/.exec(path)
+    if (request.method === 'POST' && moveMatch) {
+      const input = await body(request)
+      const id = decodeURIComponent(moveMatch[1])
+      const target = createdLabs.find((created) => created.id === id)
+      if (!target) return send(response, 404, { message: 'Lab not found.' })
+      const folder = String(input.folder || '').trim()
+      target.path = folder ? `${folder}/${target.name}.unl` : `${target.name}.unl`
+      lastMove = { id, folder }
+      return send(response, 200, { status: 'success', data: target })
     }
     if (path === '/api/v2/labs/import' && request.method === 'POST') {
       return send(response, 201, {

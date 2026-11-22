@@ -2,8 +2,10 @@
 <template>
   <section class="images-view">
     <div class="toolbar">
-      <h1>Images</h1>
-      <span class="badge">{{ images.length }} stored</span>
+      <template v-if="!embedded">
+        <h1>Images</h1>
+        <span class="badge">{{ images.length }} stored</span>
+      </template>
       <button class="ghost" @click="load">Refresh</button>
       <button v-if="canAdmin" class="ghost" @click="openAdopt">Adopt images…</button>
     </div>
@@ -234,6 +236,10 @@ import { computed, onMounted, ref } from 'vue'
 import { api, uploadImageWithProgress } from '../api'
 import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
+
+defineProps({
+  embedded: { type: Boolean, default: false }
+})
 
 const images = ref([])
 const templates = ref([])

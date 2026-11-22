@@ -1,8 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <template>
-  <section class="about-view">
-    <div class="page-head">
-      <span class="crumbs">Workspace /</span>
+  <section :class="['about-view', { embedded }]">
+    <div v-if="!embedded" class="page-head">
       <h1>About</h1>
       <span class="badge">v{{ info.version || '—' }}</span>
     </div>
@@ -52,6 +51,10 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
+
+defineProps({
+  embedded: { type: Boolean, default: false }
+})
 
 const info = ref({})
 

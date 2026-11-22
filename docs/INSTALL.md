@@ -76,8 +76,13 @@ production.
 3. Log in with the session cookie and use `/api/v2/labs` to create/start labs.
 
 4. Open the UI at `http://<host>/ui/`.
-5. Upload qcow2/ISO/IOL/Dynamips files on the Images page, then pick them in
-   the node inspector. Custom YAML templates live in `/etc/teralab/templates`.
+5. Upload qcow2/ISO/IOL/Dynamips files on **Appliances → Images**, then pick
+   them in the node inspector. Custom YAML templates live in
+   `/etc/teralab/templates`.
+
+The navigation rail has three destinations: **Labs**, **Appliances**
+(Templates and Images tabs) and **System** (including About). The running
+version is shown in the rail footer.
 
 ### Users
 
@@ -158,7 +163,7 @@ options:
   saved or imported. Discovery skips a malformed template instead: it is not
   listed, and for a custom template `GET /api/v2/templates/{id}` returns 404.
   A malformed builtin still fails when loaded by id.
-- `image` is an image-store reference (the file name shown on the Images page),
+- `image` is an image-store reference (the file name shown on the Appliances → Images tab),
   not a path: a single portable name, and the stored file must be a qcow2. The
   reference is resolved when the node starts, so a template may be imported
   before its images. A reference that is not in the store, or whose stored file

@@ -2,14 +2,13 @@
 <template>
   <section class="system-view">
     <div class="page-head">
-      <span class="crumbs">Workspace /</span>
       <h1>System</h1>
       <div class="spacer"></div>
       <button class="ghost" @click="loadAll">Refresh</button>
     </div>
 
     <div class="system-tabs" role="tablist">
-      <button v-for="tab in tabs" :key="tab" role="tab" :aria-selected="active === tab" :class="{ active: active === tab }" @click="active = tab">{{ tab }}</button>
+      <button v-for="tab in tabs" :key="tab" role="tab" :aria-selected="active === tab" :class="{ active: active === tab }" @click="selectTab(tab)">{{ tab }}</button>
     </div>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
 
@@ -312,16 +311,23 @@
         </div>
       </div>
     </div>
+
+    <section v-show="active === 'About'" class="system-about">
+      <AboutView embedded />
+    </section>
   </section>
 </template>
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
+import AboutView from './AboutView.vue'
 
-const active = ref('Host')
+const route = useRoute()
+const router = useRouter()
 const host = ref(null)
 const settingsForm = ref({ timezone: 'UTC', console_default: 'telnet', session_ttl: 3600, max_upload_bytes: 33554432 })
 const saving = ref(false)
@@ -345,7 +351,26 @@ const canAdmin = computed(() => session.user?.role === 'admin')
 const tabs = computed(() => {
   const list = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
   if (canAdmin.value) list.push('Users')
+  list.push('About')
   return list
+})
+
+function matchTab(value) {
+  const wanted = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return tabs.value.find((tab) => tab.toLowerCase() === wanted) || 'Host'
+}
+
+const active = ref(matchTab(route.query.tab))
+
+function selectTab(tab) {
+  active.value = tab
+  if (route.query.tab === tab) return
+  router.replace({ query: { ...route.query, tab } })
+}
+
+watch(() => route.query.tab, (value) => {
+  const next = matchTab(value)
+  if (next !== active.value) active.value = next
 })
 const cpuUsage = computed(() => {
   const value = host.value?.cpu_usage_percent

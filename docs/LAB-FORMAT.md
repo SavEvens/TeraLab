@@ -66,7 +66,7 @@ Import accepts all three. Save always writes v2.
   every start; the `.unl` format is unchanged.
 - **Images are references, never paths.** `image`, `iso`, `kernel` and
   `initrd` hold a single name that matches an image's *reference* in TeraLab
-  (editable on the Images page). Absolute paths are never written. On a
+  (editable on Appliances → Images). Absolute paths are never written. On a
   `kind: docker` node, `image` is the container reference (for example
   `quay.io/frrouting/frr:10.7.1`) and is stored verbatim; it is not an
   image-store reference.
@@ -131,7 +131,7 @@ Limits:
 
 | Type | Meaning |
 |---|---|
-| `image_unmapped` | The node references an image that is not in the store; map it on the Images page or in the Inspector |
+| `image_unmapped` | The node references an image that is not in the store; map it on Appliances → Images or in the Inspector |
 | `image_missing` | Docker node with no container reference in the node or template; it will not start |
 | `network_unsupported` | Cloud/NAT/OVS network; it will run as an isolated bridge |
 | `node_unsupported` | Ethernet-switch or cloud node (a type the agent cannot run); it will not start |
