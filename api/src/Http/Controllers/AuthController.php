@@ -9,15 +9,22 @@ namespace TeraLab\Api\Http\Controllers;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Auth\AuthService;
+use TeraLab\Api\Auth\RateLimiter;
+use TeraLab\Api\Auth\TurnstileVerifier;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Http\RequestIp;
+use TeraLab\Api\System\SettingsService;
 
 final class AuthController
 {
     public function __construct(
         private readonly AuthService $auth,
         private readonly Config $config,
+        private readonly SettingsService $settings,
+        private readonly RateLimiter $rateLimiter,
+        private readonly TurnstileVerifier $turnstile,
     ) {
     }
 
@@ -48,14 +55,68 @@ final class AuthController
     public function login(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $data = Json::body($request);
+        $ip = $this->ip($request);
+        $this->requireCaptcha($request, $data, $ip);
         $username = $this->stringField($data, 'username');
         $password = $this->stringField($data, 'password');
         $session = $this->auth->login(
             $username,
             $password,
-            $this->ip($request),
+            $ip,
             $request->getHeaderLine('User-Agent'),
         );
+
+        return $this->withSessionCookie(
+            Json::response($response, [
+                'status' => 'success',
+                'user' => $session['user'],
+                'csrf_token' => $session['csrf_token'],
+                'expires_in' => $session['expires_in'],
+            ]),
+            $session['session_id'],
+            $session['expires_in'],
+        );
+    }
+
+    /**
+     * Public demo entry: mint a guest identity and its session.
+     *
+     * Gate order matters. A disabled demo hides the surface behind a plain
+     * 404; the concurrency cap is cheap; Turnstile runs before any state is
+     * written; the rate limiter is the last gate before provisioning.
+     */
+    public function guest(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        if ($this->settings->int('demo_enabled', 0) !== 1) {
+            throw new HttpException(404, 'Not found.');
+        }
+
+        $ip = $this->ip($request);
+        $maximum = $this->settings->int('demo_max_guests', 50);
+        // Advisory capacity cap: the count and the insert are separate
+        // statements, so a simultaneous burst can briefly exceed the limit.
+        // This is a soft demo guard, not an authorization boundary; the
+        // captcha and guest budgets below bound abuse.
+        if ($this->auth->activeGuestCount() >= $maximum) {
+            throw new HttpException(403, 'The demo is full.');
+        }
+
+        $data = Json::body($request);
+        $this->requireCaptcha($request, $data, $ip);
+
+        // Consume the guest budget before minting: provisioning failures must
+        // not refund a slot, and the budget itself bounds burst creation.
+        $guestKey = 'guest:' . $ip;
+        $this->rateLimiter->assertCountBelow(
+            $guestKey,
+            $ip,
+            RateLimiter::GUEST_MAX_ENTRIES,
+            RateLimiter::GUEST_WINDOW_SECONDS,
+            RateLimiter::GUEST_LIMIT_MESSAGE,
+        );
+        $this->rateLimiter->consume($guestKey, $ip);
+
+        $session = $this->auth->createGuest($ip, $request->getHeaderLine('User-Agent'));
 
         return $this->withSessionCookie(
             Json::response($response, [
@@ -155,11 +216,46 @@ final class AuthController
         return $value;
     }
 
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function requireCaptcha(ServerRequestInterface $request, array $data, string $ip): void
+    {
+        if ($this->settings->int('turnstile_enabled', 0) !== 1) {
+            return;
+        }
+
+        // Bound captcha egress per address. Charge the attempt before the
+        // 5-second outbound call so timeouts and failures cannot be used to
+        // drive unbounded verification requests.
+        $captchaKey = 'captcha:' . $ip;
+        $this->rateLimiter->assertCountBelow(
+            $captchaKey,
+            $ip,
+            RateLimiter::CAPTCHA_MAX_ATTEMPTS,
+            RateLimiter::CAPTCHA_WINDOW_SECONDS,
+            RateLimiter::CAPTCHA_LIMIT_MESSAGE,
+        );
+        $this->rateLimiter->consume($captchaKey, $ip);
+
+        $token = $data['cf-turnstile-response'] ?? null;
+        if (!is_string($token) || $token === '') {
+            $token = $request->getHeaderLine('CF-Turnstile-Response');
+        }
+        if ($token === '') {
+            throw new HttpException(422, TurnstileVerifier::INVALID_MESSAGE);
+        }
+
+        $this->turnstile->verify(
+            $this->settings->string('turnstile_secret_key', ''),
+            $token,
+            $ip,
+        );
+    }
+
     private function ip(ServerRequestInterface $request): string
     {
-        $address = $request->getServerParams()['REMOTE_ADDR'] ?? '0.0.0.0';
-
-        return is_string($address) ? $address : '0.0.0.0';
+        return RequestIp::resolve($request->getServerParams(), $this->config->trustedProxies);
     }
 
     private function withSessionCookie(ResponseInterface $response, string $sessionId, int $ttl): ResponseInterface

@@ -10,8 +10,10 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Auth\AuditLogger;
+use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Jobs\JobService;
 use TeraLab\Api\Labs\LabLocks;
 use TeraLab\Api\Labs\LabRepository;
@@ -32,6 +34,7 @@ final class LabController
         private readonly LabLocks $locks,
         private readonly AuditLogger $audit,
         private readonly JobService $jobs,
+        private readonly Config $config,
     ) {
     }
 
@@ -697,8 +700,6 @@ final class LabController
 
     private function ip(ServerRequestInterface $request): string
     {
-        $address = $request->getServerParams()['REMOTE_ADDR'] ?? '0.0.0.0';
-
-        return is_string($address) ? $address : '0.0.0.0';
+        return RequestIp::resolve($request->getServerParams(), $this->config->trustedProxies);
     }
 }

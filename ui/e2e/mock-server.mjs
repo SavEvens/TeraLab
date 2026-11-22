@@ -94,6 +94,7 @@ export function startMockServer(port = 8099) {
   let createdLabs = []
   let lastMove = null
   let yamlImportCount = 0
+  let guestCount = 0
   let lastValidate = null
   let lastYamlApply = null
   let users = [
@@ -253,6 +254,20 @@ export function startMockServer(port = 8099) {
     if (request.method === 'GET' && path === '/__users-state') {
       return send(response, 200, { users, lastUserAction })
     }
+    // Demo/Turnstile test switch. Turnstile stays off in the mock: the real
+    // Cloudflare widget is covered by a component test with a stubbed widget.
+    if (request.method === 'POST' && path === '/__demo') {
+      const input = await body(request)
+      if (input.enabled !== undefined) settings.demo_enabled = input.enabled ? 1 : 0
+      if (input.landing !== undefined) settings.demo_landing = input.landing === 'demo' ? 'demo' : 'login'
+      if (input.max_guests !== undefined) settings.demo_max_guests = Number(input.max_guests)
+      if (input.turnstile !== undefined) settings.turnstile_enabled = input.turnstile ? 1 : 0
+      return send(response, 200, {
+        ok: true,
+        demo: { enabled: !!settings.demo_enabled, landing: settings.demo_landing, max_guests: settings.demo_max_guests },
+        turnstile: { enabled: !!settings.turnstile_enabled }
+      })
+    }
     if (request.method === 'POST' && path === '/__fifty') {
       const nodeList = Array.from({ length: 50 }, (_, index) => ({
         id: String(index + 1),
@@ -327,9 +342,49 @@ export function startMockServer(port = 8099) {
       nodeStates.lab1 = {}
       return send(response, 200, { ok: true })
     }
-    if (path === '/api/v2/health') return send(response, 200, { status: 'ok', version: '1.6-dev' })
+    if (path === '/api/v2/health') {
+      return send(response, 200, {
+        status: 'ok',
+        version: '1.6-dev',
+        demo: { enabled: !!settings.demo_enabled, landing: settings.demo_landing },
+        turnstile: { enabled: !!settings.turnstile_enabled, site_key: settings.turnstile_site_key }
+      })
+    }
     if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
     if (path === '/api/v2/setup') return send(response, 409, { message: 'Setup has already been completed.' })
+    if (path === '/api/v2/auth/guest' && request.method === 'POST') {
+      if (!settings.demo_enabled) return send(response, 404, { message: 'Demo mode is disabled.' })
+      const activeGuests = users.filter((user) => user.guest).length
+      if (activeGuests >= Number(settings.demo_max_guests)) {
+        return send(response, 403, { message: 'The demo is full.' })
+      }
+      const input = await body(request)
+      if (settings.turnstile_enabled && !input['cf-turnstile-response']) {
+        return send(response, 422, { message: 'Captcha verification is required.' })
+      }
+      const username = `g-${String(++guestCount).padStart(16, '0')}`
+      const user = {
+        id: `guest${guestCount}`,
+        username,
+        email: '',
+        name: '',
+        role: 'editor',
+        guest: true,
+        expiration: Math.floor(Date.now() / 1000) + 48 * 3600,
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+        session_count: 1,
+        last_seen_at: Math.floor(Date.now() / 1000),
+        lab_count: 0
+      }
+      users = [...users, user]
+      return send(response, 200, {
+        status: 'success',
+        user: { id: user.id, username: user.username, role: user.role, guest: true },
+        csrf_token: csrf,
+        expires_in: 3600
+      }, { 'Set-Cookie': `teralab_session=${encodeURIComponent(user.username)}; Path=/; HttpOnly; SameSite=Lax` })
+    }
     if (path === '/api/v2/auth/login' && request.method === 'POST') {
       const input = await body(request)
       const user = users.find((candidate) => candidate.username === input.username)
@@ -344,9 +399,11 @@ export function startMockServer(port = 8099) {
     if (path === '/api/v2/auth/me') {
       const user = sessionUser(request)
       if (!user) return send(response, 401, { message: 'Authentication required.' })
-      return send(response, 200, { user: { id: user.id, username: user.username, role: user.role }, csrf_token: csrf })
+      return send(response, 200, { user: { id: user.id, username: user.username, role: user.role, guest: !!user.guest }, csrf_token: csrf })
     }
-    if (path === '/api/v2/auth/logout') return send(response, 200, { status: 'success' })
+    if (path === '/api/v2/auth/logout') {
+      return send(response, 200, { status: 'success' }, { 'Set-Cookie': 'teralab_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax' })
+    }
     if (path === '/api/v2/auth/password' && request.method === 'POST') {
       const input = await body(request)
       if (!input.current_password) return send(response, 422, { message: 'current_password and new_password are required.' })
@@ -468,6 +525,8 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { data: { revoked } })
     }
     if (path === '/api/v2/labs' && request.method === 'GET') {
+      // Guests get an isolated, initially empty workspace.
+      if (sessionUser(request)?.guest) return send(response, 200, { data: [] })
       return send(response, 200, {
         data: [
           { ...lab, node_list: undefined, network_list: undefined, extensions: undefined },

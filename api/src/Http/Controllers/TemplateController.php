@@ -10,8 +10,10 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Auth\AuditLogger;
+use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Templates\TemplateRepository;
 
 final class TemplateController
@@ -20,6 +22,7 @@ final class TemplateController
         private readonly TemplateRepository $templates,
         private readonly AccessService $access,
         private readonly AuditLogger $audit,
+        private readonly Config $config,
     ) {
     }
 
@@ -133,8 +136,6 @@ final class TemplateController
 
     private function address(ServerRequestInterface $request): string
     {
-        $address = $request->getServerParams()['REMOTE_ADDR'] ?? '0.0.0.0';
-
-        return is_string($address) ? $address : '0.0.0.0';
+        return RequestIp::resolve($request->getServerParams(), $this->config->trustedProxies);
     }
 }

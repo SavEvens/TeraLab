@@ -10,8 +10,10 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Auth\UserService;
+use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Http\RequestIp;
 
 /**
  * Thin admin-only HTTP surface over {@see UserService}. Non-admin callers are
@@ -22,6 +24,7 @@ final class UsersController
     public function __construct(
         private readonly UserService $users,
         private readonly AccessService $access,
+        private readonly Config $config,
     ) {
     }
 
@@ -162,8 +165,6 @@ final class UsersController
 
     private function ip(ServerRequestInterface $request): string
     {
-        $address = $request->getServerParams()['REMOTE_ADDR'] ?? '0.0.0.0';
-
-        return is_string($address) ? $address : '0.0.0.0';
+        return RequestIp::resolve($request->getServerParams(), $this->config->trustedProxies);
     }
 }

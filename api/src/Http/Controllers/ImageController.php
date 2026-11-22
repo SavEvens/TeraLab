@@ -11,8 +11,10 @@ use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Auth\AuditLogger;
+use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Image\ImageStore;
 use TeraLab\Api\Image\LegacyAddonsImporter;
 use TeraLab\Api\Labs\LabRepository;
@@ -26,6 +28,7 @@ final class ImageController
         private readonly AccessService $access,
         private readonly LabRepository $labs,
         private readonly LegacyAddonsImporter $importer,
+        private readonly Config $config,
     ) {
     }
 
@@ -271,9 +274,7 @@ final class ImageController
 
     private function ip(ServerRequestInterface $request): string
     {
-        $address = $request->getServerParams()['REMOTE_ADDR'] ?? '0.0.0.0';
-
-        return is_string($address) ? $address : '0.0.0.0';
+        return RequestIp::resolve($request->getServerParams(), $this->config->trustedProxies);
     }
 
     private function kindFromName(string $name): string

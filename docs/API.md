@@ -5,7 +5,33 @@
 
 The API is JSON-only under `/api/v2`. The OpenAPI 3.1 draft is in
 `docs/openapi.yaml`. State-changing requests require the
-session cookie and `X-CSRF-Token` (returned by setup, login, and `/auth/me`).
+session cookie and `X-CSRF-Token` (returned by setup, login, guest entry, and
+`/auth/me`).
+
+## Health
+
+`GET /api/v2/health` is public. It answers 200 with `status`, `version`,
+`php`, `time`, and two feature-flag blocks that the sign-in page reads:
+
+```json
+{
+  "status": "ok",
+  "version": "1.6-dev",
+  "php": "8.4.x",
+  "time": 1795000000,
+  "demo": { "enabled": true, "landing": "demo" },
+  "turnstile": { "enabled": true, "site_key": "3x00000000000000000000FF" }
+}
+```
+
+- `demo.enabled` mirrors `demo_enabled`; `demo.landing` mirrors `demo_landing`
+  (`login` or `demo`) and only matters while the demo is enabled.
+- `turnstile.enabled` mirrors `turnstile_enabled`. `turnstile.site_key` is the
+  public widget key; it is `""` when the stored key was cleared.
+- The Turnstile **secret** is never part of any response. Everything in this
+  payload is public and needs no session.
+- When the database probe fails the endpoint answers 503 `Database
+  unavailable.`
 
 ## Session
 
@@ -15,6 +41,160 @@ curl -c jar -X POST -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"..."}' $B/api/v2/auth/login
 CSRF=$(curl -b jar $B/api/v2/auth/me | jq -r .csrf_token)
 ```
+
+The cookie is `teralab_session` (`HttpOnly`, `SameSite=Lax`, `Path=/`, plus
+`Secure` when the request arrived over HTTPS). `expires_in` is the session
+lifetime in seconds (`session_ttl`, default `3600`). The returned `user` object
+has `id`, `username`, `email`, `name`, `role`, `expiration`, and `guest`;
+`guest` is `false` for ordinary accounts. Failed password sign-ins are limited
+to 5 per window of 15 minutes for one username and address, and answer 429
+`Too many login attempts. Try again later.`
+
+### Captcha on sign-in
+
+When `turnstile_enabled` is `1`, `POST /api/v2/auth/login` and the legacy
+`POST /api/auth/login` both require a Cloudflare Turnstile token. Send it as the
+JSON field `cf-turnstile-response` (the widget's name) or, for clients that
+cannot shape the body, as the `CF-Turnstile-Response` header. The token is sent
+to Cloudflare for verification together with the resolved client address.
+
+- Missing, expired, already-used, or rejected token: 422 `Captcha verification
+  failed; try again.` The legacy route uses the v1 envelope with `status:
+  "fail"` and the same message.
+- Cloudflare unreachable, timing out (5 s), or answering with a body that is not
+  a JSON object: 422 `Captcha verification is unavailable; try again.`
+  Verification fails closed; sign-in is refused rather than allowed.
+- An empty stored secret while `turnstile_enabled` is `1` rejects every token
+  with the *failed* message; set a key or turn the setting off.
+- Captcha verification has its own per-address budget: at most 20 attempts in
+  15 minutes. Each attempt is charged *before* the outbound call, including one
+  that arrives without a token; once the budget is exhausted the answer is 429
+  `Too many captcha attempts. Try again later.` and Cloudflare is not contacted.
+  The budget is shared by demo entry and by both login routes.
+- The credential check is not attempted on a captcha failure, so a captcha
+  rejection never increments the login rate-limit counter.
+- Tokens are single use. The secret key and the tokens are never logged,
+  audited, or echoed in an error.
+
+With `turnstile_enabled` at `0` the fields are ignored and both routes behave as
+before. Settings are described under [System settings](#system-settings).
+
+### Client address and trusted proxies
+
+Audit entries, `sessions.ip`, the login, captcha, and guest rate-limit buckets,
+and the `remoteip` sent to Turnstile all use one resolved client address:
+
+- Default: `REMOTE_ADDR` (the direct peer), whatever `X-Forwarded-For` says.
+- With `TERALAB_TRUSTED_PROXIES` (environment) or `'trusted_proxies' => […]` /
+  `'trusted_proxies' => '…'` in `/etc/teralab/config.php` set to a
+  comma-separated list of IPv4/IPv6 addresses or CIDRs, the header is used only
+  when the direct peer matches that list. The address is then the first
+  untrusted hop walking `X-Forwarded-For` from the right — the hop closest to
+  the server. Entries further left are client-supplied and are never trusted
+  while a right-hand untrusted hop exists.
+- If every hop in the chain is a trusted proxy, the leftmost entry is used (the
+  client as seen by the outermost proxy). A malformed entry or a chain longer
+  than 32 hops falls back to `REMOTE_ADDR`; a missing or invalid `REMOTE_ADDR`
+  yields `0.0.0.0`.
+- Addresses are canonicalised before use: an IPv4-mapped IPv6 peer
+  (`::ffff:192.0.2.1`) is treated as its IPv4 form, so one client cannot hold
+  two rate-limit budgets by changing spelling.
+
+Keep the list as narrow as possible: any address you list can choose the client
+address that rate limiting and audit records see. Never list a range that
+contains untrusted clients (`0.0.0.0/0` trusts everything).
+
+## Demo guest entry
+
+`POST /api/v2/auth/guest` is public: no session cookie and no `X-CSRF-Token`
+header, exactly like login. It mints a temporary guest account and opens its
+session.
+
+```sh
+curl -c jar -X POST -H 'Content-Type: application/json' \
+  -d '{"cf-turnstile-response":"<token if Turnstile is enabled>"}' \
+  $B/api/v2/auth/guest
+```
+
+The body is optional and only carries the captcha token, in the same two forms
+login accepts (JSON field `cf-turnstile-response`, or the `CF-Turnstile-Response`
+header).
+
+A successful call answers 200 with the same session shape as login:
+
+```json
+{
+  "status": "success",
+  "user": {
+    "id": "…",
+    "username": "g-0123456789abcdef",
+    "email": null,
+    "name": null,
+    "role": "editor",
+    "expiration": 1795172800,
+    "guest": true
+  },
+  "csrf_token": "…",
+  "expires_in": 3600
+}
+```
+
+It also sets the `teralab_session` cookie, so an API client uses the guest
+session and CSRF token exactly like a logged-in account.
+
+Guest identity properties:
+
+- `username` is `g-` followed by 16 hex characters and `id` is random; neither
+  is derived from the visitor. Accounts carry `guest: true`, role `editor`
+  (build and run labs), no email and no display name.
+- `expiration` is now plus `demo_guest_ttl_hours`. The session is clamped so it
+  can never outlive the account: `expires_in` (and the cookie's `Max-Age`) is
+  the smaller of `session_ttl` and the time left until `expiration`. Sessions
+  have an absolute expiry and are not renewed, and a guest has no password to
+  sign back in with, so the practical demo duration is that smaller value
+  (default: 1 hour); the account row keeps its longer `demo_guest_ttl_hours`
+  expiration and the slot frees once the session lapses. The guest is otherwise
+  an ordinary `editor` account: the per-lab demo limits
+  (`demo_max_nodes_per_lab`, `demo_allowed_templates`,
+  `demo_max_ram_per_node`) and the idle-wipe/sweep settings are stored policy
+  and are **not enforced yet**, so only expose the demo to visitors you would
+  trust with an editor account.
+- The password hash is random, generated from a value that is never disclosed,
+  so a guest identity cannot be signed in to with credentials. The session
+  returned here is the only way in.
+- Guest creation is audited as `demo.guest` with the resolved client address.
+  No identity, email, or name is requested or stored; like any session, the
+  client address and User-Agent are recorded in `sessions` and `audit_log`.
+
+Refusals, with the exact messages clients can rely on:
+
+| Status | Message | When |
+|---|---|---|
+| 404 | `Not found.` | `demo_enabled` is `0` |
+| 403 | `The demo is full.` | `demo_max_guests` guests already hold an unexpired session |
+| 429 | `Too many captcha attempts. Try again later.` | the captcha budget for this address is exhausted (Turnstile only) |
+| 422 | `Captcha verification failed; try again.` | `turnstile_enabled` is `1` and the token is missing or rejected |
+| 422 | `Captcha verification is unavailable; try again.` | siteverify could not be reached; entry fails closed |
+| 429 | `Too many demo entries from this network. Try again later.` | more than 20 guest entries from one address in an hour |
+
+Guest entry has its own per-address budget: at most 20 entries per hour (bucket
+`guest:<address>`). The slot is charged before the guest is created, so a
+provisioning failure does not refund it; the rows are recorded as successful, so
+they never consume the password-login failure budget, and one address cannot
+mint guests in a loop.
+
+The concurrency cap counts distinct guests with an unexpired session, so
+several tabs of one guest consume one slot and a lapsed guest frees it. The
+count and the account creation are separate steps and are **not atomic**, so a
+burst of simultaneous entries can briefly exceed `demo_max_guests` by a few; the
+cap protects the steady state, not a millisecond race.
+
+`demo_enabled` must be `1` for the endpoint to exist. `turnstile_enabled`
+decides whether entry needs a captcha; both are set in **System → Demo**
+(`PUT /api/v2/system/settings`). The UI shows **Enter demo** only when
+`GET /api/v2/health` reports `demo.enabled`, and shows the Turnstile widget only
+when `turnstile.enabled` is set. A `demo_landing` of `demo` makes the sign-in
+page open on the demo panel.
 
 ## Account
 
@@ -41,7 +221,9 @@ Mutations also require the `X-CSRF-Token` header.
 `name`, `role`, `expiration`, `created_at`, `updated_at`, `session_count`,
 `last_seen_at`, and `lab_count`. Password hashes are never returned.
 `expiration` is `-1` for never, otherwise a unix timestamp. Roles are `admin`,
-`editor`, and `user`.
+`editor`, and `user`. Demo guests appear in this list too: no email, no name,
+role `editor`, a future `expiration`, and a `g-` username prefix. This response
+has no `guest` flag, so the prefix is the only discriminator.
 
 Create with `{username, role, email?, name?, password?, expiration?}`. The
 response is 201 with `{"data":{"user":{…}}}`. When `password` is omitted or

@@ -15,6 +15,7 @@ use TeraLab\Api\Auth\TokenService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\System\BackupService;
 use TeraLab\Api\System\SettingsService;
@@ -198,8 +199,6 @@ final class SystemController
 
     private function address(ServerRequestInterface $request): string
     {
-        $address = $request->getServerParams()['REMOTE_ADDR'] ?? '0.0.0.0';
-
-        return is_string($address) ? $address : '0.0.0.0';
+        return RequestIp::resolve($request->getServerParams(), $this->config->trustedProxies);
     }
 }

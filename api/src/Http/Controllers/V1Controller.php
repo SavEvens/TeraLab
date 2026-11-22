@@ -11,13 +11,17 @@ use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Auth\AuthService;
+use TeraLab\Api\Auth\RateLimiter;
+use TeraLab\Api\Auth\TurnstileVerifier;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
 use TeraLab\Api\Http\LegacyJson;
+use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Http\V1Session;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\LabService;
+use TeraLab\Api\System\SettingsService;
 
 final class V1Controller
 {
@@ -28,6 +32,9 @@ final class V1Controller
         private readonly LabService $labService,
         private readonly AccessService $access,
         private readonly AuditLogger $audit,
+        private readonly SettingsService $settings,
+        private readonly TurnstileVerifier $turnstile,
+        private readonly RateLimiter $rateLimiter,
     ) {
     }
 
@@ -45,10 +52,12 @@ final class V1Controller
         }
 
         try {
+            $ip = $this->ip($request);
+            $this->requireCaptcha($request, $data, $ip);
             $session = $this->auth->login(
                 $username,
                 $password,
-                $this->ip($request),
+                $ip,
                 $request->getHeaderLine('User-Agent'),
             );
         } catch (HttpException $exception) {
@@ -318,10 +327,47 @@ final class V1Controller
         return ['folders' => $folders, 'labs' => $labs];
     }
 
+    /**
+     * The legacy login shares the v2 captcha setting so it cannot be used to
+     * bypass Turnstile while the modern surface is gated.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function requireCaptcha(ServerRequestInterface $request, array $data, string $ip): void
+    {
+        if ($this->settings->int('turnstile_enabled', 0) !== 1) {
+            return;
+        }
+
+        // Share the address budget with the v2 surface so the legacy adapter
+        // cannot add unbounded captcha egress.
+        $captchaKey = 'captcha:' . $ip;
+        $this->rateLimiter->assertCountBelow(
+            $captchaKey,
+            $ip,
+            RateLimiter::CAPTCHA_MAX_ATTEMPTS,
+            RateLimiter::CAPTCHA_WINDOW_SECONDS,
+            RateLimiter::CAPTCHA_LIMIT_MESSAGE,
+        );
+        $this->rateLimiter->consume($captchaKey, $ip);
+
+        $token = $data['cf-turnstile-response'] ?? null;
+        if (!is_string($token) || $token === '') {
+            $token = $request->getHeaderLine('CF-Turnstile-Response');
+        }
+        if ($token === '') {
+            throw new HttpException(422, TurnstileVerifier::INVALID_MESSAGE);
+        }
+
+        $this->turnstile->verify(
+            $this->settings->string('turnstile_secret_key', ''),
+            $token,
+            $ip,
+        );
+    }
+
     private function ip(ServerRequestInterface $request): string
     {
-        $address = $request->getServerParams()['REMOTE_ADDR'] ?? '0.0.0.0';
-
-        return is_string($address) ? $address : '0.0.0.0';
+        return RequestIp::resolve($request->getServerParams(), $this->config->trustedProxies);
     }
 }
