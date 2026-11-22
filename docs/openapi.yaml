@@ -207,7 +207,7 @@ components:
       properties:
         yaml:
           type: string
-          description: "The full YAML document (max 10 MB); see docs/LAB-YAML.md"
+          description: "The full YAML document (max 10 MB input; the compiled .unl is also capped at 10 MB); see docs/LAB-YAML.md"
         filename:
           type: string
           description: "Optional provenance file name; when omitted the existing name is kept"
@@ -608,6 +608,11 @@ paths:
         id, revision 1, uploader as owner, YAML `author` when present) and carry
         a `source` marker in the lab's `<extensions>` block. See
         docs/LAB-YAML.md.
+
+        The 10 MB YAML input cap is separate from the 10 MB compiled `.unl` cap.
+        A YAML under 10 MB that would serialize to a larger `.unl` (base64
+        configs, topology XML, and the embedded source all count) is rejected
+        with 422 before a lab is created.
       requestBody:
         required: true
         content:
@@ -619,7 +624,7 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: "A `.unl`, `.yaml`, or `.yml` lab file (max 10 MB)"
+                  description: "A `.unl`, `.yaml`, or `.yml` lab file (max 10 MB input; a compiled YAML lab is also capped at 10 MB)"
       responses:
         '201':
           description: Imported (legacy TeraLab, UNetLab, EVE-NG, TeraLab v2, or YAML)
@@ -638,7 +643,7 @@ paths:
                         items: { $ref: '#/components/schemas/LabYamlWarning' }
         '403': { description: Editor role or CSRF required }
         '413': { description: Request body too large }
-        '422': { description: "Empty/oversized file, or a YAML compile error; ambiguous XML+YAML failures include both messages" }
+        '422': { description: "Empty/oversized file, YAML compile error, or compiled .unl over 10 MB; ambiguous XML+YAML failures include both messages" }
   /api/v2/labs/validate:
     post:
       tags: [labs]
@@ -716,9 +721,18 @@ paths:
         Requires the editor role, CSRF, and access to the lab. Compiles the YAML
         with the same compiler as import and replaces the lab wholesale while
         preserving its id, path/folder, owner, and created_at. Revision is
-        incremented by one, the YAML provenance marker is restamped, and node
-        ids removed by the new topology are stopped and wiped. Every node must
-        be stopped first; otherwise 409.
+        incremented by one and the YAML provenance marker is restamped. Every
+        node must be stopped first; otherwise 409.
+
+        Node run directories are keyed by compiled node id (declaration order).
+        Apply uses the node name to verify identity: it keeps run dirs only when
+        every surviving old id still names the same node, and wipes old ids
+        removed from the topology. If a reorder or rename makes a surviving id
+        refer to a different node, apply wipes all old node run directories
+        before writing to prevent cross-inheritance.
+
+        The compiled `.unl` must also be at most 10 MB (separate from the YAML
+        input cap); a larger result returns 422 before anything is written.
 
         Pass `revision` to make the call conditional. A mismatch returns 409
         with `details.revision` set to the current revision. Compile errors
@@ -739,7 +753,7 @@ paths:
         '403': { description: "Editor role, CSRF, or lab access denied" }
         '404': { description: Lab not found }
         '409': { description: "A node is running or the supplied revision is stale" }
-        '422': { description: "Missing/non-string yaml, bad filename/revision type, or YAML compile error" }
+        '422': { description: "Missing/non-string yaml, bad filename/revision type, YAML compile error, or compiled .unl over 10 MB" }
   /api/v2/labs/{id}/export:
     get:
       tags: [labs]

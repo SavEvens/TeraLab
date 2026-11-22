@@ -213,7 +213,7 @@ must not repeat an interface already used by another link or by the node's own
 |---|---|---|
 | `mode` | no | `tree` (default) or `grid`. |
 | `root` | no | Tree mode: node key to start the breadth-first walk from. Must be a declared node. Defaults to the first declared node. |
-| `spacing` | no | Positive integer, in pixels; default 240. |
+| `spacing` | no | Integer 1–10000, in pixels; default 240. |
 
 Auto-layout only fills **missing** coordinates. An authored `left` or `top`
 always wins, even if only one axis is given. In `grid` mode nodes are placed
@@ -312,7 +312,8 @@ but a network without two attachments will not be stored.
 
 | Limit | Value | Behaviour |
 |---|---|---|
-| YAML document | 10 MB | Hard error above the cap. |
+| YAML document (input) | 10 MB | Hard error above the cap. |
+| Compiled `.unl` (import/apply) | 10 MB | Hard error before writing; separate from the YAML input cap. |
 | Nodes | 64 | Hard error. |
 | Declared networks | 64 | Hard error. |
 | Declared + generated networks | 64 | Hard error. |
@@ -326,6 +327,15 @@ but a network without two attachments will not be stored.
 | `nvram` | 0–4096 | Clamped. |
 | `delay` | 0–3600 | Clamped. |
 | `position.left` / `position.top` | ≥ 0 | Negative values become 0. |
+
+The two 10 MB caps are independent. The input cap counts the YAML bytes you
+upload or paste. The compiled lab is XML containing base64 configs, topology
+metadata, and the embedded YAML source, so it can be larger than the input,
+especially with several large inline configs. A YAML under 10 MB that compiles
+to a `.unl` over 10 MB is rejected with `422` before anything is written:
+import creates no lab, and apply leaves the existing lab file and revision
+unchanged. Validate remains a no-write compile check; the compiled-size cap is
+enforced by the import and apply paths before they write.
 
 ## Errors
 
@@ -344,7 +354,7 @@ network, link, or port wherever one is involved.
 | Wrong/missing schema | `The YAML document must declare schema: 1.` |
 | Missing/invalid lab name | `Lab name is required.` / `Invalid lab name.` |
 | Wrong field type | `Author must be text.` / `tags must be a list of strings.` |
-| Bad layout | `layout.mode must be "grid" or "tree".` / `layout.spacing must be a positive integer.` |
+| Bad layout | `layout.mode must be "grid" or "tree".` / `layout.spacing must be an integer between 1 and 10000.` |
 | Unknown layout root | `The layout root "Z" is not a declared node.` |
 | Bad `defaults` | `defaults.ram must be an integer.` / `defaults: unknown field "x".` |
 | Bad network block | `networks must be a mapping of network keys.` / `Network "lan": visibility must be 0 or 1.` |
@@ -373,8 +383,8 @@ HTTP status summary:
 | Endpoint | Compile error | Other errors |
 |---|---|---|
 | `POST /api/v2/labs/validate` | `200` with `valid: false` | `422` for a missing/non-string `yaml` or bad `filename` |
-| `POST /api/v2/labs/import` | `422` | `413` body too large; `422` empty/oversized upload; `403` role/CSRF |
-| `POST /api/v2/labs/{id}/apply` | `422` | `409` running or stale revision; `404` unknown lab; `403` no access, role, or CSRF |
+| `POST /api/v2/labs/import` | `422` | `413` body too large; `422` empty/oversized upload or compiled `.unl` over 10 MB; `403` role/CSRF |
+| `POST /api/v2/labs/{id}/apply` | `422` | `409` running or stale revision; `422` compiled `.unl` over 10 MB; `404` unknown lab; `403` no access, role, or CSRF |
 
 ## Warnings
 
@@ -388,6 +398,7 @@ Warnings never block import or apply. YAML uses the same warning objects as
 | `image_missing` | A docker node has no container reference in the node or template; it will not start. Normal docker templates require a reference, so this is a defensive/shared case. |
 | `network_unsupported` | The network uses a non-bridge `type`; TeraLab runs it as an isolated bridge and never changes host networking. |
 | `node_unsupported` | The node type has no engine. Every template kind in current releases has an engine, so a template-derived YAML lab does not normally produce this; it is shared with `.unl` import for forward compatibility. |
+| `run_state_reset` | Apply changed the node order or names so a surviving id would map to a different node; all previous node run directories were wiped to prevent cross-inheritance. |
 
 Example warning:
 
@@ -452,7 +463,9 @@ accepts `.unl` and YAML:
 An imported YAML lab is a new lab: new id, revision 1, the uploading account
 as owner, and the YAML `author` when it is present. The top-level `name`
 becomes the lab name. An empty or oversized upload (over 10 MB) is rejected
-with `422`.
+with `422`. A YAML document within the input cap can still compile to a `.unl`
+over the separate 10 MB compiled-lab cap; that is also rejected with `422`,
+before a lab is created.
 
 The import response has the usual shape, with warnings in `meta.warnings`:
 
@@ -491,9 +504,13 @@ Apply compiles the document and replaces the lab **wholesale**:
 - bumped: `revision` by exactly one, with `updated_at` refreshed;
 - restamped: the YAML provenance marker (full source, sha256, file name, new
   revision);
-- cleaned: node ids that existed before but not after the apply are stopped
-  and wiped, so their run directories cannot leak. Surviving ids keep their
-  run-directory state.
+- run directories: governed by the old and new `id → name` maps; surviving
+  nodes keep their run directories only when their identity is unchanged, and
+  some applies wipe all old run directories (see
+  [Node identity and run directories](#node-identity-and-run-directories)).
+
+Before writing, apply enforces the separate 10 MB compiled-`.unl` cap. A lab
+whose serialized form would exceed it returns `422` and is not modified.
 
 Guards and errors:
 
@@ -502,6 +519,7 @@ Guards and errors:
 | Any node is not `stopped` | `409` — `Stop and wipe the lab before applying YAML.` |
 | `revision` is supplied and does not match | `409` — `The lab was modified by another session.`, with `details.revision` set to the current revision |
 | Compile error | `422` with the compiler message |
+| Compiled lab would exceed 10 MB | `422`; nothing is written, and the lab file and revision are unchanged |
 | Unknown lab | `404` |
 | No access, wrong role, or missing CSRF | `403` |
 
@@ -519,15 +537,45 @@ Apply works on any lab you may edit, even one that was created on the canvas.
 The editor's **YAML** source panel, however, is shown only for labs that carry
 the provenance marker described below.
 
+### Node identity and run directories
+
+YAML node ids are positional: `1..N` in declaration order. Run directories are
+keyed by node id, so reusing one after a reorder would hand a node another
+node's NVRAM, disks, or saved config. Apply therefore compares the old and new
+node `id → name` maps before writing:
+
+- **Safe mapping** — every old id that survives the apply still has the same
+  name. Surviving nodes keep their run directories; old ids absent from the new
+  topology are stopped and wiped.
+- **Changed mapping** — a surviving old id now refers to a different name,
+  because nodes were reordered or renamed. Apply stops and wipes **all** old
+  node run directories before writing, so no node can inherit another node's
+  state. New nodes start with clean run directories.
+
+Adding nodes after the existing ones, or removing only trailing nodes, keeps
+surviving ids unchanged and is safe. Inserting or removing a node before the
+end renumbers later nodes, and renaming any node changes its mapping; both
+situations trigger the wipe-all path.
+
+**Recommendation:** if your change reorders or renames nodes, stop and wipe the
+lab yourself before applying. Apply still protects you by wiping all old run
+directories, but an explicit wipe makes the reset unambiguous.
+
 ### Staleness
 
 The provenance marker records the lab revision at which the YAML was applied.
 After a canvas edit and save, the marker revision is lower than the lab
 revision:
 
-- the editor's **YAML** panel shows a staleness warning and keeps the current
-  canvas changes until you apply;
+- the editor's **YAML** panel shows a staleness warning: the canvas and the
+  stored source disagree;
 - applying always **replaces** the canvas; the YAML source wins;
+- if you edited the panel text, apply replaces the canvas with your edited
+  YAML;
+- if the stored source is unchanged, Apply remains enabled while the lab is
+  stale. Applying it re-applies the stored YAML and discards the canvas edits —
+  an explicit reset to the last applied source. When the lab is not stale,
+  unchanged text disables Apply;
 - pass the current `revision` with apply to get a `409` instead of silently
   overwriting a lab that another session changed in the meantime.
 
@@ -537,7 +585,9 @@ Apply never stops a running lab for you. Stop every node first (the API
 message says "Stop and wipe"). If you changed a node's embedded startup config,
 wipe that node as well, because IOL and other engines may otherwise keep the
 configuration saved on the device. Nodes removed by the apply are wiped
-automatically.
+automatically, and a reorder or rename wipes all old node run directories (see
+[Node identity and run directories](#node-identity-and-run-directories)). Wipe
+the lab yourself when reordering or renaming nodes.
 
 ### Editor YAML panel
 
@@ -547,10 +597,13 @@ which the source was applied, and lets you edit the source in place.
 
 - **Validate** calls the validate endpoint and shows errors, warnings, and
   counts without writing.
-- **Apply** is disabled while any node is running, while the text is unchanged,
-  and while validation reports errors; the tooltip explains why.
+- **Apply** is disabled while any node is running, while validation reports
+  errors, and while the source is unchanged **and the lab is not stale**. A
+  stale lab with unchanged text is still applyable: it restores the stored YAML
+  over the canvas edits. The tooltip explains the current reason.
 - A stale source (marker revision lower than the lab revision) shows a warning
-  that applying replaces the canvas changes.
+  that applying replaces the canvas changes with the stored source (or with
+  your edited text, if you changed it).
 - A `409` from apply (running lab or stale revision) is shown inline in the
   panel; a successful apply reloads the editor from the server through the
   normal external-change path.
@@ -591,8 +644,9 @@ YAML. The editor's **YAML** button appears only when this marker is present.
 
 The marker keeps the YAML source in the lab file, so any inline configs appear
 twice: once inside `text` and once base64-encoded in `<objects><configs>`. The
-10 MB YAML/upload caps bound the size; realistic labs are a few KB. Keep very
-large configs out of YAML labs if file size matters.
+10 MB input cap and the separate 10 MB compiled-`.unl` cap bound the size;
+because the source is embedded in the marker, a YAML near the input cap will
+usually exceed the compiled cap. Keep sources and inline configs small.
 
 ### EVE-NG re-save caveat
 
