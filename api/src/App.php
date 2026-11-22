@@ -18,6 +18,7 @@ use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Auth\AuthService;
 use TeraLab\Api\Auth\PasswordPolicy;
 use TeraLab\Api\Auth\RateLimiter;
+use TeraLab\Api\Auth\TurnstileVerifier;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\Controllers\AuthController;
@@ -59,6 +60,7 @@ final class App
     public function __construct(
         private readonly ?Config $config = null,
         private readonly ?AgentClient $agent = null,
+        private readonly ?TurnstileVerifier $turnstile = null,
     ) {
     }
 
@@ -113,6 +115,11 @@ final class App
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
         $container->set(RateLimiter::class, static fn (PDO $pdo): RateLimiter => new RateLimiter($pdo));
         $container->set(AuditLogger::class, static fn (PDO $pdo): AuditLogger => new AuditLogger($pdo));
+        $turnstile = $this->turnstile;
+        $container->set(
+            TurnstileVerifier::class,
+            static fn (): TurnstileVerifier => $turnstile ?? new TurnstileVerifier()
+        );
         $container->set(
             AuthService::class,
             static fn (
@@ -169,6 +176,7 @@ final class App
         $app->get('/api/v2/version', $container->get(VersionController::class));
         $app->post('/api/v2/setup', fn ($request, $response) => $container->get(AuthController::class)->setup($request, $response));
         $app->post('/api/v2/auth/login', fn ($request, $response) => $container->get(AuthController::class)->login($request, $response));
+        $app->post('/api/v2/auth/guest', fn ($request, $response) => $container->get(AuthController::class)->guest($request, $response));
         $app->get('/api/v2/auth/me', fn ($request, $response) => $container->get(AuthController::class)->me($request, $response))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/auth/password', fn ($request, $response) => $container->get(AuthController::class)->changePassword($request, $response))

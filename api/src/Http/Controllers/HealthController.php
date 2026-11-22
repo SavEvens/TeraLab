@@ -13,12 +13,14 @@ use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\System\SettingsService;
 
 final class HealthController
 {
     public function __construct(
         private readonly PDO $pdo,
         private readonly Config $config,
+        private readonly SettingsService $settings,
     ) {
     }
 
@@ -35,6 +37,16 @@ final class HealthController
             'version' => $this->config->version(),
             'php' => PHP_VERSION,
             'time' => time(),
+            // Public feature flags for the login page. The Turnstile secret is
+            // deliberately absent: only the site key may leave the server.
+            'demo' => [
+                'enabled' => $this->settings->int('demo_enabled', 0) === 1,
+                'landing' => $this->settings->string('demo_landing', 'login'),
+            ],
+            'turnstile' => [
+                'enabled' => $this->settings->int('turnstile_enabled', 0) === 1,
+                'site_key' => $this->settings->string('turnstile_site_key', ''),
+            ],
         ]);
     }
 }

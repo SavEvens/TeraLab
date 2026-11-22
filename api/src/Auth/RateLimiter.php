@@ -14,25 +14,66 @@ final class RateLimiter
     private const WINDOW_SECONDS = 900;
     private const MAX_FAILURES = 5;
 
+    /** Captcha verification budget: every attempt is charged before egress. */
+    public const CAPTCHA_WINDOW_SECONDS = 900;
+
+    public const CAPTCHA_MAX_ATTEMPTS = 20;
+
+    public const CAPTCHA_LIMIT_MESSAGE = 'Too many captcha attempts. Try again later.';
+
+    /** Guest-entry budget: one minted guest consumes one slot. */
+    public const GUEST_WINDOW_SECONDS = 3600;
+
+    public const GUEST_MAX_ENTRIES = 20;
+
+    public const GUEST_LIMIT_MESSAGE = 'Too many demo entries from this network. Try again later.';
+
     public function __construct(private readonly PDO $pdo)
     {
     }
 
     public function assertAllowed(string $username, string $ip): void
     {
-        $statement = $this->pdo->prepare(
-            'SELECT COUNT(*) FROM login_attempts '
-            . 'WHERE username = :username AND ip = :ip AND success = 0 AND attempted_at >= :since'
-        );
-        $statement->execute([
-            ':username' => $username,
-            ':ip' => $ip,
-            ':since' => time() - self::WINDOW_SECONDS,
-        ]);
-
-        if ((int) $statement->fetchColumn() >= self::MAX_FAILURES) {
+        if ($this->countAttempts($username, $ip, self::WINDOW_SECONDS, true) >= self::MAX_FAILURES) {
             throw new HttpException(429, 'Too many login attempts. Try again later.');
         }
+    }
+
+    /**
+     * Count every attempt for a budget key inside the window, regardless of
+     * the stored success flag.
+     */
+    public function count(string $key, string $ip, int $windowSeconds): int
+    {
+        return $this->countAttempts($key, $ip, $windowSeconds, false);
+    }
+
+    /**
+     * Enforce a count-based budget. Unlike assertAllowed(), this counts both
+     * successful and failed rows: it bounds total attempts, not credentials.
+     */
+    public function assertCountBelow(
+        string $key,
+        string $ip,
+        int $max,
+        int $windowSeconds,
+        string $message,
+    ): void {
+        if ($this->count($key, $ip, $windowSeconds) >= $max) {
+            throw new HttpException(429, $message);
+        }
+    }
+
+    /**
+     * Consume one slot in a count-based budget.
+     *
+     * Budget rows are stored as successful attempts so they never appear as
+     * login failures in anomaly reports; assertCountBelow() counts them
+     * regardless of that flag.
+     */
+    public function consume(string $key, string $ip): void
+    {
+        $this->record($key, $ip, true);
     }
 
     public function record(string $username, string $ip, bool $success): void
@@ -55,5 +96,26 @@ final class RateLimiter
             'DELETE FROM login_attempts WHERE username = :username AND ip = :ip'
         );
         $statement->execute([':username' => $username, ':ip' => $ip]);
+    }
+
+    private function countAttempts(
+        string $key,
+        string $ip,
+        int $windowSeconds,
+        bool $failuresOnly,
+    ): int {
+        $sql = 'SELECT COUNT(*) FROM login_attempts '
+            . 'WHERE username = :username AND ip = :ip AND attempted_at >= :since';
+        if ($failuresOnly) {
+            $sql .= ' AND success = 0';
+        }
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute([
+            ':username' => $key,
+            ':ip' => $ip,
+            ':since' => time() - $windowSeconds,
+        ]);
+
+        return (int) $statement->fetchColumn();
     }
 }

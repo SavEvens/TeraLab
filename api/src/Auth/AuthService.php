@@ -142,7 +142,81 @@ final class AuthService
             'user' => $this->publicUser($user),
             'session_id' => $session['session_id'],
             'csrf_token' => $session['csrf_token'],
-            'expires_in' => $this->sessionTtl(),
+            'expires_in' => $session['expires_in'],
+        ];
+    }
+
+    /**
+     * Number of distinct guests holding an unexpired session. This is the
+     * concurrency measure for the demo cap: one guest can open several tabs
+     * without consuming more than one slot, while a visitor who lets a guest
+     * expire frees the slot when the session goes away.
+     */
+    public function activeGuestCount(): int
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT COUNT(DISTINCT s.user_id) FROM sessions s '
+            . 'JOIN users u ON u.id = s.user_id '
+            . 'WHERE u.guest = 1 AND s.expires_at > :now'
+        );
+        $statement->execute([':now' => time()]);
+
+        return (int) $statement->fetchColumn();
+    }
+
+    /**
+     * Mint an ephemeral demo guest and open its session.
+     *
+     * The account has no personal data and its password hash is random and
+     * never disclosed, so the only way in is the session returned here.
+     *
+     * @return array{user: array<string, mixed>, session_id: string, csrf_token: string, expires_in: int}
+     */
+    public function createGuest(string $ip, string $agent): array
+    {
+        $now = time();
+        $ttlHours = $this->settings?->int('demo_guest_ttl_hours', 48) ?? 48;
+        $expiration = $now + max(1, $ttlHours) * 3600;
+        $userId = bin2hex(random_bytes(16));
+        $username = 'g-' . bin2hex(random_bytes(8));
+
+        $statement = $this->pdo->prepare(
+            'INSERT INTO users '
+            . '(id, username, email, name, password_hash, role, expiration, guest, created_at, updated_at) '
+            . 'VALUES (:id, :username, NULL, NULL, :password_hash, :role, :expiration, 1, :created_at, :updated_at)'
+        );
+        $statement->execute([
+            ':id' => $userId,
+            ':username' => $username,
+            ':password_hash' => password_hash(bin2hex(random_bytes(32)), PASSWORD_ARGON2ID, [
+                'memory_cost' => 65536,
+                'time_cost' => 3,
+                'threads' => 2,
+            ]),
+            ':role' => 'editor',
+            ':expiration' => $expiration,
+            ':created_at' => $now,
+            ':updated_at' => $now,
+        ]);
+
+        // The demo account expires before a default session would; clamp the
+        // session so it can never outlive the account that owns it.
+        $session = $this->createSession($userId, $ip, $agent, $expiration);
+        $this->audit->log($userId, $ip, 'demo.guest', null, 'success');
+
+        return [
+            'user' => $this->publicUser([
+                'id' => $userId,
+                'username' => $username,
+                'email' => null,
+                'name' => null,
+                'role' => 'editor',
+                'expiration' => $expiration,
+                'guest' => 1,
+            ]),
+            'session_id' => $session['session_id'],
+            'csrf_token' => $session['csrf_token'],
+            'expires_in' => $session['expires_in'],
         ];
     }
 
@@ -261,13 +335,24 @@ final class AuthService
     }
 
     /**
-     * @return array{session_id: string, csrf_token: string}
+     * @param int|null $expiresAt Absolute cap, used to keep guest sessions
+     *        from outliving the account that owns them.
+     * @return array{session_id: string, csrf_token: string, expires_in: int}
      */
-    private function createSession(string $userId, string $ip, string $userAgent): array
-    {
+    private function createSession(
+        string $userId,
+        string $ip,
+        string $userAgent,
+        ?int $expiresAt = null,
+    ): array {
         $sessionId = bin2hex(random_bytes(32));
         $csrfToken = bin2hex(random_bytes(32));
         $now = time();
+        $ttl = $this->sessionTtl();
+        if ($expiresAt !== null) {
+            $ttl = min($ttl, $expiresAt - $now);
+        }
+        $ttl = max(0, $ttl);
         $statement = $this->pdo->prepare(
             'INSERT INTO sessions '
             . '(id_hash, user_id, csrf_hash, ip, user_agent, created_at, last_seen_at, expires_at) '
@@ -281,10 +366,14 @@ final class AuthService
             ':user_agent' => $userAgent,
             ':created_at' => $now,
             ':last_seen_at' => $now,
-            ':expires_at' => $now + $this->sessionTtl(),
+            ':expires_at' => $now + $ttl,
         ]);
 
-        return ['session_id' => $sessionId, 'csrf_token' => $csrfToken];
+        return [
+            'session_id' => $sessionId,
+            'csrf_token' => $csrfToken,
+            'expires_in' => $ttl,
+        ];
     }
 
     /**

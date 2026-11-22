@@ -10,6 +10,10 @@ final class Config
 {
     public const COOKIE_NAME = 'teralab_session';
 
+    /**
+     * @param list<string> $trustedProxies IPv4/IPv6 CIDRs allowed to set
+     *        X-Forwarded-For on behalf of the real client
+     */
     public function __construct(
         public readonly string $root,
         public readonly string $dataDir,
@@ -28,6 +32,7 @@ final class Config
         public readonly string $templatesDir = '/etc/teralab/templates',
         public readonly string $imagesDir = '/var/lib/teralab/images',
         public readonly int $maxUploadBytes = 34359738368,
+        public readonly array $trustedProxies = [],
     ) {
     }
 
@@ -106,10 +111,19 @@ final class Config
                 'TERALAB_MAX_UPLOAD_BYTES',
                 self::intValue($values, 'max_upload_bytes', 34359738368),
             ),
+            trustedProxies: self::parseTrustedProxies(
+                self::env(
+                    'TERALAB_TRUSTED_PROXIES',
+                    self::listValue($values, 'trusted_proxies'),
+                ),
+            ),
         );
     }
 
-    public static function forTests(string $root, string $dataDir): self
+    /**
+     * @param list<string> $trustedProxies
+     */
+    public static function forTests(string $root, string $dataDir, array $trustedProxies = []): self
     {
         return new self(
             root: $root,
@@ -124,6 +138,7 @@ final class Config
             imagesDir: $dataDir . '/images',
             maxUploadBytes: 2147483648,
             templatesDir: $dataDir . '/templates',
+            trustedProxies: $trustedProxies,
         );
     }
 
@@ -207,6 +222,47 @@ final class Config
         $value = $values[$key] ?? null;
 
         return is_string($value) && $value !== '' ? $value : $default;
+    }
+
+    /**
+     * Accept either a comma-separated string or a list of strings from the
+     * config file so both styles behave like the environment variable.
+     *
+     * @param array<string, mixed> $values
+     */
+    private static function listValue(array $values, string $key): string
+    {
+        $value = $values[$key] ?? null;
+        if (is_string($value)) {
+            return $value;
+        }
+        if (!is_array($value)) {
+            return '';
+        }
+        $entries = [];
+        foreach ($value as $entry) {
+            if (is_string($entry)) {
+                $entries[] = $entry;
+            }
+        }
+
+        return implode(',', $entries);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function parseTrustedProxies(string $value): array
+    {
+        $entries = [];
+        foreach (explode(',', $value) as $entry) {
+            $entry = trim($entry);
+            if ($entry !== '' && !in_array($entry, $entries, true)) {
+                $entries[] = $entry;
+            }
+        }
+
+        return $entries;
     }
 
     /**
