@@ -17,6 +17,9 @@ the kernel remain separate components with their own licences.
 - Apache 2.4 with `mod_proxy`, `mod_proxy_wstunnel`, and `mod_rewrite`
 - Optional: `openvswitch-switch` for LACP forwarding
 - Optional: Docker Engine (`docker` CLI and daemon) for `kind: docker` nodes
+- Optional, for Turnstile: outbound HTTPS (443) from the web tier and from the
+  visitor's browser to `challenges.cloudflare.com`, plus `allow_url_fopen=On`
+  and the `openssl` extension in the PHP used by Apache
 
 PHP upload limits must exceed your largest image. The installer writes
 `/etc/php/8.4/{apache2,fpm,cli}/conf.d/99-teralab-uploads.ini` with
@@ -69,6 +72,32 @@ For a TLS-terminating reverse proxy, forward `X-Forwarded-Proto: https`, or set
 `/etc/teralab/config.php`. Do not expose the agent or the API without TLS in
 production.
 
+### Client address behind a proxy
+
+TeraLab records the visitor's address in audit entries and uses it for the login
+and demo rate limits and for Turnstile verification. By default it uses the
+direct peer (`REMOTE_ADDR`) and ignores `X-Forwarded-For`.
+
+If Apache or a load balancer sits in front of the web tier, list the proxies so
+the real visitor is seen instead of the proxy:
+
+```sh
+# comma-separated IPv4/IPv6 addresses or CIDRs, default empty
+TERALAB_TRUSTED_PROXIES=127.0.0.1/32,::1,10.20.0.0/16
+```
+
+or in `/etc/teralab/config.php`:
+
+```php
+'trusted_proxies' => ['127.0.0.1/32', '::1', '10.20.0.0/16'],
+```
+
+The header is only consulted when the direct peer matches the list, and the
+address is then the first untrusted hop walking `X-Forwarded-For` from the
+right. Malformed chains fall back to the direct peer. Keep the list narrow:
+every listed range can choose the address that rate limiting and audit records
+see, and `0.0.0.0/0` would trust client-supplied headers.
+
 ## First run
 
 1. Open `http://<host>/ui/` or call `GET /api/v2/health`.
@@ -108,8 +137,83 @@ nodes. Every user can change their own password from the top bar.
 
 There are no default accounts, no telemetry, and no `setcap` usage.
 
-Demo-tier limits and the Turnstile keys live in **System → Demo**; no guest
-sign-in flow exists yet, so those settings only store the policy.
+### Demo entry
+
+The demo tier is off by default. Turn it on in **System → Demo** (or with
+`PUT /api/v2/system/settings` and `demo_enabled: 1`); while it is off,
+`POST /api/v2/auth/guest` answers 404 and the sign-in page shows no **Enter demo**
+button. There is no registration form: a visitor who enters the demo gets a
+throwaway `editor` account with no email, name, or password and a slot against
+`demo_max_guests`. The account expires after `demo_guest_ttl_hours`, and the
+session is clamped so it never outlives the account: it lasts the smaller of
+`session_ttl` and that TTL (default 1 hour). It cannot be renewed or re-opened
+with credentials, so that is the practical demo length; the slot frees when the
+session lapses. When the cap is reached the API answers 403 `The demo is full.`
+The cap is advisory: the count and the account creation are not atomic, so a
+burst of simultaneous entries can briefly exceed it by a few, but steady-state
+usage stays within it.
+
+Guest entries are limited to 20 per hour per address (429 `Too many demo
+entries from this network. Try again later.`); each entry is charged before the
+guest is created. Captcha attempts are limited separately, to 20 per 15 minutes
+per address, and are charged before Cloudflare is contacted, including requests
+that arrive without a token (429 `Too many captcha attempts. Try again
+later.`).
+
+`demo_landing` chooses what the signed-out page leads with: `login` keeps the
+account form primary, `demo` highlights the demo panel. The account form is
+always available in both modes.
+
+The per-lab demo limits (`demo_max_nodes_per_lab`, `demo_allowed_templates`,
+`demo_max_ram_per_node`) and the idle-wipe/sweep settings are stored and
+validated but **not enforced yet**: a guest currently has the same lab
+abilities as any `editor`. Only expose the demo to visitors you would trust
+with an editor account.
+
+**Turnstile.** `turnstile_enabled` adds a Cloudflare Turnstile check to demo
+entry *and* to password sign-in, on both the v2 and the legacy v1 login routes,
+so it cannot be bypassed through the older endpoint. The legacy HTML pages have
+no Turnstile widget, so while it is enabled their sign-in is refused with 422;
+use the modern UI at `/ui/`. Enabling Turnstile requires:
+
+- Outbound HTTPS from the web tier to `challenges.cloudflare.com` for the
+  server-side `siteverify` call; this is the product's only outbound request,
+  it has a 5 s timeout, and it fails closed.
+- Outbound HTTPS from the visitor's browser to the same host for the widget
+  script.
+- `allow_url_fopen=On` and the `openssl` extension in the PHP that serves the
+  API; `siteverify` uses PHP's HTTPS stream wrapper, so no `curl` extension is
+  involved.
+
+Check egress before enabling it:
+
+```sh
+curl -fsS https://challenges.cloudflare.com/turnstile/v0/api.js >/dev/null && echo ok
+```
+
+If the host cannot reach Cloudflare, every sign-in and demo entry is refused
+with 422 `Captcha verification is unavailable; try again.`; the web UI cannot
+be used to undo this, so disable Turnstile from the settings table with the
+`sqlite3` CLI installed:
+
+```sh
+sudo sqlite3 /var/lib/teralab/database.sdb \
+  "UPDATE settings SET value='0' WHERE key='turnstile_enabled';"
+```
+
+The shipped `turnstile_site_key` (`3x00000000000000000000FF`) and
+`turnstile_secret_key` (`1x0000000000000000000000000000000AA`) are Cloudflare's
+public *testing* credentials. They always validate and give no bot protection.
+Create your own widget keys and replace both before the demo is reachable from
+the internet. Never commit real keys; the secret is never returned by the API.
+Clearing either key while `turnstile_enabled` is `1` blocks both demo entry and
+sign-in: without a site key the widget cannot mount, and without a secret every
+token is rejected. Turn the setting off instead of clearing only the keys.
+
+Behind a reverse proxy, also set `TERALAB_TRUSTED_PROXIES` (see
+[Client address behind a proxy](#client-address-behind-a-proxy)); otherwise the
+rate limits, audit records, and Turnstile `remoteip` all see the proxy address
+and every visitor shares one rate-limit bucket.
 
 ## Engines
 
