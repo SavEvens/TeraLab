@@ -14,10 +14,13 @@ use Slim\Psr7\Factory\StreamFactory;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
+use TeraLab\Api\Database\Database;
 
 final class NodeControllerTest extends TestCase
 {
     private const PASSWORD = 'Teralab-Admin-2026!';
+
+    private const GUEST_PASSWORD = 'Teralab-Guest-2026!';
 
     private string $root;
 
@@ -79,6 +82,70 @@ final class NodeControllerTest extends TestCase
         self::assertSame(2, $call['payload']['cpu']);
         self::assertSame(1024, $call['payload']['ram']);
         self::assertSame(['tlab0', 'tlab1'], $call['payload']['networks']);
+    }
+
+    public function testGuestRawNodeStartIsRefusedWhileAdminsAreUnaffected(): void
+    {
+        [$app, $adminCookie, $adminCsrf] = $this->appWithSession();
+
+        $config = Config::forTests($this->root, $this->root . '/data');
+        $pdo = (new Database($config))->pdo();
+        $pdo->prepare(
+            'INSERT INTO users (id, username, password_hash, role, expiration, guest, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :role, :expiration, :guest, :created_at, :updated_at)'
+        )->execute([
+            ':id' => 'guest-raw',
+            ':username' => 'guest-raw',
+            ':password_hash' => password_hash(self::GUEST_PASSWORD, PASSWORD_ARGON2ID),
+            ':role' => 'editor',
+            ':expiration' => time() + 600,
+            ':guest' => 1,
+            ':created_at' => time(),
+            ':updated_at' => time(),
+        ]);
+
+        $login = $this->request($app, 'POST', '/api/v2/auth/login', [
+            'username' => 'guest-raw',
+            'password' => self::GUEST_PASSWORD,
+        ], [], '');
+        self::assertSame(200, $login->getStatusCode(), (string) $login->getBody());
+        $guestCookie = $this->cookie($login);
+        $guestCsrf = (string) $this->json($login)['csrf_token'];
+
+        $payload = [
+            'id' => 'node1',
+            'lab_id' => 'lab1',
+            'name' => 'R1',
+            'ram' => 131072,
+            'ethernet' => 0,
+        ];
+
+        $refused = $this->request(
+            $app,
+            'POST',
+            '/api/v2/nodes/start',
+            $payload,
+            ['X-CSRF-Token' => $guestCsrf],
+            $guestCookie,
+        );
+        self::assertSame(403, $refused->getStatusCode(), (string) $refused->getBody());
+        self::assertSame(
+            'The demo starts nodes from the lab editor.',
+            (string) $this->json($refused)['message'],
+        );
+        self::assertCount(0, $this->calls, 'the refused guest start must not reach the agent');
+
+        $accepted = $this->request(
+            $app,
+            'POST',
+            '/api/v2/nodes/start',
+            $payload,
+            ['X-CSRF-Token' => $adminCsrf],
+            $adminCookie,
+        );
+        self::assertSame(202, $accepted->getStatusCode(), (string) $accepted->getBody());
+        self::assertCount(1, $this->calls);
+        self::assertSame(131072, $this->calls[0]['payload']['ram']);
     }
 
     public function testStartRejectsInvalidFields(): void

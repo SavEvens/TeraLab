@@ -402,7 +402,10 @@ final class GuestApiTest extends TestCase
     public function testHealthPublishesDemoAndTurnstileFlagsWithoutTheSecret(): void
     {
         $default = $this->json($this->request('GET', '/api/v2/health'));
-        self::assertSame(['enabled' => false, 'landing' => 'login'], $default['demo']);
+        self::assertSame(
+            ['enabled' => false, 'landing' => 'login', 'templates' => ['vpcs']],
+            $default['demo']
+        );
         self::assertFalse($default['turnstile']['enabled']);
         self::assertSame('3x00000000000000000000FF', $default['turnstile']['site_key']);
 
@@ -417,7 +420,10 @@ final class GuestApiTest extends TestCase
         $response = $this->request('GET', '/api/v2/health');
         self::assertSame(200, $response->getStatusCode());
         $payload = $this->json($response);
-        self::assertSame(['enabled' => true, 'landing' => 'demo'], $payload['demo']);
+        self::assertSame(
+            ['enabled' => true, 'landing' => 'demo', 'templates' => ['vpcs']],
+            $payload['demo']
+        );
         self::assertSame(['enabled' => true, 'site_key' => 'site-key-for-tests'], $payload['turnstile']);
         self::assertArrayNotHasKey('turnstile_secret_key', $payload);
         self::assertStringNotContainsString('top-secret-value', (string) $response->getBody());

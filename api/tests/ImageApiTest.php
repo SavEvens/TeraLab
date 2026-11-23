@@ -291,6 +291,61 @@ final class ImageApiTest extends TestCase
         self::assertSame(403, $response->getStatusCode());
     }
 
+    public function testGuestsCannotMutateImagesButAdminsCan(): void
+    {
+        $image = $this->uploadImage("QFI\xfb" . str_repeat('d', 128), 'shared.qcow2');
+        $before = $this->json($this->request('GET', '/api/v2/images'))['data'];
+
+        $adminCookie = $this->cookie;
+        $adminCsrf = $this->csrf;
+        [$guestCookie, $guestCsrf] = $this->guestSession();
+        $this->cookie = $guestCookie;
+        $this->csrf = $guestCsrf;
+
+        $cases = [
+            [
+                'POST',
+                '/api/v2/images',
+                [],
+                $this->uploaded("QFI\xfb" . str_repeat('e', 64), 'guest.qcow2'),
+                ['kind' => 'qemu'],
+            ],
+            ['DELETE', '/api/v2/images/' . $image['id'], [], null, []],
+            ['PATCH', '/api/v2/images/' . $image['id'], ['name' => 'stolen'], null, []],
+            ['PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'csr1000v'], null, []],
+            ['POST', '/api/v2/images/import', ['root' => $this->addons(), 'dry_run' => true], null, []],
+        ];
+        foreach ($cases as [$method, $path, $body, $file, $fields]) {
+            $response = $this->request($method, $path, $body, [], $file, $fields);
+            self::assertSame(403, $response->getStatusCode(), $method . ' ' . $path);
+            self::assertSame(
+                'The demo does not allow image changes.',
+                (string) $this->json($response)['message'],
+            );
+        }
+
+        // Reads stay available and the store is unchanged.
+        self::assertSame(200, $this->request('GET', '/api/v2/images')->getStatusCode());
+        self::assertSame($before, $this->json($this->request('GET', '/api/v2/images'))['data']);
+        self::assertFileDoesNotExist($this->root . '/data/images/guest.qcow2');
+
+        // Admin mutations are unaffected.
+        $this->cookie = $adminCookie;
+        $this->csrf = $adminCsrf;
+        $upload = $this->request(
+            'POST',
+            '/api/v2/images',
+            [],
+            [],
+            $this->uploaded("QFI\xfb" . str_repeat('f', 64), 'admin.qcow2'),
+            ['kind' => 'qemu'],
+        );
+        self::assertSame(201, $upload->getStatusCode(), (string) $upload->getBody());
+        $created = $this->json($upload)['data'];
+        $delete = $this->request('DELETE', '/api/v2/images/' . $created['id']);
+        self::assertSame(200, $delete->getStatusCode(), (string) $delete->getBody());
+    }
+
     private function addons(): string
     {
         return $this->root . '/addons';
@@ -406,6 +461,42 @@ final class ImageApiTest extends TestCase
         }
 
         return $matches[1];
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function guestSession(): array
+    {
+        $password = 'Teralab-Guest-2026!';
+        $statement = $this->pdo->prepare(
+            'INSERT INTO users (id, username, password_hash, role, expiration, guest, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :role, :expiration, :guest, :created_at, :updated_at)'
+        );
+        $statement->execute([
+            ':id' => 'guest-image',
+            ':username' => 'guest-image',
+            ':password_hash' => password_hash($password, PASSWORD_ARGON2ID),
+            ':role' => 'editor',
+            ':expiration' => time() + 600,
+            ':guest' => 1,
+            ':created_at' => time(),
+            ':updated_at' => time(),
+        ]);
+
+        $savedCookie = $this->cookie;
+        $savedCsrf = $this->csrf;
+        $this->cookie = '';
+        $this->csrf = '';
+        $response = $this->request('POST', '/api/v2/auth/login', [
+            'username' => 'guest-image',
+            'password' => $password,
+        ]);
+        $this->cookie = $savedCookie;
+        $this->csrf = $savedCsrf;
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+
+        return [$this->cookie($response), (string) $this->json($response)['csrf_token']];
     }
 
     private function remove(string $directory): void

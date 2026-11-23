@@ -14,6 +14,8 @@ use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
 use TeraLab\Api\Http\RequestIp;
+use TeraLab\Api\System\DemoGuard;
+use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\Templates\TemplateRepository;
 
 final class TemplateController
@@ -23,6 +25,7 @@ final class TemplateController
         private readonly AccessService $access,
         private readonly AuditLogger $audit,
         private readonly Config $config,
+        private readonly DemoGuard $demoGuard,
     ) {
     }
 
@@ -57,8 +60,7 @@ final class TemplateController
      */
     public function save(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
+        $user = $this->mutableUser($request);
         $body = Json::body($request);
         $yaml = $body['yaml'] ?? null;
         if (!is_string($yaml) || trim($yaml) === '') {
@@ -86,8 +88,7 @@ final class TemplateController
 
     public function import(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
-        $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
+        $user = $this->mutableUser($request);
         $files = $request->getUploadedFiles();
         $file = $files['file'] ?? null;
         if (!$file instanceof \Psr\Http\Message\UploadedFileInterface) {
@@ -113,8 +114,7 @@ final class TemplateController
      */
     public function duplicate(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
+        $user = $this->mutableUser($request);
         $template = $this->templates->duplicate($args['id'] ?? '');
         $this->audit->log((string) $user['id'], $this->address($request), 'template.duplicate', (string) $template['id'], 'success');
 
@@ -126,12 +126,29 @@ final class TemplateController
      */
     public function delete(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
+        $user = $this->mutableUser($request);
         $this->templates->deleteCustom($args['id'] ?? '');
         $this->audit->log((string) $user['id'], $this->address($request), 'template.delete', (string) ($args['id'] ?? ''), 'success');
 
         return Json::response($response, ['status' => 'success']);
+    }
+
+    /**
+     * Template mutations are editor work on the shared catalogue; guests are
+     * read-only so they cannot shadow an allowlisted builtin template.
+     *
+     * @return array<string, mixed>
+     */
+    private function mutableUser(ServerRequestInterface $request): array
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'editor');
+        $actor = $this->demoGuard->actor((string) ($user['id'] ?? ''));
+        if ($actor !== null && DemoPolicy::isGuest($actor)) {
+            throw new HttpException(403, 'The demo does not allow template changes.');
+        }
+
+        return $user;
     }
 
     private function address(ServerRequestInterface $request): string

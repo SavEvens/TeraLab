@@ -18,6 +18,8 @@ use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Image\ImageStore;
 use TeraLab\Api\Image\LegacyAddonsImporter;
 use TeraLab\Api\Labs\LabRepository;
+use TeraLab\Api\System\DemoGuard;
+use TeraLab\Api\System\DemoPolicy;
 
 final class ImageController
 {
@@ -29,6 +31,7 @@ final class ImageController
         private readonly LabRepository $labs,
         private readonly LegacyAddonsImporter $importer,
         private readonly Config $config,
+        private readonly DemoGuard $demoGuard,
     ) {
     }
 
@@ -55,6 +58,7 @@ final class ImageController
      */
     public function importLegacy(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        $this->assertNotGuest($request);
         $this->access->requireRole($this->access->user($request), 'admin');
         $body = Json::body($request);
 
@@ -122,6 +126,7 @@ final class ImageController
 
     public function upload(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        $this->assertNotGuest($request);
         $this->access->requireRole($this->access->user($request), 'editor');
         $files = $request->getUploadedFiles();
         $file = $files['file'] ?? null;
@@ -155,6 +160,7 @@ final class ImageController
      */
     public function delete(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
+        $this->assertNotGuest($request);
         $this->access->requireRole($this->access->user($request), 'editor');
         $nodeImages = [];
         try {
@@ -214,6 +220,7 @@ final class ImageController
      */
     public function rename(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
+        $this->assertNotGuest($request);
         $this->access->requireRole($this->access->user($request), 'editor');
         $body = Json::body($request);
         $name = $body['name'] ?? null;
@@ -243,6 +250,7 @@ final class ImageController
      */
     public function mapTemplate(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
+        $this->assertNotGuest($request);
         $this->access->requireRole($this->access->user($request), 'editor');
         $body = Json::body($request);
         $template = $body['template'] ?? null;
@@ -255,6 +263,19 @@ final class ImageController
         $this->audit->log($userId, $this->ip($request), 'image.template', (string) $image['id'], 'success', ['template' => $template]);
 
         return Json::response($response, ['status' => 'success', 'data' => $image]);
+    }
+
+    /**
+     * Images are shared by every lab on the box; guests must not delete,
+     * rename, remap or import them. Reads (index/show/templates) stay open.
+     */
+    private function assertNotGuest(ServerRequestInterface $request): void
+    {
+        $user = $this->access->user($request);
+        $actor = $this->demoGuard->actor((string) ($user['id'] ?? ''));
+        if ($actor !== null && DemoPolicy::isGuest($actor)) {
+            throw new HttpException(403, 'The demo does not allow image changes.');
+        }
     }
 
     /**

@@ -14,6 +14,7 @@ use Slim\Psr7\Factory\StreamFactory;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
+use TeraLab\Api\Database\Database;
 
 /**
  * The builtin FRR templates through the public template API: they must load,
@@ -110,6 +111,51 @@ final class TemplateApiTest extends TestCase
         }
     }
 
+    public function testGuestsCannotMutateTemplatesButAdminsCan(): void
+    {
+        $adminCookie = $this->cookie;
+        $adminCsrf = $this->csrf;
+        [$guestCookie, $guestCsrf] = $this->guestSession();
+        $this->cookie = $guestCookie;
+        $this->csrf = $guestCsrf;
+
+        $yaml = "schema: 1\nid: demo-shadow\nname: Demo Shadow\nkind: vpcs\n";
+        foreach ([
+            ['PUT', '/api/v2/templates/demo-shadow', ['yaml' => $yaml]],
+            ['POST', '/api/v2/templates/import', []],
+            ['POST', '/api/v2/templates/frr/duplicate', []],
+            ['DELETE', '/api/v2/templates/frr', []],
+        ] as [$method, $path, $body]) {
+            $response = $this->request(
+                $method,
+                $path,
+                $body,
+                ['X-CSRF-Token' => $guestCsrf],
+                $guestCookie,
+            );
+            self::assertSame(403, $response->getStatusCode(), $method . ' ' . $path);
+            self::assertSame(
+                'The demo does not allow template changes.',
+                (string) $this->json($response)['message'],
+            );
+        }
+        self::assertFileDoesNotExist($this->config->templatesDir . '/demo-shadow.yaml');
+        self::assertFileDoesNotExist($this->config->templatesDir . '/frr-copy.yaml');
+
+        $this->cookie = $adminCookie;
+        $this->csrf = $adminCsrf;
+        $adminYaml = "schema: 1\nid: admin-new\nname: Admin New\nkind: vpcs\n";
+        $admin = $this->request(
+            'PUT',
+            '/api/v2/templates/admin-new',
+            ['yaml' => $adminYaml],
+            ['X-CSRF-Token' => $adminCsrf],
+            $adminCookie,
+        );
+        self::assertSame(200, $admin->getStatusCode(), (string) $admin->getBody());
+        self::assertFileExists($this->config->templatesDir . '/admin-new.yaml');
+    }
+
     /**
      * @param array<string, mixed> $body
      * @param array<string, string> $headers
@@ -156,6 +202,43 @@ final class TemplateApiTest extends TestCase
         }
 
         return $matches[1];
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function guestSession(): array
+    {
+        $password = 'Teralab-Guest-2026!';
+        $pdo = (new Database($this->config))->pdo();
+        $statement = $pdo->prepare(
+            'INSERT INTO users (id, username, password_hash, role, expiration, guest, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :role, :expiration, :guest, :created_at, :updated_at)'
+        );
+        $statement->execute([
+            ':id' => 'guest-template',
+            ':username' => 'guest-template',
+            ':password_hash' => password_hash($password, PASSWORD_ARGON2ID),
+            ':role' => 'editor',
+            ':expiration' => time() + 600,
+            ':guest' => 1,
+            ':created_at' => time(),
+            ':updated_at' => time(),
+        ]);
+
+        $savedCookie = $this->cookie;
+        $savedCsrf = $this->csrf;
+        $this->cookie = '';
+        $this->csrf = '';
+        $response = $this->request('POST', '/api/v2/auth/login', [
+            'username' => 'guest-template',
+            'password' => $password,
+        ]);
+        $this->cookie = $savedCookie;
+        $this->csrf = $savedCsrf;
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+
+        return [$this->cookie($response), (string) $this->json($response)['csrf_token']];
     }
 
     private function remove(string $directory): void

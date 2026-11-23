@@ -18,6 +18,11 @@ use TeraLab\Api\Labs\LabService;
 use TeraLab\Api\Labs\UnlParser;
 use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Labs\UnlWriter;
+use TeraLab\Api\Snapshots\SnapshotRepository;
+use TeraLab\Api\System\DemoGuard;
+use TeraLab\Api\System\DemoPolicy;
+use TeraLab\Api\System\SettingsService;
+use TeraLab\Api\Templates\TemplateRepository;
 
 final class LabServiceTest extends TestCase
 {
@@ -178,6 +183,192 @@ final class LabServiceTest extends TestCase
 
         self::assertSame([], $this->cleanupCalls(), 'a rejected node start must not delete the lab links');
         self::assertNotSame([], $this->calls);
+    }
+
+    public function testStartRejectsAnOverCapLabForGuestsAndKeepsAdminsExempt(): void
+    {
+        $guest = $this->insertUser('guest-start', 'editor', 1, time() + 600);
+        $admin = $this->insertUser('admin-start', 'admin', 0, -1);
+
+        $nodes = [];
+        for ($index = 1; $index <= 6; $index++) {
+            $nodes[] = $this->node((string) $index, 'PC' . $index, 'vpcs', '', []);
+        }
+        // Author the lab without a guard (as an admin/CLI path would), then
+        // lower the effective cap by being a guest at start time.
+        $lab = $this->service()->create(['name' => 'Over Cap Start', 'nodes' => $nodes]);
+        $service = $this->service($this->demoGuard());
+
+        try {
+            $service->start((string) $lab['id'], $guest);
+            self::fail('a guest must not start a lab above the node cap');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'The demo allows at most 5 nodes per lab; this lab has 6.',
+                $exception->getMessage(),
+            );
+        }
+        self::assertCount(0, $this->calls, 'the rejected start must not reach the agent');
+
+        $result = $service->start((string) $lab['id'], $admin);
+        self::assertCount(6, $result['nodes']);
+        $starts = array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => $call['path'] === '/v1/node.start',
+        ));
+        self::assertCount(6, $starts, 'the admin start is untouched by the guest caps');
+    }
+
+    public function testDuplicateRejectsAnOverCapLabForGuestsButAdminsCanCopyIt(): void
+    {
+        $guest = $this->insertUser('guest-duplicate', 'editor', 1, time() + 600);
+        $admin = $this->insertUser('admin-duplicate', 'admin', 0, -1);
+        $nodes = [];
+        for ($index = 1; $index <= 6; $index++) {
+            $nodes[] = $this->node((string) $index, 'PC' . $index, 'vpcs', '', []);
+        }
+        $lab = $this->service()->create(['name' => 'Duplicate Cap', 'nodes' => $nodes]);
+        $before = count(glob($this->config->labsDir . '/*.unl') ?: []);
+
+        $service = $this->service($this->demoGuard());
+        try {
+            $service->duplicate((string) $lab['id'], $guest);
+            self::fail('a guest must not duplicate an over-cap lab');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'The demo allows at most 5 nodes per lab; this lab has 6.',
+                $exception->getMessage(),
+            );
+        }
+        self::assertCount($before, glob($this->config->labsDir . '/*.unl') ?: [], 'nothing may be written');
+
+        $copy = $service->duplicate((string) $lab['id'], $admin);
+        self::assertSame(6, $copy['nodes']);
+        self::assertCount($before + 1, glob($this->config->labsDir . '/*.unl') ?: []);
+    }
+
+    public function testSnapshotRestoreRejectsAnOverCapSnapshotForGuestsButAdminsCanRestoreIt(): void
+    {
+        $guest = $this->insertUser('guest-snapshot', 'editor', 1, time() + 600);
+        $admin = $this->insertUser('admin-snapshot', 'admin', 0, -1);
+        $snapshots = new SnapshotRepository($this->pdo);
+        $nodes = [];
+        for ($index = 1; $index <= 6; $index++) {
+            $nodes[] = $this->node((string) $index, 'PC' . $index, 'vpcs', '', []);
+        }
+
+        $service = $this->service(null, $snapshots);
+        $lab = $service->create(['name' => 'Snapshot Cap', 'nodes' => $nodes]);
+        $snapshot = $service->createSnapshot((string) $lab['id'], 'six nodes', $admin);
+        $service->save((string) $lab['id'], ['nodes' => [$nodes[0]]], null);
+
+        $path = $this->config->labsDir . '/' . $lab['path'];
+        $before = $this->parser->parse($path);
+        self::assertCount(1, $before['node_list']);
+        $revision = (int) $before['revision'];
+
+        $guarded = $this->service($this->demoGuard(), $snapshots);
+        try {
+            $guarded->restoreSnapshot((string) $lab['id'], (string) $snapshot['id'], $guest, false);
+            self::fail('a guest must not restore an over-cap snapshot');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'The demo allows at most 5 nodes per lab; this lab has 6.',
+                $exception->getMessage(),
+            );
+        }
+        $after = $this->parser->parse($path);
+        self::assertCount(1, $after['node_list'], 'the rejected restore must leave the lab untouched');
+        self::assertSame($revision, (int) $after['revision']);
+
+        $restored = $guarded->restoreSnapshot((string) $lab['id'], (string) $snapshot['id'], $admin, true);
+        self::assertCount(6, $restored['node_list']);
+    }
+
+    public function testSaveRejectsAnOverCapGuestLabButPartialSavesStillWork(): void
+    {
+        $guest = $this->insertUser('guest-save', 'editor', 1, time() + 600);
+        $nodes = [];
+        for ($index = 1; $index <= 6; $index++) {
+            $nodes[] = $this->node((string) $index, 'PC' . $index, 'vpcs', '', []);
+        }
+        $lab = $this->service()->create(['name' => 'Save Cap', 'nodes' => $nodes]);
+        $service = $this->service($this->demoGuard());
+
+        try {
+            $service->save((string) $lab['id'], ['nodes' => $nodes], null, $guest);
+            self::fail('a guest must not save an over-cap node list');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'The demo allows at most 5 nodes per lab; this lab has 6.',
+                $exception->getMessage(),
+            );
+        }
+
+        // A metadata-only save carries no nodes key, so it does not re-run the
+        // topology caps against the stored over-cap lab.
+        $saved = $service->save((string) $lab['id'], ['name' => 'Save Cap Renamed'], null, $guest);
+        self::assertSame('Save Cap Renamed', $saved['name']);
+        self::assertSame(2, $saved['revision']);
+        self::assertSame(6, $saved['nodes']);
+    }
+
+    public function testApplyYamlRejectsAnOverCapGuestPayload(): void
+    {
+        $this->template('vpcs', "schema: 1\nid: vpcs\nname: VPCS\nkind: vpcs\n");
+        $guest = $this->insertUser('guest-apply', 'editor', 1, time() + 600);
+        $lab = $this->service()->create([
+            'name' => 'Apply Cap',
+            'nodes' => [$this->node('1', 'PC1', 'vpcs', '', [])],
+        ]);
+
+        $yaml = "schema: 1\nname: Guest Apply\ndefaults:\n  template: vpcs\nnodes:\n";
+        for ($index = 1; $index <= 6; $index++) {
+            $yaml .= '  PC' . $index . ": {}\n";
+        }
+
+        $service = $this->service($this->demoGuard());
+        try {
+            $service->applyYaml((string) $lab['id'], $yaml, 'six.yaml', null, $guest, false);
+            self::fail('a guest must not apply an over-cap YAML lab');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'The demo allows at most 5 nodes per lab; this lab has 6.',
+                $exception->getMessage(),
+            );
+        }
+
+        $stored = $this->parser->parse($this->config->labsDir . '/' . $lab['path']);
+        self::assertSame('Apply Cap', $stored['name']);
+        self::assertCount(1, $stored['node_list']);
+    }
+
+    public function testStartNodeRejectsAnOverCapGuestLabBeforeTheAgent(): void
+    {
+        $guest = $this->insertUser('guest-start-node', 'editor', 1, time() + 600);
+        $nodes = [];
+        for ($index = 1; $index <= 6; $index++) {
+            $nodes[] = $this->node((string) $index, 'PC' . $index, 'vpcs', '', []);
+        }
+        $lab = $this->service()->create(['name' => 'Start Node Cap', 'nodes' => $nodes]);
+        $service = $this->service($this->demoGuard());
+
+        try {
+            $service->startNode((string) $lab['id'], '1', $guest);
+            self::fail('a guest must not start a node from an over-cap lab');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'The demo allows at most 5 nodes per lab; this lab has 6.',
+                $exception->getMessage(),
+            );
+        }
+        self::assertCount(0, $this->calls, 'the rejected node start must not reach the agent');
     }
 
     public function testFailedFullStartKeepsLinksWhileANodeStillRuns(): void
@@ -991,6 +1182,36 @@ final class LabServiceTest extends TestCase
         self::assertSame(['node_unsupported'], $byNode['SW1'] ?? []);
     }
 
+    private function demoGuard(): DemoGuard
+    {
+        return new DemoGuard(
+            $this->pdo,
+            new SettingsService($this->pdo),
+            new DemoPolicy(),
+            new TemplateRepository($this->config),
+        );
+    }
+
+    private function insertUser(string $id, string $role, int $guest, int $expiration): string
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO users (id, username, password_hash, role, expiration, guest, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :role, :expiration, :guest, :created_at, :updated_at)'
+        );
+        $statement->execute([
+            ':id' => $id,
+            ':username' => $id,
+            ':password_hash' => 'unused',
+            ':role' => $role,
+            ':expiration' => $expiration,
+            ':guest' => $guest,
+            ':created_at' => time(),
+            ':updated_at' => time(),
+        ]);
+
+        return $id;
+    }
+
     private function template(string $id, string $yaml): void
     {
         $directory = $this->config->templatesDir;
@@ -1089,7 +1310,10 @@ final class LabServiceTest extends TestCase
         ];
     }
 
-    private function service(): LabService
+    private function service(
+        ?DemoGuard $demoGuard = null,
+        ?SnapshotRepository $snapshots = null,
+    ): LabService
     {
         $this->calls = [];
         $this->running = [];
@@ -1149,7 +1373,16 @@ final class LabServiceTest extends TestCase
             return [200, '{"ok":true,"result":{}}'];
         });
 
-        return new LabService($this->config, $this->parser, $this->writer, $agent, new LabLocks($this->pdo), new ImageReferences($this->pdo, $this->config));
+        return new LabService(
+            $this->config,
+            $this->parser,
+            $this->writer,
+            $agent,
+            new LabLocks($this->pdo),
+            new ImageReferences($this->pdo, $this->config),
+            snapshots: $snapshots,
+            demoGuard: $demoGuard,
+        );
     }
 
     /**

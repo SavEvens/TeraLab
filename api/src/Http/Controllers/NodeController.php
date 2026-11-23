@@ -13,6 +13,8 @@ use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\System\DemoGuard;
+use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\Templates\DockerOptions;
 
 final class NodeController
@@ -21,12 +23,18 @@ final class NodeController
         private readonly AgentClient $agent,
         private readonly Config $config,
         private readonly AccessService $access,
+        private readonly DemoGuard $demoGuard,
     ) {
     }
 
     public function start(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $this->requireEditor($request);
+        $user = $this->access->user($request);
+        $actor = $this->demoGuard->actor((string) ($user['id'] ?? ''));
+        if ($actor !== null && DemoPolicy::isGuest($actor) && !DemoPolicy::isExpired($actor)) {
+            throw new HttpException(403, 'The demo starts nodes from the lab editor.');
+        }
         $data = Json::body($request);
         $spec = $this->spec($data);
 

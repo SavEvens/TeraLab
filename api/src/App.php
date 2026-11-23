@@ -53,6 +53,9 @@ use TeraLab\Api\Labs\LabYamlCompiler;
 use TeraLab\Api\Labs\UnlParser;
 use TeraLab\Api\Labs\UnlWriter;
 use TeraLab\Api\Snapshots\SnapshotRepository;
+use TeraLab\Api\System\DemoGuard;
+use TeraLab\Api\System\DemoPolicy;
+use TeraLab\Api\System\SettingsService;
 use TeraLab\Api\Templates\TemplateRepository;
 
 final class App
@@ -90,6 +93,14 @@ final class App
             static fn (Config $config, UnlParser $parser): LabRepository => new LabRepository($config->labsDir, $parser)
         );
         $container->set(
+            DemoGuard::class,
+            static fn (
+                PDO $pdo,
+                SettingsService $settings,
+                TemplateRepository $templates,
+            ): DemoGuard => new DemoGuard($pdo, $settings, new DemoPolicy(), $templates)
+        );
+        $container->set(
             LabService::class,
             static fn (
                 Config $config,
@@ -100,6 +111,7 @@ final class App
                 ImageReferences $images,
                 SnapshotRepository $snapshots,
                 TemplateRepository $templates,
+                DemoGuard $demoGuard,
             ): LabService => new LabService(
                 $config,
                 $parser,
@@ -110,6 +122,7 @@ final class App
                 $snapshots,
                 $templates,
                 new LabYamlCompiler($templates),
+                $demoGuard,
             )
         );
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
@@ -311,8 +324,9 @@ final class App
         $images = $container->get(ImageController::class);
         $app->get('/api/v2/images', fn ($request, $response) => $images->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
+        // Admin is enforced in the controller, after the demo guest check, so
+        // a guest receives the demo policy message rather than a role error.
         $app->post('/api/v2/images/import', fn ($request, $response) => $images->importLegacy($request, $response))
-            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->show($request, $response, $args))
