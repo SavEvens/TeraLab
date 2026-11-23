@@ -152,6 +152,86 @@ final class DemoSweeperTest extends TestCase
         self::assertSame(0, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
     }
 
+    public function testGuestWithoutSessionSurvivesWhileCreationIsRecent(): void
+    {
+        // TTL is 48h, so this guest was created ~60s ago. Logout removed the
+        // session row; the creation estimate must keep it alive.
+        $guest = $this->insertUser(
+            'guest-logout-fresh',
+            'editor',
+            1,
+            self::NOW + 48 * 3600 - 60,
+        );
+
+        $summary = $this->sweeper->sweepNow();
+
+        self::assertSame(0, $summary['guests_purged']);
+        self::assertSame(1, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
+        self::assertSame([], $this->auditRows('demo.sweep'));
+    }
+
+    public function testGuestWithoutSessionIsPurgedOnceIdleSinceCreation(): void
+    {
+        $guest = $this->insertUser(
+            'guest-logout-stale',
+            'editor',
+            1,
+            self::NOW + 48 * 3600 - (6 * 3600 + 60),
+        );
+
+        $summary = $this->sweeper->sweepNow();
+
+        self::assertSame(1, $summary['guests_purged']);
+        self::assertSame(0, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
+        self::assertSame('idle', $this->auditRows('demo.sweep')[0]['details']['reason']);
+    }
+
+    public function testTtlPurgesAGuestWithoutSessions(): void
+    {
+        $guest = $this->insertUser('guest-ttl-no-session', 'editor', 1, self::NOW - 10);
+
+        $summary = $this->sweeper->sweepNow();
+
+        self::assertSame(1, $summary['guests_purged']);
+        self::assertSame(0, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
+        $audit = $this->auditRows('demo.sweep');
+        self::assertCount(1, $audit);
+        self::assertSame('ttl', $audit[0]['details']['reason']);
+    }
+
+    public function testGuestAuditCreationWinsOverTheEstimate(): void
+    {
+        // The expiration-derived estimate is ~47h old, but the recorded
+        // demo.guest creation was a minute ago, so the guest must survive.
+        $guest = $this->insertUser('guest-audit-fresh', 'editor', 1, self::NOW + 3600);
+        $this->insertGuestAudit($guest, self::NOW - 60);
+
+        $summary = $this->sweeper->sweepNow();
+
+        self::assertSame(0, $summary['guests_purged']);
+        self::assertSame(1, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
+        self::assertSame([], $this->auditRows('demo.sweep'));
+    }
+
+    public function testOldGuestAuditCreationIsIdlePurgedEvenWhenTheEstimateIsRecent(): void
+    {
+        // The estimate is ~60s old, but the recorded creation is older than
+        // the idle window: the audit timestamp wins over the estimate.
+        $guest = $this->insertUser(
+            'guest-audit-old',
+            'editor',
+            1,
+            self::NOW + 48 * 3600 - 60,
+        );
+        $this->insertGuestAudit($guest, self::NOW - 6 * 3600 - 60);
+
+        $summary = $this->sweeper->sweepNow();
+
+        self::assertSame(1, $summary['guests_purged']);
+        self::assertSame(0, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
+        self::assertSame('idle', $this->auditRows('demo.sweep')[0]['details']['reason']);
+    }
+
     public function testFreshConsoleActivityKeepsAnOtherwiseIdleGuest(): void
     {
         $guest = $this->insertUser('guest-console', 'editor', 1, self::NOW + 3600);
@@ -598,6 +678,24 @@ final class DemoSweeperTest extends TestCase
         ]);
 
         return $id;
+    }
+
+    private function insertGuestAudit(string $guestId, int $timestamp): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO audit_log (id, ts, user_id, ip, action, target, result, details_json) '
+            . 'VALUES (:id, :ts, :user_id, :ip, :action, :target, :result, :details_json)'
+        );
+        $statement->execute([
+            ':id' => bin2hex(random_bytes(16)),
+            ':ts' => $timestamp,
+            ':user_id' => $guestId,
+            ':ip' => '127.0.0.1',
+            ':action' => 'demo.guest',
+            ':target' => $guestId,
+            ':result' => 'success',
+            ':details_json' => '{}',
+        ]);
     }
 
     private function insertSession(string $userId, int $lastSeen): void

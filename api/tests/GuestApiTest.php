@@ -139,12 +139,15 @@ final class GuestApiTest extends TestCase
         self::assertSame('GuestBrowser/1.0', (string) $sessionRow['user_agent']);
 
         $audit = $this->pdo->prepare(
-            'SELECT user_id, ip, details_json FROM audit_log WHERE action = :action'
+            'SELECT user_id, target, ip, details_json FROM audit_log WHERE action = :action'
         );
         $audit->execute([':action' => 'demo.guest']);
         $auditRow = $audit->fetch();
         self::assertIsArray($auditRow);
         self::assertSame((string) $user['id'], (string) $auditRow['user_id']);
+        // The target carries the guest id so the sweeper can recover the real
+        // creation timestamp without trusting the user row.
+        self::assertSame((string) $user['id'], (string) $auditRow['target']);
         self::assertSame(self::REMOTE_IP, (string) $auditRow['ip']);
         self::assertSame([], json_decode((string) $auditRow['details_json'], true, 512, JSON_THROW_ON_ERROR));
 

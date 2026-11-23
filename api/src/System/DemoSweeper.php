@@ -125,11 +125,27 @@ final class DemoSweeper
         $nodesReaped = 0;
 
         // b. Purge expired or idle guests, their labs, sessions, and row.
+        //
+        // Creation is a lower bound of activity, so a guest who logs out
+        // (logout deletes the session row) survives until the idle window has
+        // passed since creation. New guests record their real creation time in
+        // the `demo.guest` audit row; older rows without a target fall back to
+        // `expiration - demo_guest_ttl_hours`, which is only an estimate and
+        // moves if the TTL setting changes.
+        $createdAt = $this->guestCreationTimes();
         $idleCutoff = $now - $this->settings->int('demo_guest_idle_hours', 6) * 3600;
+        $ttlSeconds = $this->settings->int('demo_guest_ttl_hours', 48) * 3600;
         $survivors = [];
         foreach ($guests as $guestId => $expiration) {
             $guestId = (string) $guestId;
             $effective = $activity[$guestId] ?? null;
+            $created = $createdAt[$guestId] ?? null;
+            if ($created === null && $expiration >= 0) {
+                $created = $expiration - $ttlSeconds;
+            }
+            if ($created !== null && ($effective === null || $created > $effective)) {
+                $effective = $created;
+            }
             $reason = null;
             if ($expiration >= 0 && $expiration < $now) {
                 $reason = 'ttl';
@@ -378,6 +394,39 @@ final class DemoSweeper
         }
 
         return $guests;
+    }
+
+    /**
+     * Real guest creation time from the audit trail.
+     *
+     * `AuthService::createGuest()` writes `demo.guest` with the new guest id as
+     * its target, so the earliest such row is the creation timestamp. The audit
+     * log is append-only, which also makes this stable across TTL changes.
+     *
+     * @return array<string, int> Guest id => earliest creation epoch.
+     */
+    private function guestCreationTimes(): array
+    {
+        $statement = $this->pdo->query(
+            "SELECT target, MIN(ts) AS created_at FROM audit_log "
+            . "WHERE action = 'demo.guest' AND target IS NOT NULL GROUP BY target"
+        );
+        if ($statement === false) {
+            return [];
+        }
+
+        $created = [];
+        foreach ($statement->fetchAll() as $row) {
+            if (!is_array($row) || !isset($row['target']) || !is_string($row['target'])) {
+                continue;
+            }
+            $value = $row['created_at'] ?? null;
+            if (is_numeric($value)) {
+                $created[$row['target']] = (int) $value;
+            }
+        }
+
+        return $created;
     }
 
     /**

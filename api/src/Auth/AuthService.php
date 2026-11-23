@@ -202,7 +202,7 @@ final class AuthService
         // The demo account expires before a default session would; clamp the
         // session so it can never outlive the account that owns it.
         $session = $this->createSession($userId, $ip, $agent, $expiration);
-        $this->audit->log($userId, $ip, 'demo.guest', null, 'success');
+        $this->audit->log($userId, $ip, 'demo.guest', $userId, 'success');
 
         return [
             'user' => $this->publicUser([
