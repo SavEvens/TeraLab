@@ -152,7 +152,10 @@ components:
       properties:
         type:
           type: string
-          description: "For YAML labs: image_unmapped, image_missing, network_unsupported, or node_unsupported"
+          description: |
+            For YAML labs: image_unmapped, image_missing, network_unsupported,
+            or node_unsupported. A `.unl` import by a demo guest adds
+            demo_limited when a node's RAM was clamped to the demo cap.
         message: { type: string }
         node: { type: string, description: "Node name, when the warning is node-specific" }
         network: { type: string, description: "Network id, when the warning is network-specific" }
@@ -370,10 +373,19 @@ paths:
                   time: { type: integer }
                   demo:
                     type: object
-                    required: [enabled, landing]
+                    required: [enabled, landing, templates]
                     properties:
                       enabled: { type: boolean }
                       landing: { type: string, enum: [login, demo] }
+                      templates:
+                        type: array
+                        items: { type: string }
+                        description: |
+                          Guest template allowlist in `demo_allowed_templates`
+                          order. A configured id that names no installed
+                          template may appear here; the guest guard and the
+                          Add-node picker only use ids that resolve. Public;
+                          contains no secret.
                   turnstile:
                     type: object
                     required: [enabled, site_key]
@@ -694,7 +706,7 @@ paths:
                 networks: { type: array, items: { type: object } }
       responses:
         '201': { description: Created }
-        '422': { description: Validation error }
+        '422': { description: "Validation error, link invariant, or guest demo limit (node count, template, or RAM)" }
   /api/v2/labs/import:
     post:
       tags: [labs]
@@ -715,6 +727,16 @@ paths:
         A YAML under 10 MB that would serialize to a larger `.unl` (base64
         configs, topology XML, and the embedded source all count) is rejected
         with 422 before a lab is created.
+
+        A demo guest is capped per lab: at most `demo_max_nodes_per_lab` nodes,
+        engine nodes may only use templates from `demo_allowed_templates` that
+        are installed, and at most `demo_max_ram_per_node` MB per node. A `.unl`
+        import over the
+        node-count or template cap returns 422; an over-cap RAM value is clamped
+        to the cap and reported as a `demo_limited` warning in `data.warnings`
+        and `meta.warnings`. YAML import compiles through the create pipeline,
+        so it rejects instead of clamping. Admin and non-guest editor accounts
+        are exempt. See docs/API.md.
       requestBody:
         required: true
         content:
@@ -745,7 +767,7 @@ paths:
                         items: { $ref: '#/components/schemas/LabYamlWarning' }
         '403': { description: Editor role or CSRF required }
         '413': { description: Request body too large }
-        '422': { description: "Empty/oversized file, YAML compile error, or compiled .unl over 10 MB; ambiguous XML+YAML failures include both messages" }
+        '422': { description: "Empty/oversized file, YAML compile error, compiled .unl over 10 MB, or a guest demo node-count/template violation; ambiguous XML+YAML failures include both messages" }
   /api/v2/labs/validate:
     post:
       tags: [labs]
@@ -810,6 +832,7 @@ paths:
       responses:
         '200': { description: Saved }
         '409': { description: Revision conflict or running-lab lock }
+        '422': { description: "Validation error, link invariant, or guest demo limit when nodes are sent" }
     delete:
       tags: [labs]
       summary: Move a stopped lab to trash
@@ -855,7 +878,7 @@ paths:
         '403': { description: "Editor role, CSRF, or lab access denied" }
         '404': { description: Lab not found }
         '409': { description: "A node is running or the supplied revision is stale" }
-        '422': { description: "Missing/non-string yaml, bad filename/revision type, YAML compile error, or compiled .unl over 10 MB" }
+        '422': { description: "Missing/non-string yaml, bad filename/revision type, YAML compile error, compiled .unl over 10 MB, or a guest demo limit" }
   /api/v2/labs/{id}/export:
     get:
       tags: [labs]
@@ -872,10 +895,15 @@ paths:
     post:
       tags: [labs]
       summary: Create networks and start all engine nodes
+      description: |
+        Re-checks the lab's current topology against the demo caps for a guest
+        before any agent call, so a lab authored while a cap was higher refuses
+        to start after the cap is lowered.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '202': { description: Started with job_id }
+        '422': { description: "Guest demo limit: node count, template, or RAM" }
   /api/v2/labs/{id}/stop:
     post:
       tags: [labs]
@@ -896,10 +924,15 @@ paths:
     post:
       tags: [labs]
       summary: Duplicate topology into a new lab
+      description: |
+        For a demo guest the source lab's stored nodes are checked against the
+        demo caps before the copy is written; an over-cap source returns 422
+        and no copy is created.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '201': { description: Duplicated }
+        '422': { description: "Guest demo limit on the source lab's nodes" }
   /api/v2/labs/{id}/nodes:
     get:
       tags: [nodes]
@@ -920,6 +953,11 @@ paths:
     post:
       tags: [nodes]
       summary: Start an agent node by id
+      description: |
+        Raw agent route. A demo guest is refused before the body is parsed;
+        guests start nodes through
+        `POST /api/v2/labs/{id}/nodes/{node}/start` instead, which re-checks
+        the demo caps. `stop`, `wipe`, `status`, and `console` are unchanged.
       requestBody:
         required: true
         content:
@@ -931,6 +969,7 @@ paths:
                 id: { type: string }
       responses:
         '200': { description: Running }
+        '403': { description: "Editor role required, or a demo guest (use the lab node-start route)" }
   /api/v2/nodes/stop:
     post:
       tags: [nodes]
@@ -987,6 +1026,7 @@ paths:
                 file: { type: string, format: binary }
       responses:
         '201': { description: Imported }
+        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
   /api/v2/templates/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -1000,11 +1040,13 @@ paths:
       summary: Create or update a custom template
       responses:
         '200': { description: Saved }
+        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
     delete:
       tags: [templates]
       summary: Delete a custom template
       responses:
         '200': { description: Deleted }
+        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
   /api/v2/templates/{id}/export:
     get:
       tags: [templates]
@@ -1021,6 +1063,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Duplicated }
+        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
   /api/v2/docker/images:
     get:
       tags: [images]
@@ -1075,6 +1118,7 @@ paths:
                 file: { type: string, format: binary }
       responses:
         '201': { description: Stored }
+        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
         '422': { description: Validation error }
   /api/v2/images/import:
     post:
@@ -1086,7 +1130,9 @@ paths:
         inside the image store for each selected file and registers it with
         `external = 1`; nothing is copied and the source tree is never
         modified. Licence files (`iourc`, `licence`, `license`) are never
-        registered.
+        registered. A demo guest is refused first with the demo policy
+        message; the admin role is enforced in the controller, so non-guests
+        get the same admin-only result as before.
       requestBody:
         required: true
         content:
@@ -1113,7 +1159,7 @@ paths:
       responses:
         '200': { description: Dry-run entries or import results }
         '401': { description: Authentication required }
-        '403': { description: Administrator role required }
+        '403': { description: "Administrator role required, or a demo guest (image changes are disabled)" }
         '422': { description: Invalid root or request body }
   /api/v2/images/{id}:
     parameters:
@@ -1135,12 +1181,14 @@ paths:
       summary: Rename an image (name and/or portable reference)
       responses:
         '200': { description: Renamed }
+        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
         '409': { description: Reference already in use }
     delete:
       tags: [images]
       summary: Delete an unreferenced image
       responses:
         '200': { description: Deleted }
+        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
   /api/v2/images/{id}/template:
     put:
       tags: [images]
@@ -1149,6 +1197,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Mapped }
+        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
   /api/v2/jobs:
     get:
       tags: [jobs]
@@ -1189,11 +1238,16 @@ paths:
     post:
       tags: [labs]
       summary: Restore a lab snapshot
+      description: |
+        For a demo guest the snapshot's topology is checked against the demo
+        caps before it is written back; an over-cap snapshot returns 422 and
+        the lab is unchanged.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: snapshot, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Restored }
+        '422': { description: "Guest demo limit on the snapshot's topology" }
   /api/v2/labs/{id}/snapshots/{snapshot}:
     delete:
       tags: [labs]
@@ -1207,11 +1261,15 @@ paths:
     post:
       tags: [nodes]
       summary: Start one lab node
+      description: |
+        Re-checks the lab's current topology against the demo caps for a guest
+        before starting the node.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: node, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Running }
+        '422': { description: "Guest demo limit: node count, template, or RAM" }
   /api/v2/labs/{id}/nodes/{node}/stop:
     post:
       tags: [nodes]

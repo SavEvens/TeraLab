@@ -19,13 +19,18 @@ session cookie and `X-CSRF-Token` (returned by setup, login, guest entry, and
   "version": "1.6-dev",
   "php": "8.4.x",
   "time": 1795000000,
-  "demo": { "enabled": true, "landing": "demo" },
+  "demo": { "enabled": true, "landing": "demo", "templates": ["vpcs"] },
   "turnstile": { "enabled": true, "site_key": "3x00000000000000000000FF" }
 }
 ```
 
 - `demo.enabled` mirrors `demo_enabled`; `demo.landing` mirrors `demo_landing`
   (`login` or `demo`) and only matters while the demo is enabled.
+- `demo.templates` is the guest template allowlist, in the configured
+  `demo_allowed_templates` order. An id that is configured but not installed
+  may appear here; the guest guard and the Add-node picker only use ids that
+  name a real template. The picker reads this list to group disallowed
+  templates for guests. It is public and contains no secret.
 - `turnstile.enabled` mirrors `turnstile_enabled`. `turnstile.site_key` is the
   public widget key; it is `""` when the stored key was cleared.
 - The Turnstile **secret** is never part of any response. Everything in this
@@ -154,11 +159,14 @@ Guest identity properties:
   sign back in with, so the practical demo duration is that smaller value
   (default: 1 hour); the account row keeps its longer `demo_guest_ttl_hours`
   expiration and the slot frees once the session lapses. The guest is otherwise
-  an ordinary `editor` account: the per-lab demo limits
-  (`demo_max_nodes_per_lab`, `demo_allowed_templates`,
-  `demo_max_ram_per_node`) and the idle-wipe/sweep settings are stored policy
-  and are **not enforced yet**, so only expose the demo to visitors you would
-  trust with an editor account.
+  an ordinary `editor` account, but the per-lab demo limits are enforced on
+  create, save, import, apply, and start; see
+  [Per-lab demo limits](#per-lab-demo-limits). The idle-wipe/sweep settings
+  (`demo_idle_wipe_minutes`, `demo_sweep_interval`) are still stored policy and
+  are **not enforced yet**, so an idle guest lab is not removed automatically.
+  The caps bound a lab's size, not its behaviour: a guest can still use the
+  host's CPU and disk within those bounds, so only expose the demo to visitors
+  you would trust with a constrained `editor` account.
 - The password hash is random, generated from a value that is never disclosed,
   so a guest identity cannot be signed in to with credentials. The session
   returned here is the only way in.
@@ -195,6 +203,84 @@ decides whether entry needs a captcha; both are set in **System → Demo**
 `GET /api/v2/health` reports `demo.enabled`, and shows the Turnstile widget only
 when `turnstile.enabled` is set. A `demo_landing` of `demo` makes the sign-in
 page open on the demo panel.
+
+### Per-lab demo limits
+
+Guests (`guest: true` and not expired) are capped per lab. The caps are checked
+on the create, save, import, apply, duplicate, snapshot-restore, and start calls
+below; a violation is a `422` with the usual `status: "error"` envelope:
+
+| Limit | Setting | Enforced on | Message |
+|---|---|---|---|
+| Nodes per lab | `demo_max_nodes_per_lab` | create, save, apply, import, duplicate, snapshot restore, lab start, node start | `The demo allows at most 5 nodes per lab; this lab has 6.` |
+| Templates | `demo_allowed_templates` ∩ installed templates; kind must equal node type | create, save, apply, import, duplicate, snapshot restore, lab start, node start | `Template "x" is not available on the demo.` |
+| RAM per node | `demo_max_ram_per_node` | create, save, apply, duplicate, snapshot restore, lab start, node start; `.unl` import clamps | `The demo allows at most 1024 MB of RAM per node; "R1" requests 2048 MB.` |
+
+The numbers in the node-count and RAM messages are the configured cap and the
+value seen in the request or the stored lab; the template message names the
+offending template. Every engine node must use a template id from the
+allowlist, and the template's `kind` must equal the node `type`: a mismatch
+answers `422 Template "vpcs" does not match the node type "docker".` Text and
+picture annotations are exempt from the template and RAM checks but still
+count toward the node cap. On a guest docker node, `image` must be empty or
+exactly the template's docker image; anything else answers
+`422 The demo does not allow custom container images; use template "frr-bgp".`
+Non-guests keep their override. The allowlist is resolved against the installed
+templates at check time, so an id that names no template can never be used.
+
+Where the guard runs:
+
+- `POST /api/v2/labs` and `PUT /api/v2/labs/{id}` reject a topology that breaks a
+  cap. On save the check runs only when `nodes` is part of the body.
+- `POST /api/v2/labs/import` rejects a `.unl` lab over the node-count or
+  template cap. RAM is the exception: a value above the cap is clamped to the
+  cap so a foreign file still imports, and the response carries a warning for
+  each clamped node (below). YAML import compiles through the create pipeline,
+  so a YAML topology over any cap is rejected rather than clamped, and YAML
+  apply is also rejected when its compiled topology breaks a cap.
+- `POST /api/v2/labs/{id}/duplicate` checks the source lab's stored nodes
+  before creating the copy. An over-cap source answers `422` and no copy is
+  written.
+- `POST /api/v2/labs/{id}/snapshots/{snapshot}/restore` checks the snapshot's
+  topology before writing it back. An over-cap snapshot answers `422` and the
+  lab is left unchanged.
+- `POST /api/v2/labs/{id}/start` and
+  `POST /api/v2/labs/{id}/nodes/{node}/start` (v2 and the legacy v1 alias)
+  re-check the lab's **current** topology, not only the request. A lab authored
+  while a cap was higher therefore refuses to start after the cap is lowered,
+  with the same messages.
+- `POST /api/v2/nodes/start` is the raw agent route: a guest is refused with
+  `403 The demo starts nodes from the lab editor.` before the body is parsed.
+  Guests start nodes through the lab node-start route above.
+
+The `.unl` import response reports each clamp in `data.warnings` and
+`meta.warnings` (both carry the same list) as a `demo_limited` entry:
+
+```json
+{
+  "type": "demo_limited",
+  "node": "R1",
+  "message": "RAM clamped from 2048 MB to 1024 MB for the demo."
+}
+```
+
+It sits alongside the ordinary import warnings. A RAM value alone never fails
+an import; node-count and template violations still answer `422`. The warning
+is not a stored property of the lab, so it appears in the import response only.
+
+Administrators and non-guest `editor` accounts are exempt from all three caps.
+A guest whose `expiration` has passed is treated as a non-guest by the guard;
+its session is already refused, so the guard is not a second authentication
+check.
+
+For a guest, the Add-node picker shows allowed templates normally and renders
+the rest of the catalogue in a disabled **Available on the full platform**
+group with an upsell hint, rather than hiding them silently. An empty
+`demo_allowed_templates` therefore disables the whole catalogue, matching the
+API, which rejects every templated node with
+`Template "x" is not available on the demo.` Non-guests, and a guest whose
+allowlist could not be read, see the unfiltered picker; the API still enforces
+the caps either way.
 
 ## Account
 
@@ -291,6 +377,9 @@ Create, save and import enforce the link invariant: a network must have at least
 two attached interfaces. Deleting a node detaches the remaining end, and any
 network left with fewer than two attachments is removed from `network_list` (and
 dangling `network_id` references are cleared). The `.unl` format is unchanged.
+
+A demo guest additionally passes the per-lab caps described in
+[Per-lab demo limits](#per-lab-demo-limits); a violation answers `422`.
 
 `.unl` remains the only stored format. YAML is an authoring layer compiled into
 the same lab model on import and apply; see [`LAB-YAML.md`](LAB-YAML.md).
@@ -409,6 +498,12 @@ curl -b jar $B/api/v2/labs/<id>/nodes
 return `kind`, `token`, `ws_path` (`/ws/console`, `/ws/vnc`, `/ws/tcp`), and
 for VNC the generated password.
 
+`POST /api/v2/nodes/start` is the raw agent route. A demo guest is refused with
+`403 The demo starts nodes from the lab editor.` before the request body is
+parsed; `stop`, `wipe`, `status`, and `console` are unchanged. Guests start
+nodes through `POST /api/v2/labs/{id}/nodes/{node}/start`, which re-checks the
+demo caps.
+
 ## Networks, engines, images
 
 - `POST /api/v2/labs/{id}/networks` with `{"networks":[{"id":"0"}]}`.
@@ -462,6 +557,22 @@ for VNC the generated password.
 - `POST /api/v2/maintenance/reconcile` reclaims orphaned resources; it also
   removes the run directories of labs that no longer exist, using the live
   lab list (trash excluded) as the keep-set.
+
+Demo guests are read-only for the shared catalogues. Template reads
+(`GET /api/v2/templates`, `/templates/{id}`, `/templates/{id}/export`) stay
+available, but `POST /api/v2/templates/import`,
+`POST /api/v2/templates/{id}/duplicate`, `PUT /api/v2/templates/{id}`, and
+`DELETE /api/v2/templates/{id}` answer
+`403 The demo does not allow template changes.` This prevents a guest from
+shadowing an allowlisted builtin with a custom template.
+
+Image reads (`GET /api/v2/images`, `/images/{id}`) stay available, but
+`POST /api/v2/images/import`, `POST /api/v2/images`, `DELETE /api/v2/images/{id}`,
+`PATCH /api/v2/images/{id}` (rename), and `PUT /api/v2/images/{id}/template`
+answer `403 The demo does not allow image changes.` `POST /api/v2/images/import`
+enforces the admin role in the controller after the guest check, so a guest
+receives the demo policy message and a non-guest gets the same admin-only
+result as before.
 
 ## System settings
 

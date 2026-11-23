@@ -164,11 +164,43 @@ later.`).
 account form primary, `demo` highlights the demo panel. The account form is
 always available in both modes.
 
-The per-lab demo limits (`demo_max_nodes_per_lab`, `demo_allowed_templates`,
-`demo_max_ram_per_node`) and the idle-wipe/sweep settings are stored and
-validated but **not enforced yet**: a guest currently has the same lab
-abilities as any `editor`. Only expose the demo to visitors you would trust
-with an editor account.
+The per-lab demo limits are enforced for guests. A guest lab is limited to
+`demo_max_nodes_per_lab` nodes (default 5), every engine node must use a
+template from `demo_allowed_templates` (default `vpcs`) that is installed on the
+host, and the template's kind must match the node type (a `vpcs` template
+cannot back a `docker` node). Each node may request at most
+`demo_max_ram_per_node` MB of RAM (default 1024). On a guest docker node the
+`image` must be empty or exactly the template's docker image; any other
+reference returns 422
+`The demo does not allow custom container images; use template "frr-bgp".`
+Non-guests keep their override. Text and picture annotations are exempt from the
+template and RAM checks but still count toward the node cap. Create, save, import, apply, duplicate, snapshot restore, and
+start enforce the caps; starting a lab re-checks its current topology, so
+lowering a cap also stops older over-cap labs from starting. Duplicating an
+over-cap lab or restoring an over-cap snapshot answers 422 and leaves the new
+copy unwritten or the lab unchanged. Importing a `.unl` file clamps an over-cap RAM value to the
+cap and returns a `demo_limited` warning instead of failing the import;
+node-count and template violations still reject the import. Administrators and
+non-guest `editor` accounts are exempt.
+
+Guests cannot change the shared catalogues. Template mutations return 403
+`The demo does not allow template changes.` and image mutations return 403
+`The demo does not allow image changes.`; template and image reads stay
+available. This stops a guest shadowing an allowlisted builtin template or
+deleting an image other labs use.
+
+In the Add-node picker a guest sees allowed templates normally and the rest of
+the catalogue in a disabled **Available on the full platform** group with an
+upsell hint. An empty `demo_allowed_templates` therefore disables the whole
+catalogue, matching the API, which rejects every templated node. See the API
+reference's *Per-lab demo limits* for the exact messages.
+
+The idle-wipe/sweep settings (`demo_idle_wipe_minutes`, `demo_sweep_interval`)
+are still stored and validated but **not enforced yet**: an idle guest lab is
+not removed automatically, so monitor disk use and clean up stale guest labs.
+The caps bound lab size, not behaviour: a guest can still use the host's CPU
+and disk within them, so only expose the demo to visitors you would trust with
+a constrained `editor` account.
 
 **Turnstile.** `turnstile_enabled` adds a Cloudflare Turnstile check to demo
 entry *and* to password sign-in, on both the v2 and the legacy v1 login routes,
