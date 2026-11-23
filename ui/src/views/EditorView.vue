@@ -143,6 +143,7 @@
       v-if="templatePickerOpen"
       :templates="templates"
       :images="images"
+      :allowed-templates="allowedTemplates"
       @add="addFromPicker"
       @close="templatePickerOpen = false"
     />
@@ -225,6 +226,7 @@ const edges = ref([])
 const networks = ref([])
 const templates = ref([])
 const images = ref([])
+const allowedTemplates = ref(null)
 const dockerImages = ref([])
 const selected = ref(null)
 const revision = ref(1)
@@ -259,6 +261,7 @@ const nodeStates = ref({})
 const contextMenu = ref(null)
 const zoom = computed(() => Math.round(((viewport.value?.zoom ?? 1)) * 100))
 const consoleOpen = computed(() => consoleState.tabs.length > 0)
+const isGuest = computed(() => session.user?.guest === true)
 const selectionCount = computed(() => getSelectedNodes.value.length || (selected.value ? 1 : 0))
 const canUndo = computed(() => history.value.length > 0)
 const canRedo = computed(() => future.value.length > 0)
@@ -375,6 +378,22 @@ async function loadNodeStates() {
     // Node state is advisory. Forget what we had so the menus fall back to
     // offering every control instead of trusting a stale snapshot.
     nodeStates.value = {}
+  }
+}
+
+// Demo guests see the picker grouped by the health allowlist so the policy is
+// visible before the API rejects an add. Health is advisory for authoring: a
+// failed request leaves the picker unfiltered rather than blocking an editor.
+async function loadTemplateAllowlist() {
+  if (!isGuest.value) return
+  try {
+    const health = await api.health()
+    const allowed = health?.demo?.templates
+    // An empty array is a real policy (no template is allowed); only a
+    // missing or malformed value falls back to the unfiltered picker.
+    allowedTemplates.value = Array.isArray(allowed) ? allowed.map(String) : null
+  } catch {
+    allowedTemplates.value = null
   }
 }
 
@@ -1113,6 +1132,7 @@ watch(
 
 onMounted(() => {
   load()
+  loadTemplateAllowlist()
   window.addEventListener('keydown', keydown)
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('blur', closeContextMenu)
