@@ -18,6 +18,7 @@ use TeraLab\Api\Http\Json;
 use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\System\BackupService;
+use TeraLab\Api\System\DemoSweeper;
 use TeraLab\Api\System\SettingsService;
 
 final class SystemController
@@ -31,6 +32,7 @@ final class SystemController
         private readonly BackupService $backup,
         private readonly TokenService $tokens,
         private readonly AuditLogger $audit,
+        private readonly DemoSweeper $sweeper,
     ) {
     }
 
@@ -72,6 +74,31 @@ final class SystemController
         $this->audit->log((string) $user['id'], $this->address($request), 'system.settings', null, 'success');
 
         return Json::response($response, ['status' => 'success', 'data' => $values]);
+    }
+
+    public function demoSweep(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'admin');
+        $summary = $this->sweeper->sweepNow();
+        $this->audit->log(
+            (string) $user['id'],
+            $this->address($request),
+            'demo.sweep',
+            null,
+            'success',
+            ['manual' => true, 'summary' => $summary],
+        );
+
+        return Json::response($response, ['status' => 'success', 'data' => $summary]);
+    }
+
+    public function demoStatus(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'admin');
+
+        return Json::response($response, ['data' => $this->sweeper->status()]);
     }
 
     public function logs(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface

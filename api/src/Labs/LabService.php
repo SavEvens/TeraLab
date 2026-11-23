@@ -636,6 +636,7 @@ final class LabService
     {
         [$lab] = $this->load($id);
         $this->demoGuard?->assertCanAuthor($userId, $this->labNodes($lab));
+        $this->demoGuard?->assertMemoryFloor($userId);
         $nodes = $this->engineNodes($lab);
         if ($nodes === []) {
             throw new HttpException(422, 'The lab has no engine nodes.');
@@ -761,6 +762,7 @@ final class LabService
     {
         [$lab] = $this->load($id);
         $this->demoGuard?->assertCanAuthor($userId, $this->labNodes($lab));
+        $this->demoGuard?->assertMemoryFloor($userId);
         $node = $this->findNode($lab, $nodeID);
         if ($userId !== null) {
             $this->locks->acquire((string) $lab['id'], $userId, $isAdmin);
@@ -828,10 +830,12 @@ final class LabService
             $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
             $state = 'stopped';
             $ready = false;
+            $lastActivity = null;
             try {
                 $info = $this->agent->nodeStatus($agentID);
                 $state = $this->stringValue($info, 'state') ?: 'unknown';
                 $ready = ($info['ready'] ?? false) === true;
+                $lastActivity = $this->timestampValue($info['last_activity'] ?? null);
             } catch (HttpException $exception) {
                 if ($exception->status !== 404) {
                     $state = 'unknown';
@@ -844,6 +848,7 @@ final class LabService
                 'type' => $node['type'],
                 'state' => $state,
                 'ready' => $ready,
+                'last_activity' => $lastActivity,
             ];
         }
 
@@ -1935,6 +1940,38 @@ final class LabService
         }
 
         return '';
+    }
+
+    /**
+     * Agent timestamps are RFC3339 strings; expose them as Unix seconds.
+     * Missing, malformed or legacy values are reported as unknown (null).
+     */
+    private function timestampValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+        if (is_float($value)) {
+            return $value > 0 ? (int) $value : null;
+        }
+        if (!is_string($value)) {
+            return null;
+        }
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        if (ctype_digit($value)) {
+            return (int) $value > 0 ? (int) $value : null;
+        }
+        try {
+            $date = new \DateTimeImmutable($value);
+        } catch (\Exception) {
+            return null;
+        }
+        $timestamp = $date->getTimestamp();
+
+        return $timestamp > 0 ? $timestamp : null;
     }
 
     private function uuid(): string

@@ -21,6 +21,7 @@ use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Http\V1Session;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\LabService;
+use TeraLab\Api\System\DemoSweeper;
 use TeraLab\Api\System\SettingsService;
 
 final class V1Controller
@@ -35,6 +36,7 @@ final class V1Controller
         private readonly SettingsService $settings,
         private readonly TurnstileVerifier $turnstile,
         private readonly RateLimiter $rateLimiter,
+        private readonly DemoSweeper $sweeper,
     ) {
     }
 
@@ -231,6 +233,9 @@ final class V1Controller
         $nodeID = (string) ($args['node'] ?? '');
         $isAdmin = $this->access->isAdmin($user);
 
+        if ($action === 'start') {
+            $this->sweeper->sweepIfDue();
+        }
         try {
             $data = match ($action) {
                 'start' => $this->labService->startNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),

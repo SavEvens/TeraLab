@@ -55,6 +55,8 @@ use TeraLab\Api\Labs\UnlWriter;
 use TeraLab\Api\Snapshots\SnapshotRepository;
 use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\DemoPolicy;
+use TeraLab\Api\System\DemoSweeper;
+use TeraLab\Api\System\HostMemory;
 use TeraLab\Api\System\SettingsService;
 use TeraLab\Api\Templates\TemplateRepository;
 
@@ -64,6 +66,7 @@ final class App
         private readonly ?Config $config = null,
         private readonly ?AgentClient $agent = null,
         private readonly ?TurnstileVerifier $turnstile = null,
+        private readonly ?HostMemory $hostMemory = null,
     ) {
     }
 
@@ -92,13 +95,40 @@ final class App
             LabRepository::class,
             static fn (Config $config, UnlParser $parser): LabRepository => new LabRepository($config->labsDir, $parser)
         );
+        $hostMemory = $this->hostMemory;
+        $container->set(
+            HostMemory::class,
+            static fn (): HostMemory => $hostMemory ?? new HostMemory()
+        );
         $container->set(
             DemoGuard::class,
             static fn (
                 PDO $pdo,
                 SettingsService $settings,
                 TemplateRepository $templates,
-            ): DemoGuard => new DemoGuard($pdo, $settings, new DemoPolicy(), $templates)
+                HostMemory $memory,
+            ): DemoGuard => new DemoGuard($pdo, $settings, new DemoPolicy(), $templates, $memory)
+        );
+        $container->set(
+            DemoSweeper::class,
+            static fn (
+                PDO $pdo,
+                SettingsService $settings,
+                AgentClient $agent,
+                LabService $labs,
+                AuditLogger $audit,
+                HostMemory $memory,
+                LabRepository $repository,
+            ): DemoSweeper => new DemoSweeper(
+                $pdo,
+                $settings,
+                new DemoPolicy(),
+                $agent,
+                $labs,
+                $audit,
+                $memory,
+                $repository,
+            )
         );
         $container->set(
             LabService::class,
@@ -387,6 +417,13 @@ final class App
         $app->put('/api/v2/system/settings', fn ($request, $response) => $system->updateSettings($request, $response))
             ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/system/demo/sweep', fn ($request, $response) => $system->demoSweep($request, $response))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        $app->get('/api/v2/system/demo/status', fn ($request, $response) => $system->demoStatus($request, $response))
+            ->add($adminRole())
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/system/backup', fn ($request, $response) => $system->backup($request, $response))
             ->add($adminRole())
