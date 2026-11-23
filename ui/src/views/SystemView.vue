@@ -244,6 +244,36 @@
           </span>
         </div>
       </form>
+
+      <section class="demo-status" data-test="demo-status" aria-labelledby="demo-status-title">
+        <h2 id="demo-status-title">Sweeper</h2>
+        <p class="hint">Guests and guest labs are reclaimed lazily; the sweeper also enforces the host memory floor.</p>
+        <p v-if="demoStatusError" class="error" role="alert">{{ demoStatusError }}</p>
+        <div class="demo-status-grid">
+          <article class="stat-card">
+            <span>Last sweep</span>
+            <strong data-test="demo-last-sweep">{{ lastSweepLabel }}</strong>
+          </article>
+          <article class="stat-card">
+            <span>Available memory</span>
+            <strong data-test="demo-memory">{{ memoryLabel }}</strong>
+          </article>
+          <article class="stat-card">
+            <span>Active guests</span>
+            <strong data-test="demo-guests">{{ demoStatus?.guests_active ?? '—' }}</strong>
+          </article>
+          <article class="stat-card">
+            <span>Demo nodes running</span>
+            <strong data-test="demo-nodes">{{ demoStatus?.demo_nodes_running ?? '—' }}</strong>
+          </article>
+        </div>
+        <div class="row">
+          <button type="button" data-test="demo-sweep" :disabled="!canAdmin || sweeping" @click="sweepNow">
+            {{ sweeping ? 'Sweeping…' : 'Sweep now' }}
+          </button>
+          <span class="hint">Runs immediately. Expired guests, idle guest labs, and newest guest nodes over the memory floor are reclaimed.</span>
+        </div>
+      </section>
     </section>
 
     <section v-show="active === 'Users'" class="panel users-panel">
@@ -479,6 +509,9 @@ const demoTemplatesError = ref('')
 const demoTemplatesSelected = ref([])
 const turnstileSecret = ref('')
 const secretConfigured = ref(false)
+const demoStatus = ref(null)
+const demoStatusError = ref('')
+const sweeping = ref(false)
 const canAdmin = computed(() => session.user?.role === 'admin')
 const tabs = computed(() => {
   const list = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
@@ -510,6 +543,18 @@ watch(() => route.query.tab, (value) => {
 const cpuUsage = computed(() => {
   const value = host.value?.cpu_usage_percent
   return value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`
+})
+const lastSweepLabel = computed(() => {
+  const value = demoStatus.value?.last_sweep_at
+  const seconds = Number(value)
+  if (value === null || value === undefined || !Number.isFinite(seconds)) return 'never'
+  return new Date(seconds * 1000).toLocaleString()
+})
+const memoryLabel = computed(() => {
+  const value = demoStatus.value?.mem_available_mb
+  const megabytes = Number(value)
+  if (value === null || value === undefined || !Number.isFinite(megabytes)) return 'unknown'
+  return `${Math.round(megabytes)} MB`
 })
 const editingSelf = computed(() => !!editUser.value.user && isSelf(editUser.value.user))
 const timezones = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : ['UTC']
@@ -548,6 +593,43 @@ async function loadDemoTemplates() {
     demoTemplatesSelected.value = [...new Set(demoTemplatesSelected.value)].filter((id) => available.has(id))
   } catch (exception) {
     demoTemplatesError.value = exception?.message || 'Templates could not be loaded.'
+  }
+}
+
+async function loadDemoStatus() {
+  if (!canAdmin.value) return
+  demoStatusError.value = ''
+  try {
+    demoStatus.value = (await api.demoStatus()).data || null
+  } catch (exception) {
+    demoStatusError.value = exception?.message || 'Sweep status could not be loaded.'
+  }
+}
+
+function sweepSummary(data) {
+  const count = (value) => Number(value ?? 0) || 0
+  const plural = (value, singular, pluralForm) => `${value} ${value === 1 ? singular : pluralForm}`
+  const failed = count(data?.labs_failed)
+  const summary = `Sweep complete: ${plural(count(data?.guests_purged), 'guest', 'guests')} purged, `
+    + `${plural(count(data?.labs_wiped), 'lab', 'labs')} wiped, `
+    + `${plural(count(data?.nodes_reaped), 'node', 'nodes')} stopped`
+  return failed > 0
+    ? { kind: 'warn', message: `${summary}; ${plural(failed, 'lab', 'labs')} could not be wiped and will be retried.` }
+    : { kind: 'success', message: `${summary}.` }
+}
+
+async function sweepNow() {
+  if (!canAdmin.value || sweeping.value) return
+  sweeping.value = true
+  try {
+    const data = (await api.demoSweep()).data || {}
+    const summary = sweepSummary(data)
+    notify(summary.kind, summary.message)
+    await loadDemoStatus()
+  } catch (exception) {
+    toastError(exception)
+  } finally {
+    sweeping.value = false
   }
 }
 
@@ -642,7 +724,10 @@ async function loadAll() {
     error.value = exception.message
   }
   if (canAdmin.value && (active.value === 'Users' || usersLoaded.value)) await refreshUsers()
-  if (canAdmin.value && active.value === 'Demo') loadDemoTemplates()
+  if (canAdmin.value && active.value === 'Demo') {
+    loadDemoTemplates()
+    loadDemoStatus()
+  }
 }
 
 function settingsPayload() {
@@ -883,7 +968,10 @@ async function removeUser() {
 
 watch(active, (tab) => {
   if (tab === 'Users' && canAdmin.value) refreshUsers()
-  if (tab === 'Demo' && canAdmin.value) loadDemoTemplates()
+  if (tab === 'Demo' && canAdmin.value) {
+    loadDemoTemplates()
+    loadDemoStatus()
+  }
 })
 
 onMounted(loadAll)

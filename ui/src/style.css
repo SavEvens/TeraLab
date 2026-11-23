@@ -540,6 +540,7 @@ label { display: grid; gap: 5px; color: var(--muted); font: 600 10px/1.2 var(--m
 .toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 90; max-width: 420px; }
 .toast { background: rgba(10, 14, 32, 0.97); border: 1px solid var(--line-strong); border-left: 3px solid var(--cyan); border-radius: 7px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; font: 500 11px/1.4 var(--mono); box-shadow: var(--shadow); }
 .toast.success { border-left-color: var(--green); }
+.toast.warn { border-left-color: var(--amber); }
 .toast.error { border-left-color: var(--red); }
 .toast .bar { width: 80px; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
 .toast .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--magenta)); }
@@ -685,6 +686,12 @@ label { display: grid; gap: 5px; color: var(--muted); font: 600 10px/1.2 var(--m
 
 /* system: demo */
 .demo-panel h2 { margin: 2px 0 -6px; }
+.demo-status { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 14px; display: grid; gap: 12px; }
+.demo-status h2 { margin: 0; }
+.demo-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.demo-status-grid .stat-card { padding: 10px 12px; }
+.demo-status-grid .stat-card strong { font-size: 14px; }
+.demo-status .hint { margin: 0; }
 .demo-templates {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px;
   border: 1px solid var(--line); border-radius: 8px; padding: 10px;
