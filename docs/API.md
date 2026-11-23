@@ -307,15 +307,25 @@ exactly as a user-initiated stop or wipe removes them.
 
 A sweep performs these steps in order:
 
-1. **Activity.** For each guest, the effective activity time is the later of the
-   guest's newest session (`MAX(sessions.last_seen_at)`) and the newest
-   `last_activity` the agent reports for the guest's running nodes. Console
-   input and output count as node activity, so a visitor typing in a console is
-   not idle; see [Agent activity](#agent-activity). A running node that reports
-   no `last_activity` makes its owner's node activity **unknown**, not idle.
+1. **Activity.** For each guest, the effective activity time is the latest of the
+   guest's newest session (`MAX(sessions.last_seen_at)`), the newest
+   `last_activity` the agent reports for the guest's running nodes, and the
+   guest's creation time. Creation comes from the `demo.guest` audit row for
+   that guest (`target` = guest id; the earliest `ts`), so a guest whose session
+   row is gone (logout deletes it) is not purged as idle straight away: it is
+   idle only after `demo_guest_idle_hours` since creation. A guest created
+   before the audit row carried a target falls back to `expiration -
+   demo_guest_ttl_hours`, which is only an estimate — it uses the *current*
+   setting, so if `demo_guest_ttl_hours` changed after creation the fallback
+   shifts: a lower setting makes the guest look younger and delays an idle
+   purge, a higher one makes it look older and can bring the purge forward. The
+   hard TTL still purges at `expiration` regardless. Console input and output
+   count as node activity, so a visitor typing in a console is not idle; see
+   [Agent activity](#agent-activity). A running node that reports no
+   `last_activity` makes its owner's node activity **unknown**, not idle.
 2. **Guest purge.** A guest is purged when `expiration` has passed (the hard
    TTL, `demo_guest_ttl_hours`) **or** when its activity is known to be idle —
-   no recorded activity at all, or the newest one older than
+   no activity and no creation time at all, or the newest one older than
    `demo_guest_idle_hours` — whichever comes first. Its labs are
    stopped and wiped, its sessions are deleted, and the user row is removed; the
    concurrency slot is free afterwards. The purge is audited as `demo.sweep`
