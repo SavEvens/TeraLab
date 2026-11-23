@@ -205,11 +205,14 @@ The idle-wipe/sweep settings (`demo_guest_idle_hours`,
 `demo_idle_wipe_minutes`, `demo_sweep_interval`) are enforced by the demo
 sweeper: expired or idle guests and idle guest labs are reclaimed lazily when
 the lab list or a lab or node start runs a due sweep, at most once per
-`demo_sweep_interval` seconds. Admin and non-guest editor labs are never
-touched. See the API reference's *Demo sweeper and capacity*. The caps bound
-lab size, not behaviour: a guest can still use the host's CPU and disk within
-them, so only expose the demo to visitors you would trust with a constrained
-`editor` account.
+`demo_sweep_interval` seconds. A guest with no session is measured from the time
+its `demo.guest` audit row was written — falling back to an estimate from
+`expiration - demo_guest_ttl_hours` for guests created before the row recorded
+the guest id — so logging out does not make it idle immediately. Admin and
+non-guest editor labs are never touched. See the API reference's *Demo sweeper
+and capacity*. The caps bound lab size, not behaviour: a guest can still use the
+host's CPU and disk within them, so only expose the demo to visitors you would
+trust with a constrained `editor` account.
 
 **Turnstile.** `turnstile_enabled` adds a Cloudflare Turnstile check to demo
 entry *and* to password sign-in, on both the v2 and the legacy v1 login routes,
