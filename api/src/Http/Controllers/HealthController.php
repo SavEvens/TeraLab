@@ -13,6 +13,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\SettingsService;
 
 final class HealthController
@@ -42,6 +43,11 @@ final class HealthController
             'demo' => [
                 'enabled' => $this->settings->int('demo_enabled', 0) === 1,
                 'landing' => $this->settings->string('demo_landing', 'login'),
+                // Guest-facing template allowlist, normalised exactly like the
+                // policy guard; it is public policy, never a secret.
+                'templates' => DemoGuard::parseTemplateIds(
+                    $this->settings->string('demo_allowed_templates', '')
+                ),
             ],
             'turnstile' => [
                 'enabled' => $this->settings->int('turnstile_enabled', 0) === 1,

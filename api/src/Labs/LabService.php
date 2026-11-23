@@ -13,6 +13,7 @@ use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Snapshots\SnapshotRepository;
+use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\Templates\DockerOptions;
 use TeraLab\Api\Templates\QemuDisks;
 use TeraLab\Api\Templates\QemuOptions;
@@ -36,6 +37,7 @@ final class LabService
         private readonly ?SnapshotRepository $snapshots = null,
         private readonly ?TemplateRepository $templates = null,
         private readonly ?LabYamlCompiler $yamlCompiler = null,
+        private readonly ?DemoGuard $demoGuard = null,
     ) {
     }
 
@@ -71,6 +73,7 @@ final class LabService
             $this->normalizeNodes($input['nodes'] ?? []),
             $this->normalizeNetworks($input['networks'] ?? []),
         );
+        $this->demoGuard?->assertCanAuthor($ownerId, $nodes);
         $lab = [
             'id' => $this->uuid(),
             'name' => $name,
@@ -122,6 +125,9 @@ final class LabService
         $nodes = array_key_exists('nodes', $input)
             ? $this->normalizeNodes($input['nodes'])
             : $this->labNodes($lab);
+        if (array_key_exists('nodes', $input)) {
+            $this->demoGuard?->assertCanAuthor($userId, $nodes);
+        }
         $networks = array_key_exists('networks', $input)
             ? $this->normalizeNetworks($input['networks'])
             : $this->labNetworks($lab);
@@ -163,6 +169,14 @@ final class LabService
         }
 
         $lab = $this->parser->parseXml($xml);
+        $prepared = $this->demoGuard?->prepareImport($ownerId, $lab);
+        if ($prepared !== null) {
+            $lab = $prepared['lab'];
+            if ($prepared['warnings'] !== []) {
+                $existing = is_array($lab['warnings'] ?? null) ? $lab['warnings'] : [];
+                $lab['warnings'] = array_merge($existing, $prepared['warnings']);
+            }
+        }
         [$lab['node_list'], $lab['network_list']] = $this->pruneLinks(
             $this->labNodes($lab),
             $this->labNetworks($lab),
@@ -280,6 +294,7 @@ final class LabService
             $this->normalizeNodes($payload['nodes'] ?? []),
             $this->normalizeNetworks($payload['networks'] ?? []),
         );
+        $this->demoGuard?->assertCanAuthor($userId, $nodes);
 
         $oldRuns = [];
         foreach ($this->engineNodes($lab) as $node) {
@@ -396,6 +411,9 @@ final class LabService
             throw new HttpException(404, 'Snapshot not found.');
         }
         $restored = $this->parser->parseXml((string) $snapshot['xml']);
+        if (!$isAdmin) {
+            $this->demoGuard?->assertCanAuthor($userId, $this->labNodes($restored));
+        }
         $restored['id'] = $lab['id'];
         $restored['revision'] = (int) $lab['revision'] + 1;
         $restored['attributes']['updated_at'] = gmdate('c');
@@ -427,6 +445,7 @@ final class LabService
     public function duplicate(string $id, ?string $ownerId = null): array
     {
         [$lab] = $this->load($id);
+        $this->demoGuard?->assertCanAuthor($ownerId, $this->labNodes($lab));
         $lab['id'] = $this->uuid();
         $lab['name'] = self::labName($lab['name'] . ' copy');
         $lab['revision'] = 1;
@@ -616,6 +635,7 @@ final class LabService
     public function start(string $id, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
+        $this->demoGuard?->assertCanAuthor($userId, $this->labNodes($lab));
         $nodes = $this->engineNodes($lab);
         if ($nodes === []) {
             throw new HttpException(422, 'The lab has no engine nodes.');
@@ -740,6 +760,7 @@ final class LabService
     public function startNode(string $id, string $nodeID, ?string $userId = null, bool $isAdmin = false): array
     {
         [$lab] = $this->load($id);
+        $this->demoGuard?->assertCanAuthor($userId, $this->labNodes($lab));
         $node = $this->findNode($lab, $nodeID);
         if ($userId !== null) {
             $this->locks->acquire((string) $lab['id'], $userId, $isAdmin);

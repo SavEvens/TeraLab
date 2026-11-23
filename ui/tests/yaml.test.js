@@ -45,7 +45,8 @@ vi.mock('../src/api', () => ({
     snapshots: vi.fn(),
     templates: vi.fn(),
     images: vi.fn(),
-    dockerImages: vi.fn()
+    dockerImages: vi.fn(),
+    health: vi.fn()
   },
   setCsrf: vi.fn(),
   ApiError: class ApiError extends Error {
@@ -62,6 +63,7 @@ import LabsView from '../src/views/LabsView.vue'
 import EditorView from '../src/views/EditorView.vue'
 import YamlSourcePanel from '../src/components/YamlSourcePanel.vue'
 import { dismiss, toasts } from '../src/stores/toasts'
+import { session } from '../src/stores/session'
 
 const SOURCE = `schema: 1
 name: YAML triangle
@@ -94,6 +96,8 @@ beforeEach(() => {
   api.templates.mockResolvedValue({ data: [] })
   api.images.mockResolvedValue({ data: [] })
   api.dockerImages.mockResolvedValue({ data: [] })
+  api.health.mockResolvedValue({ status: 'ok', demo: { enabled: false, landing: 'login', templates: [] } })
+  session.user = null
 })
 
 async function mountLabs() {
@@ -377,6 +381,105 @@ describe('EditorView YAML entry point', () => {
   it('hides the YAML button when the lab has no source marker', async () => {
     const wrapper = await mountEditor()
     expect(wrapper.find('.ed-actions .yaml-source-button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('passes the health template allowlist to the picker for a guest', async () => {
+    session.user = { id: 'guest1', username: 'g-0123456789abcdef', role: 'editor', guest: true }
+    api.templates.mockResolvedValue({
+      data: [
+        { id: 'linux', name: 'Linux', kind: 'qemu' },
+        { id: 'vpcs', name: 'VPCS', kind: 'vpcs' },
+        { id: 'iol', name: 'Cisco IOL', kind: 'iol' }
+      ]
+    })
+    api.health.mockResolvedValue({
+      status: 'ok',
+      demo: { enabled: true, landing: 'demo', templates: ['linux', 'vpcs'] }
+    })
+
+    const wrapper = await mountEditor()
+    expect(api.health).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('.add-node').trigger('click')
+    await flushPromises()
+
+    const locked = wrapper.find('[data-group="demo-locked"]')
+    expect(locked.exists()).toBe(true)
+    expect(locked.text()).toContain('Cisco IOL')
+    expect(locked.find('button').element.disabled).toBe(true)
+    expect(wrapper.find('[data-group="needs-image"]').text()).toContain('Linux')
+    expect(wrapper.find('[data-group="needs-image"]').text()).toContain('VPCS')
+    wrapper.unmount()
+  })
+
+  it('passes no allowlist to the picker for a full account', async () => {
+    session.user = { id: 'user1', username: 'editor', role: 'editor' }
+    api.templates.mockResolvedValue({
+      data: [
+        { id: 'linux', name: 'Linux', kind: 'qemu' },
+        { id: 'vpcs', name: 'VPCS', kind: 'vpcs' }
+      ]
+    })
+    api.health.mockResolvedValue({
+      status: 'ok',
+      demo: { enabled: true, landing: 'demo', templates: ['linux'] }
+    })
+
+    const wrapper = await mountEditor()
+    await wrapper.find('.add-node').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-group="demo-locked"]').exists()).toBe(false)
+    expect(wrapper.findAll('.template-grid li')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('locks the whole catalogue when a guest receives an empty allowlist', async () => {
+    session.user = { id: 'guest1', username: 'g-0123456789abcdef', role: 'editor', guest: true }
+    api.templates.mockResolvedValue({
+      data: [
+        { id: 'linux', name: 'Linux', kind: 'qemu' },
+        { id: 'vpcs', name: 'VPCS', kind: 'vpcs' }
+      ]
+    })
+    api.health.mockResolvedValue({
+      status: 'ok',
+      demo: { enabled: true, landing: 'demo', templates: [] }
+    })
+
+    const wrapper = await mountEditor()
+    await wrapper.find('.add-node').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-group="ready"]').exists()).toBe(false)
+    expect(wrapper.find('[data-group="needs-image"]').exists()).toBe(false)
+    const locked = wrapper.find('[data-group="demo-locked"]')
+    expect(locked.exists()).toBe(true)
+    expect(locked.text()).toContain('Linux')
+    expect(locked.text()).toContain('VPCS')
+    const buttons = locked.findAll('button')
+    expect(buttons).toHaveLength(2)
+    expect(buttons.every((button) => button.element.disabled)).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps the picker unfiltered when the health allowlist fails', async () => {
+    session.user = { id: 'guest1', username: 'g-0123456789abcdef', role: 'editor', guest: true }
+    api.templates.mockResolvedValue({
+      data: [
+        { id: 'linux', name: 'Linux', kind: 'qemu' },
+        { id: 'vpcs', name: 'VPCS', kind: 'vpcs' }
+      ]
+    })
+    api.health.mockRejectedValue(new Error('health unavailable'))
+
+    const wrapper = await mountEditor()
+    await wrapper.find('.add-node').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-group="demo-locked"]').exists()).toBe(false)
+    expect(wrapper.findAll('.template-grid li')).toHaveLength(2)
     wrapper.unmount()
   })
 

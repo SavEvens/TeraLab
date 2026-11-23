@@ -346,7 +346,15 @@ export function startMockServer(port = 8099) {
       return send(response, 200, {
         status: 'ok',
         version: '1.6-dev',
-        demo: { enabled: !!settings.demo_enabled, landing: settings.demo_landing },
+        demo: {
+          enabled: !!settings.demo_enabled,
+          landing: settings.demo_landing,
+          // The picker groups catalogue templates by this allowlist for guests.
+          templates: String(settings.demo_allowed_templates || '')
+            .split(',')
+            .map((id) => id.trim())
+            .filter(Boolean)
+        },
         turnstile: { enabled: !!settings.turnstile_enabled, site_key: settings.turnstile_site_key }
       })
     }

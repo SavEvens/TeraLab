@@ -45,7 +45,29 @@
         </ul>
       </section>
 
-      <p v-if="!ready.length && !needsImage.length" class="empty">No templates match “{{ search }}”.</p>
+      <section v-if="locked.length" class="template-group" data-group="demo-locked">
+        <h3>Available on the full platform <span class="badge">{{ locked.length }}</span></h3>
+        <p class="hint">The demo includes a starter set of templates. Sign in with a full account to use these.</p>
+        <ul class="template-grid">
+          <li v-for="template in locked" :key="template.id">
+            <img v-if="template.icon" :src="`/images/icons/${template.icon}`" alt="" />
+            <span v-else class="template-dot" aria-hidden="true"></span>
+            <span class="template-copy">
+              <strong>{{ template.name || template.id }}</strong>
+              <small>{{ template.kind }} · available on the full platform</small>
+            </span>
+            <button
+              disabled
+              aria-disabled="true"
+              :title="lockedTitle(template)"
+              @click="add(template)"
+            >Add</button>
+          </li>
+        </ul>
+      </section>
+
+      <p v-if="!ready.length && !needsImage.length && !locked.length" class="empty">No templates match “{{ search }}”.</p>
+      <p v-else-if="!ready.length && !needsImage.length" class="empty">No templates included in the demo match “{{ search }}”.</p>
 
       <div class="picker-special">
         <button class="ghost" @click="add({ id: '__text', name: 'Text', kind: 'text' }, 1)">Add text</button>
@@ -60,7 +82,11 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 
 const props = defineProps({
   templates: { type: Array, default: () => [] },
-  images: { type: Array, default: () => [] }
+  images: { type: Array, default: () => [] },
+  // Demo guests receive the template ids their account may use. A null
+  // allowlist means no filtering (non-guest or health unavailable); an empty
+  // array is a real policy: the demo allows no catalogue templates.
+  allowedTemplates: { type: Array, default: null }
 })
 const emit = defineEmits(['add', 'close'])
 
@@ -73,6 +99,8 @@ function clampCount(value) {
 }
 
 function add(template, fixedCount = null) {
+  // Locked tiles render a disabled button; refuse them defensively as well.
+  if (isLocked(template)) return
   const selectedCount = fixedCount ?? clampCount(count.value)
   emit('add', { template, count: selectedCount, image: assignedImage(template) })
 }
@@ -100,17 +128,39 @@ function assignedImage(template) {
   return first.reference || ''
 }
 
+const allowSet = computed(() => {
+  if (!Array.isArray(props.allowedTemplates)) return null
+  return new Set(props.allowedTemplates.filter(Boolean))
+})
 const mappedIds = computed(() => new Set(props.images.map((image) => image.template).filter(Boolean)))
 const matching = computed(() => {
   const needle = search.value.trim().toLowerCase()
 
   return props.templates.filter((template) => `${template.id} ${template.name} ${template.kind}`.toLowerCase().includes(needle))
 })
-const ready = computed(() => matching.value.filter((template) => isDocker(template) || mappedIds.value.has(template.id)))
-const needsImage = computed(() => matching.value.filter((template) => !isDocker(template) && !mappedIds.value.has(template.id)))
+const available = computed(() => allowSet.value
+  ? matching.value.filter((template) => allowSet.value.has(template.id))
+  : matching.value)
+const locked = computed(() => allowSet.value
+  ? matching.value.filter((template) => !allowSet.value.has(template.id))
+  : [])
+const ready = computed(() => available.value.filter((template) => isDocker(template) || mappedIds.value.has(template.id)))
+const needsImage = computed(() => available.value.filter((template) => !isDocker(template) && !mappedIds.value.has(template.id)))
 
 function imagesFor(template) {
   return props.images.filter((image) => image.template === template.id)
+}
+
+// Text and picture nodes are editor primitives, not catalogue templates, so
+// the allowlist never applies to them.
+function isLocked(template) {
+  if (!allowSet.value || !template) return false
+  if (template.kind === 'text' || template.kind === 'picture') return false
+  return !allowSet.value.has(template.id)
+}
+
+function lockedTitle(template) {
+  return `“${template.name || template.id}” is available on the full platform. Sign in with a full account to add it.`
 }
 
 // Docker tiles name the container reference the template will start; other
