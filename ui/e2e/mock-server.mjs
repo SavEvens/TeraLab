@@ -97,6 +97,8 @@ export function startMockServer(port = 8099) {
   let guestCount = 0
   let lastValidate = null
   let lastYamlApply = null
+  let lastDemoSweep = null
+  const demo = { lastSweepAt: null, memAvailableMb: 8192, nodesRunning: 1 }
   let users = [
     { id: 'user1', username: 'admin', email: 'admin@example.test', name: 'Ada Admin', role: 'admin', expiration: -1, created_at: usersNow - 7200, updated_at: usersNow - 3600, session_count: 2, last_seen_at: usersNow - 60, lab_count: 1 },
     { id: 'user2', username: 'editor', email: 'editor@example.test', name: 'Ed Editor', role: 'editor', expiration: Math.floor((Date.now() + 30 * 86400000) / 1000), created_at: usersNow - 6000, updated_at: usersNow - 5000, session_count: 0, last_seen_at: null, lab_count: 2 },
@@ -207,7 +209,8 @@ export function startMockServer(port = 8099) {
         createdLabs: createdLabs.map((created) => ({ id: created.id, name: created.name, path: created.path })),
         lastMove,
         lastValidate,
-        lastYamlApply
+        lastYamlApply,
+        lastDemoSweep
       })
     }
     if (request.method === 'POST' && (path === '/__yaml' || path === '/__yaml-stopped')) {
@@ -801,6 +804,27 @@ export function startMockServer(port = 8099) {
     if (path === '/api/v2/system/settings' && request.method === 'PUT') {
       settings = { ...settings, ...(await body(request)) }
       return send(response, 200, { status: 'success', data: settings })
+    }
+    if (path === '/api/v2/system/demo/status' && request.method === 'GET') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      return send(response, 200, {
+        data: {
+          last_sweep_at: demo.lastSweepAt,
+          mem_available_mb: demo.memAvailableMb,
+          guests_active: users.filter((user) => user.guest).length,
+          demo_nodes_running: demo.nodesRunning
+        }
+      })
+    }
+    if (path === '/api/v2/system/demo/sweep' && request.method === 'POST') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      demo.lastSweepAt = Math.floor(Date.now() / 1000)
+      demo.memAvailableMb = 6144
+      demo.nodesRunning = 0
+      lastDemoSweep = { guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, labs_failed: 0, mem_available_mb: demo.memAvailableMb }
+      return send(response, 200, { data: lastDemoSweep })
     }
     if (path === '/api/v2/system/logs') return send(response, 200, { data: { source: 'api', lines: ['mock log line'], size: 14, modified: 0 } })
     if (path === '/api/v2/system/tokens' && request.method === 'GET') return send(response, 200, { data: tokens })

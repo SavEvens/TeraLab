@@ -684,6 +684,12 @@ func (m *Manager) startDocker(spec Spec, runDir string) (NodeInfo, error) {
 	node.Ready.Store(true)
 	if master, command := m.startDockerConsole(spec, containerID, runDir); master != nil {
 		node.PTY = master
+		// The docker exec pty is the container console: count its reads and
+		// writes as node activity like a serial pty.
+		node.consoleStream = &activityStream{
+			stream: master,
+			touch:  func() { m.touchActivity(spec.ID) },
+		}
 		node.ExecCmd = command
 		go m.pumpPTY(node)
 		go m.reapDockerConsole(node, command)
@@ -1290,6 +1296,10 @@ func (m *Manager) registerDockerRecord(record stateFileRecord) error {
 		node.Ready.Store(true)
 		if master, command := m.startDockerConsole(spec, node.ContainerID, node.RunDir); master != nil {
 			node.PTY = master
+			node.consoleStream = &activityStream{
+				stream: master,
+				touch:  func() { m.touchActivity(spec.ID) },
+			}
 			node.ExecCmd = command
 			go m.pumpPTY(node)
 			go m.reapDockerConsole(node, command)

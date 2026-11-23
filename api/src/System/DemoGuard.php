@@ -28,6 +28,7 @@ final class DemoGuard
         private readonly SettingsService $settings,
         private readonly DemoPolicy $policy,
         private readonly TemplateRepository $templates,
+        private readonly ?HostMemory $memory = null,
     ) {
     }
 
@@ -75,6 +76,27 @@ final class DemoGuard
             if ($ram > $ramCap) {
                 throw new HttpException(422, $this->ramMessage($node, $ram, $ramCap));
             }
+        }
+    }
+
+    /**
+     * Refuse a new guest workload while the host is below the demo floor.
+     *
+     * Only active guests are guarded; an unreadable or malformed memory
+     * reading fails open so a probe problem can never block the demo.
+     */
+    public function assertMemoryFloor(?string $userId): void
+    {
+        if (!$this->isGuarded($userId) || $this->memory === null) {
+            return;
+        }
+        $available = $this->memory->availableMb();
+        if ($available === null) {
+            return;
+        }
+        $floor = $this->settings->int('demo_memory_floor_mb', 2048);
+        if ($available < $floor) {
+            throw new HttpException(409, 'The demo is at capacity right now; try again shortly.');
         }
     }
 

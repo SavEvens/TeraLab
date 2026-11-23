@@ -25,9 +25,20 @@ type PTYSession struct {
 	done chan struct{}
 	once sync.Once
 
+	// OnIO, when set, is notified after every successful console read or
+	// write. It must not block: it runs on the console hot path.
+	OnIO func()
+
 	mu      sync.Mutex
 	backlog []byte
 	writeTo io.Writer
+}
+
+// notifyIO reports console activity through the optional callback.
+func (s *PTYSession) notifyIO() {
+	if s.OnIO != nil {
+		s.OnIO()
+	}
 }
 
 func (s *PTYSession) Read(buffer []byte) (int, error) {
@@ -36,6 +47,9 @@ func (s *PTYSession) Read(buffer []byte) (int, error) {
 		count := copy(buffer, s.backlog)
 		s.backlog = s.backlog[count:]
 		s.mu.Unlock()
+		if count > 0 {
+			s.notifyIO()
+		}
 		return count, nil
 	}
 	s.mu.Unlock()
@@ -47,6 +61,9 @@ func (s *PTYSession) Read(buffer []byte) (int, error) {
 			s.mu.Lock()
 			s.backlog = append(s.backlog, chunk[count:]...)
 			s.mu.Unlock()
+		}
+		if count > 0 {
+			s.notifyIO()
 		}
 		return count, nil
 	case <-s.done:
@@ -67,7 +84,12 @@ func (s *PTYSession) Write(buffer []byte) (int, error) {
 		defer s.node.writeMu.Unlock()
 	}
 
-	return s.writeTo.Write(buffer)
+	count, err := s.writeTo.Write(buffer)
+	if count > 0 {
+		s.notifyIO()
+	}
+
+	return count, err
 }
 
 // Resize applies a terminal window size to the node's console pty. It is a
@@ -112,7 +134,8 @@ func (m *Manager) AttachPTY(id string) (*PTYSession, bool) {
 		node:    node,
 		ch:      make(chan []byte, 128),
 		done:    make(chan struct{}),
-		writeTo: node.PTY,
+		writeTo: node.consoleWriter(),
+		OnIO:    func() { m.touchActivity(id) },
 	}
 
 	node.historyMu.Lock()
@@ -124,6 +147,54 @@ func (m *Manager) AttachPTY(id string) (*PTYSession, bool) {
 	node.historyMu.Unlock()
 
 	return session, true
+}
+
+// activityStream reports successful console reads and writes to an optional
+// callback. Docker exec consoles wrap their pty master with it so container
+// console I/O counts as node activity, exactly like a serial pty. A wrapped
+// read is engine output rather than user input, which can only make a node
+// look more active; that errs on the side of never idle-wiping a live guest.
+type activityStream struct {
+	stream io.ReadWriter
+	touch  func()
+}
+
+func (s *activityStream) Read(buffer []byte) (int, error) {
+	count, err := s.stream.Read(buffer)
+	if count > 0 && s.touch != nil {
+		s.touch()
+	}
+
+	return count, err
+}
+
+func (s *activityStream) Write(buffer []byte) (int, error) {
+	count, err := s.stream.Write(buffer)
+	if count > 0 && s.touch != nil {
+		s.touch()
+	}
+
+	return count, err
+}
+
+// consoleReader returns the activity-wrapped console stream when the engine
+// provides one (docker exec) and the plain pty otherwise.
+func (n *Node) consoleReader() io.Reader {
+	if n.consoleStream != nil {
+		return n.consoleStream
+	}
+
+	return n.PTY
+}
+
+// consoleWriter returns the activity-wrapped console stream when the engine
+// provides one (docker exec) and the plain pty otherwise.
+func (n *Node) consoleWriter() io.Writer {
+	if n.consoleStream != nil {
+		return n.consoleStream
+	}
+
+	return n.PTY
 }
 
 // markConsoleOutput marks a node ready on first console output. A QEMU guest
@@ -140,7 +211,7 @@ func (n *Node) markConsoleOutput() {
 func (m *Manager) pumpPTY(node *Node) {
 	buffer := make([]byte, 4096)
 	for {
-		count, err := node.PTY.Read(buffer)
+		count, err := node.consoleReader().Read(buffer)
 		if count > 0 {
 			node.markConsoleOutput()
 			chunk := append([]byte(nil), buffer[:count]...)

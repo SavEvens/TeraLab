@@ -18,6 +18,7 @@ use TeraLab\Api\Jobs\JobService;
 use TeraLab\Api\Labs\LabLocks;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\LabService;
+use TeraLab\Api\System\DemoSweeper;
 
 final class LabController
 {
@@ -35,12 +36,16 @@ final class LabController
         private readonly AuditLogger $audit,
         private readonly JobService $jobs,
         private readonly Config $config,
+        private readonly DemoSweeper $sweeper,
     ) {
     }
 
     public function index(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $user = $this->access->user($request);
+        // Lazy demo housekeeping: interval-gated, so this is a single indexed
+        // settings read on the common path.
+        $this->sweeper->sweepIfDue();
         $labs = $this->access->filterLabs($user, $this->labs->all());
         $running = $this->service->runningLabs();
         foreach ($labs as &$lab) {
@@ -407,6 +412,10 @@ final class LabController
         $user = $this->access->user($request);
         $this->access->requireRole($user, 'editor');
         $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        // Reclaim demo capacity before the start so the floor check sees a
+        // freshly swept host. LabService is not given the sweeper: that would
+        // form a DI cycle (sweeper -> lab service), so the trigger lives here.
+        $this->sweeper->sweepIfDue();
         $jobID = $this->jobs->start('lab.start', (string) $user['id'], ['lab_id' => $lab['id']]);
         try {
             $data = $this->service->start((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
@@ -576,6 +585,10 @@ final class LabController
      */
     public function nodeStart(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
+        // Same lazy housekeeping as a whole-lab start, so a guest node start
+        // also sees a freshly swept host before the memory-floor check.
+        $this->sweeper->sweepIfDue();
+
         return $this->nodeAction($request, $response, $args, 'start');
     }
 

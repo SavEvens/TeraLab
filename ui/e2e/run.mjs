@@ -168,6 +168,29 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.demo-templates input').length >= 2, null, { timeout: 10000 })
   const demoPanelTemplates = await page.locator('.demo-templates input').count()
   const demoSecretStatus = (await page.locator('.demo-panel .secret-field .badge').innerText()).trim()
+
+  // The sweeper panel shows the last sweep plus host/guest counts, and the
+  // action refreshes both the toast summary and the status block.
+  await page.locator('[data-test="demo-status"]').waitFor({ state: 'visible' })
+  const demoLastSweepBefore = (await page.locator('[data-test="demo-last-sweep"]').innerText()).trim()
+  const demoMemoryBefore = (await page.locator('[data-test="demo-memory"]').innerText()).trim()
+  const demoGuestsBefore = (await page.locator('[data-test="demo-guests"]').innerText()).trim()
+  const demoNodesBefore = (await page.locator('[data-test="demo-nodes"]').innerText()).trim()
+  await page.getByRole('button', { name: 'Sweep now' }).click()
+  await page.waitForFunction(
+    () => document.querySelector('[data-test="demo-last-sweep"]')?.textContent.trim() !== 'never',
+    null,
+    { timeout: 10000 }
+  )
+  const demoLastSweepAfter = (await page.locator('[data-test="demo-last-sweep"]').innerText()).trim()
+  const demoMemoryAfter = (await page.locator('[data-test="demo-memory"]').innerText()).trim()
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('.toast')].some((toast) => /Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped\./.test(toast.textContent || '')),
+    null,
+    { timeout: 10000 }
+  )
+  const demoSweepToast = (await page.locator('.toasts').innerText()).replace(/\s+/g, ' ').trim()
+  const demoSweepSummary = (await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()).lastDemoSweep
   await page.getByRole('tab', { name: 'Tokens' }).click()
   await page.locator('.token-form input').first().fill('e2e token')
   await page.getByRole('button', { name: 'Create token' }).click()
@@ -952,6 +975,14 @@ try {
     adminDemoTabCount,
     demoPanelTemplates,
     demoSecretStatus,
+    demoLastSweepBefore,
+    demoLastSweepAfter,
+    demoMemoryBefore,
+    demoMemoryAfter,
+    demoGuestsBefore,
+    demoNodesBefore,
+    demoSweepToast,
+    demoSweepSummary,
     viewerHasUsersTab,
     viewerHasDemoTab,
     usersForbidden,
@@ -1170,6 +1201,26 @@ try {
   if (adminDemoTabCount !== 1) throw new Error(`admin Demo tab count is ${adminDemoTabCount}`)
   if (demoPanelTemplates < 2) throw new Error(`demo allowlist loaded ${demoPanelTemplates} templates`)
   if (demoSecretStatus !== 'configured') throw new Error(`demo secret status is ${demoSecretStatus}`)
+  if (demoLastSweepBefore !== 'never') throw new Error(`demo last sweep did not start empty: ${demoLastSweepBefore}`)
+  if (!demoLastSweepAfter || demoLastSweepAfter === 'never') {
+    throw new Error(`demo last sweep did not refresh after sweeping: ${demoLastSweepAfter}`)
+  }
+  if (demoMemoryBefore !== '8192 MB' || demoMemoryAfter !== '6144 MB') {
+    throw new Error(`demo memory status did not refresh: ${demoMemoryBefore} -> ${demoMemoryAfter}`)
+  }
+  if (demoGuestsBefore !== '0' || demoNodesBefore !== '1') {
+    throw new Error(`demo counts are wrong: guests=${demoGuestsBefore} nodes=${demoNodesBefore}`)
+  }
+  if (!/Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped\./.test(demoSweepToast)) {
+    throw new Error(`demo sweep toast is wrong: ${demoSweepToast}`)
+  }
+  if (
+    demoSweepSummary?.guests_purged !== 2 ||
+    demoSweepSummary?.labs_wiped !== 3 ||
+    demoSweepSummary?.nodes_reaped !== 1
+  ) {
+    throw new Error(`demo sweep summary is wrong: ${JSON.stringify(demoSweepSummary)}`)
+  }
   if (viewerHasUsersTab !== 0) throw new Error('non-admin still sees the Users tab')
   if (viewerHasDemoTab !== 0) throw new Error('non-admin still sees the Demo tab')
   if (usersForbidden !== 403) throw new Error(`GET /api/v2/users returned ${usersForbidden} for a non-admin`)

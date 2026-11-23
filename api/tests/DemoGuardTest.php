@@ -14,6 +14,7 @@ use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\DemoPolicy;
+use TeraLab\Api\System\HostMemory;
 use TeraLab\Api\System\SettingsService;
 use TeraLab\Api\Templates\TemplateRepository;
 
@@ -395,6 +396,35 @@ final class DemoGuardTest extends TestCase
         self::assertSame(512, $prepared['lab']['node_list'][1]['ram']);
     }
 
+    public function testMemoryFloorOnlyGuardsActiveGuestsAndFailsOpen(): void
+    {
+        $this->settings->update(['demo_memory_floor_mb' => 2048]);
+        $guest = $this->insertUser('guest-floor', 'editor', 1, time() + 600);
+        $expired = $this->insertUser('guest-floor-expired', 'editor', 1, time() - 10);
+        $editor = $this->insertUser('editor-floor', 'editor', 0, -1);
+
+        $low = $this->guardWithMemory(1024);
+        try {
+            $low->assertMemoryFloor($guest);
+            self::fail('a guest must be refused below the memory floor');
+        } catch (HttpException $exception) {
+            self::assertSame(409, $exception->status);
+            self::assertSame(
+                'The demo is at capacity right now; try again shortly.',
+                $exception->getMessage(),
+            );
+        }
+        // Non-guests and expired guests are exempt, like every demo cap.
+        $low->assertMemoryFloor($editor);
+        $low->assertMemoryFloor($expired);
+        $low->assertMemoryFloor(null);
+
+        // At or above the floor, and when the probe is unavailable, the guard
+        // fails open instead of blocking the demo.
+        $this->guardWithMemory(4096)->assertMemoryFloor($guest);
+        $this->guardWithMemory(null)->assertMemoryFloor($guest);
+    }
+
     public function testAllowedTemplatesNormalisesTheCsv(): void
     {
         $this->settings->update(['demo_allowed_templates' => ' vpcs , , iol ,vpcs ']);
@@ -457,6 +487,22 @@ final class DemoGuardTest extends TestCase
             $this->settings,
             new DemoPolicy(),
             new TemplateRepository($this->config),
+        );
+    }
+
+    private function guardWithMemory(?int $availableMb): DemoGuard
+    {
+        $path = $this->root . '/meminfo-' . bin2hex(random_bytes(4));
+        if ($availableMb !== null) {
+            file_put_contents($path, 'MemAvailable: ' . ($availableMb * 1024) . " kB\n");
+        }
+
+        return new DemoGuard(
+            $this->pdo,
+            $this->settings,
+            new DemoPolicy(),
+            new TemplateRepository($this->config),
+            new HostMemory($path),
         );
     }
 

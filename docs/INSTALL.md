@@ -17,6 +17,9 @@ the kernel remain separate components with their own licences.
 - Apache 2.4 with `mod_proxy`, `mod_proxy_wstunnel`, and `mod_rewrite`
 - Optional: `openvswitch-switch` for LACP forwarding
 - Optional: Docker Engine (`docker` CLI and daemon) for `kind: docker` nodes
+- Optional: KSM for memory deduplication (`--ksm`); needs kernel 6.4+ and
+  systemd 254+ — see
+  [Kernel same-page merging](#kernel-same-page-merging-ksm-optional)
 - Optional, for Turnstile: outbound HTTPS (443) from the web tier and from the
   visitor's browser to `challenges.cloudflare.com`, plus `allow_url_fopen=On`
   and the `openssl` extension in the PHP used by Apache
@@ -45,9 +48,12 @@ The installer:
 6. builds the Vue UI and installs it at `html/ui`;
 7. links `/opt/unetlab -> /opt/teralab` for legacy paths;
 8. writes the Apache configuration and enables the agent unit and, when
-   systemd is available, the lab bridge firewall unit.
+   systemd is available, the lab bridge firewall unit;
+9. with `--ksm`, also installs and starts the KSM unit and the two memory-merge
+   drop-ins (see below). A default install does not.
 
-Options: `--root`, `--data`, `--source`, `--agent-binary`, `--no-systemd`.
+Options: `--root`, `--data`, `--source`, `--agent-binary`, `--no-systemd`,
+`--ksm`.
 
 ## Apache
 
@@ -195,12 +201,15 @@ upsell hint. An empty `demo_allowed_templates` therefore disables the whole
 catalogue, matching the API, which rejects every templated node. See the API
 reference's *Per-lab demo limits* for the exact messages.
 
-The idle-wipe/sweep settings (`demo_idle_wipe_minutes`, `demo_sweep_interval`)
-are still stored and validated but **not enforced yet**: an idle guest lab is
-not removed automatically, so monitor disk use and clean up stale guest labs.
-The caps bound lab size, not behaviour: a guest can still use the host's CPU
-and disk within them, so only expose the demo to visitors you would trust with
-a constrained `editor` account.
+The idle-wipe/sweep settings (`demo_guest_idle_hours`,
+`demo_idle_wipe_minutes`, `demo_sweep_interval`) are enforced by the demo
+sweeper: expired or idle guests and idle guest labs are reclaimed lazily when
+the lab list or a lab or node start runs a due sweep, at most once per
+`demo_sweep_interval` seconds. Admin and non-guest editor labs are never
+touched. See the API reference's *Demo sweeper and capacity*. The caps bound
+lab size, not behaviour: a guest can still use the host's CPU and disk within
+them, so only expose the demo to visitors you would trust with a constrained
+`editor` account.
 
 **Turnstile.** `turnstile_enabled` adds a Cloudflare Turnstile check to demo
 entry *and* to password sign-in, on both the v2 and the legacy v1 login routes,
@@ -534,6 +543,142 @@ If you use a firewall manager (for example `ufw`, `firewalld`, or a custom
 iptables restore script) that flushes or overwrites the `FORWARD` chain, make
 sure it preserves this rule, or re-run the script or unit afterwards.
 
+## Kernel same-page merging (KSM, optional)
+
+KSM asks the kernel to merge identical anonymous memory pages across processes.
+TeraLab runs many nodes from a handful of images, and QEMU nodes are the main
+beneficiary: their guest RAM is anonymous and QEMU registers it as mergeable by
+default (`-machine mem-merge=on`), so several nodes booted from the same image
+share most of their memory once the KSM scanner runs. Only anonymous memory is
+merged; file-backed image and container layers are page cache and are already
+shared by the kernel.
+
+KSM is **opt-in**: a default `install.sh` run does not touch it, and the demo
+tier does not need it. Enable it when you run many similar nodes on a host that
+is short on memory; QEMU nodes benefit most.
+
+### Requirements
+
+- kernel 6.4 or newer with `CONFIG_KSM` (`prctl(2)` `PR_SET_MEMORY_MERGE`,
+  which systemd uses to mark a service's processes, arrived in 6.4)
+- systemd 254 or newer (`MemoryKSM=`, documented in `systemd.exec(5)`)
+- no cgroup setup is involved: systemd applies the setting per process, not
+  through a cgroup file
+- Docker Engine only if you run `kind: docker` nodes
+
+Debian 13 ships kernel 6.12 and systemd 257, so it meets both.
+
+The setting name is `MemoryKSM=` (capital `KSM`), not `MemoryKsm=`. systemd
+rejects an unknown key with `Unknown key 'MemoryKsm' in section [Service],
+ignoring.` and the drop-in silently does nothing, so check the key if you write
+the drop-in by hand.
+
+### Install
+
+```sh
+sudo packaging/teralab/install.sh --ksm                     # from a checkout
+sudo /opt/teralab/packaging/teralab/install.sh --ksm        # from the installed tree
+```
+
+`--ksm` is additive and idempotent: it changes nothing for the other options,
+re-running it rewrites the same content, and a re-run without `--ksm` does not
+remove an existing KSM setup. It writes:
+
+| Path | Content |
+|---|---|
+| `/etc/systemd/system/teralab-ksm.service` | oneshot, `RemainAfterExit=yes`; sets `/sys/kernel/mm/ksm/run=1`, `pages_to_scan=4000`, `sleep_millisecs=50`; enabled and started |
+| `/etc/systemd/system/docker.service.d/ksm.conf` | `[Service]` with `MemoryKSM=yes` |
+| `/etc/systemd/system/teralab-agent.service.d/ksm.conf` | `[Service]` with `MemoryKSM=yes` |
+
+The two drop-ins add only `ksm.conf` to their directories (created mode 0755);
+other drop-ins there are left alone. `MemoryKSM=yes` marks the processes systemd
+starts for that unit as mergeable; containers whose processes are started
+through Docker/containerd are not automatically covered, so judge the result by
+the counters below rather than by the configuration alone.
+
+The installer runs `systemctl daemon-reload`, enables and starts
+`teralab-ksm.service`, and prints the two notes below. It deliberately does
+**not** restart Docker or the agent:
+
+- The Docker drop-in is read the next time `docker.service` starts. **Restart
+  Docker while no labs are running**:
+
+  ```sh
+  sudo systemctl restart docker
+  ```
+
+  The restart stops every running container. Start the lab again afterwards:
+  container filesystems survive (a stop is not a wipe), but in-memory
+  configuration and process state do not.
+- The agent drop-in is applied the next time `teralab-agent.service` starts.
+  Restarting the agent ends open consoles and interrupts node control, so do it
+  when the lab is idle.
+
+`--ksm` with `--no-systemd` (or on a host without `systemctl`) installs nothing
+and warns, because the feature is entirely systemd-driven.
+
+### Verify
+
+```sh
+cat /sys/kernel/mm/ksm/run                     # 1 while teralab-ksm.service is active
+systemctl status teralab-ksm.service
+systemctl cat docker.service | grep MemoryKSM          # drop-in is loaded
+systemctl cat teralab-agent.service | grep MemoryKSM
+cat /sys/kernel/mm/ksm/pages_shared /sys/kernel/mm/ksm/pages_sharing
+```
+
+`pages_shared` counts the distinct pages KSM keeps as one copy; `pages_sharing`
+counts the additional mappings that point at them, i.e. the number of pages
+saved (the kernel documents it as “how much saved”). Merge activity is visible
+as `pages_sharing` growing while `pages_shared` grows more slowly, and the
+memory saved is `pages_sharing × 4096` bytes. Both numbers stay at `0` until
+several similar nodes have run for a while: the unit's `sleep_millisecs=50` and
+`pages_to_scan=4000` are a deliberately gentle scan rate, and KSM only merges
+pages it has scanned. A high `pages_unshared` means KSM is checking pages that
+never merge, which wastes some effort; `pages_volatile` counts pages that change
+too fast to merge, which is normal for a busy node.
+
+If `systemctl cat` shows no `MemoryKSM=`, or the journal reports that
+`MemoryKSM` is an unknown key for `teralab-agent.service`, the systemd on the
+host is older than 254 and the drop-in has no effect.
+
+### Caveats
+
+- **Restarting Docker is disruptive.** It stops the containers of every running
+  lab, so do it during a maintenance window with no labs up. KSM itself is
+  already scanning after the unit starts; only the drop-in waits for the
+  restart.
+- **CPU cost.** KSM scans pages continuously and merges copy-on-write. It costs
+  CPU on memory-heavy hosts; the unit's settings are a conservative compromise,
+  and `pages_to_scan`/`sleep_millisecs` can be tuned in the unit's `ExecStart`.
+- **Page-sharing side channel.** Deduplicated pages are shared, and a process
+  can observe whether a page it owns is shared. That is a known timing side
+  channel between processes, so deduplication is only appropriate inside one
+  operator's trust domain. Do not enable KSM on a host that serves mutually
+  untrusted paying tenants: any future multi-tenant paid tier must run without
+  KSM or on separate hosts.
+- **Opt-in and reversible.** Nothing else in TeraLab depends on KSM; disabling
+  it only changes memory use.
+
+### Disable
+
+```sh
+sudo systemctl disable --now teralab-ksm.service
+sudo rm -f /etc/systemd/system/teralab-ksm.service \
+    /etc/systemd/system/docker.service.d/ksm.conf \
+    /etc/systemd/system/teralab-agent.service.d/ksm.conf
+sudo systemctl daemon-reload
+echo 2 | sudo tee /sys/kernel/mm/ksm/run           # stop scanning and unmerge shared pages
+sudo systemctl restart docker                      # when no labs are running
+```
+
+`echo 2` stops the scanner and unmerges every shared page, which needs enough
+free memory to make the copies; `echo 0` would only stop the scanner and leave
+the merged pages in place.
+
+The drop-in removal only takes effect for Docker and the agent after their next
+restart, as above.
+
 ## Image upload troubleshooting
 
 IOL/Dynamips images are commonly 100–300 MB. If an upload immediately fails with
@@ -565,12 +710,20 @@ Stop the unit and remove TeraLab-owned paths:
 
 ```sh
 sudo systemctl disable --now teralab-agent teralab-firewall
+sudo systemctl disable --now teralab-ksm 2>/dev/null || true   # only with --ksm
 sudo rm -rf /opt/teralab /etc/teralab /var/lib/teralab
 sudo rm -f /etc/apache2/conf-available/teralab.conf \
     /etc/systemd/system/teralab-agent.service \
-    /etc/systemd/system/teralab-firewall.service
+    /etc/systemd/system/teralab-firewall.service \
+    /etc/systemd/system/teralab-ksm.service \
+    /etc/systemd/system/docker.service.d/ksm.conf \
+    /etc/systemd/system/teralab-agent.service.d/ksm.conf
+sudo systemctl daemon-reload
 sudo iptables -D FORWARD -i tl+ -o tl+ -j ACCEPT 2>/dev/null || true
 sudo ip6tables -D FORWARD -i tl+ -o tl+ -j ACCEPT 2>/dev/null || true
 ```
+
+If you enabled KSM with `--ksm`, the scanner stays on until you disable it; see
+[Disable](#disable) to stop it and unmerge shared pages.
 
 Never delete `/var/lib/teralab` unless you intend to remove labs and images.

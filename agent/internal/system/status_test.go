@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/config"
+	"github.com/SavEvens/TeraLab/agent/internal/engine"
 )
 
 func TestInterfacesListsHostLinks(t *testing.T) {
@@ -175,6 +176,43 @@ func TestStatusCPUUsageJSONField(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), `"cpu_usage_percent":42.5`) {
 		t.Fatalf("status payload lacks the measured cpu field: %s", payload)
+	}
+}
+
+func TestStatusNodesExposeLastActivity(t *testing.T) {
+	started := time.Now().Add(-2 * time.Minute).UTC().Round(0)
+	activity := started.Add(time.Minute)
+	payload, err := json.Marshal(Status{Nodes: []engine.NodeInfo{{
+		ID:           "node1",
+		State:        "running",
+		Started:      started,
+		LastActivity: activity,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"last_activity"`) {
+		t.Fatalf("status payload lacks last_activity: %s", payload)
+	}
+
+	var decoded struct {
+		Nodes []struct {
+			Started      time.Time `json:"started"`
+			LastActivity time.Time `json:"last_activity"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Nodes) != 1 {
+		t.Fatalf("status payload has %d nodes, want 1", len(decoded.Nodes))
+	}
+	reported := decoded.Nodes[0]
+	if reported.LastActivity.IsZero() {
+		t.Fatalf("running node has no last activity: %s", payload)
+	}
+	if reported.LastActivity.Before(reported.Started) {
+		t.Fatalf("last activity %v is before started %v", reported.LastActivity, reported.Started)
 	}
 }
 

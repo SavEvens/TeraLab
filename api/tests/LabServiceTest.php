@@ -44,6 +44,9 @@ final class LabServiceTest extends TestCase
     /** @var list<string> Node names whose /v1/node.stop must fail. */
     private array $failingStops = [];
 
+    /** RFC3339 activity the fake reports for running nodes; null omits it. */
+    private ?string $nodeLastActivity = null;
+
     /**
      * Agent node id suffixes (`<lab-id>-<node-id>`) whose /v1/node.status must
      * fail with HTTP 500, so the service reports an `unknown` node state.
@@ -161,6 +164,26 @@ final class LabServiceTest extends TestCase
             self::assertArrayNotHasKey('docker', $start['payload'], 'non-docker specs carry no docker block');
             self::assertArrayNotHasKey('config', $start['payload'], 'non-docker nodes have no config here');
         }
+    }
+
+    public function testNodesReportsLastActivityAndNullWhenTheAgentOmitsIt(): void
+    {
+        $service = $this->service();
+        $lab = $service->create([
+            'name' => 'Activity Lab',
+            'nodes' => [
+                $this->node('1', 'PC1', 'vpcs', '', []),
+                $this->node('2', 'PC2', 'vpcs', '', []),
+            ],
+        ]);
+        $activity = '2026-01-02T03:04:05Z';
+        $this->nodeLastActivity = $activity;
+        $service->startNode((string) $lab['id'], '1');
+
+        $nodes = $service->nodes((string) $lab['id'])['nodes'];
+
+        self::assertSame(strtotime($activity), $nodes[0]['last_activity']);
+        self::assertNull($nodes[1]['last_activity']);
     }
 
     public function testFailedNodeStartKeepsLabLinks(): void
@@ -1358,7 +1381,12 @@ final class LabServiceTest extends TestCase
                     }
                 }
                 if (isset($this->running[$id])) {
-                    return [200, '{"ok":true,"result":{"state":"running"}}'];
+                    $result = ['state' => 'running'];
+                    if ($this->nodeLastActivity !== null) {
+                        $result['last_activity'] = $this->nodeLastActivity;
+                    }
+
+                    return [200, json_encode(['ok' => true, 'result' => $result], JSON_THROW_ON_ERROR)];
                 }
 
                 return [404, '{"ok":false,"error":{"code":"not_found","message":"node not found"}}'];

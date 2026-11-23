@@ -27,6 +27,8 @@ vi.mock('../src/api', () => ({
     host: vi.fn(),
     settings: vi.fn(),
     saveSettings: vi.fn(),
+    demoStatus: vi.fn(),
+    demoSweep: vi.fn(),
     logs: vi.fn(),
     tokens: vi.fn(),
     createToken: vi.fn(),
@@ -736,6 +738,8 @@ describe('SystemView users', () => {
     expect(tabNames).not.toContain('Demo')
     expect(api.users).not.toHaveBeenCalled()
     expect(api.templates).not.toHaveBeenCalled()
+    expect(api.demoStatus).not.toHaveBeenCalled()
+    expect(api.demoSweep).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -958,6 +962,12 @@ describe('SystemView demo', () => {
       ]
     })
     api.saveSettings.mockResolvedValue({ data: settingsFixture() })
+    api.demoStatus.mockResolvedValue({
+      data: { last_sweep_at: 1800000000, mem_available_mb: 4096, guests_active: 1, demo_nodes_running: 2 }
+    })
+    api.demoSweep.mockResolvedValue({
+      data: { guests_purged: 0, labs_wiped: 0, nodes_reaped: 0, mem_available_mb: 4096 }
+    })
   })
 
   it('shows the demo tab to admins and loads templates lazily', async () => {
@@ -1100,6 +1110,96 @@ describe('SystemView demo', () => {
     expect(wrapper.find('p.error[role="alert"]').text()).toContain('demo_guest_ttl_hours must be between 1 and 720.')
     expect(wrapper.find('input[aria-label="Guest lifetime (hours)"]').element.value).toBe('0')
     expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('demo_guest_ttl_hours'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('renders the sweep status, including never and unknown values', async () => {
+    api.demoStatus
+      .mockResolvedValueOnce({
+        data: { last_sweep_at: null, mem_available_mb: null, guests_active: 3, demo_nodes_running: 0 }
+      })
+      .mockResolvedValueOnce({
+        data: { last_sweep_at: 1800000000, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 1 }
+      })
+
+    const wrapper = await mountSystemDemoView()
+    expect(api.demoStatus).toHaveBeenCalledTimes(1)
+    const status = wrapper.find('[data-test="demo-status"]')
+    expect(status.find('[data-test="demo-last-sweep"]').text()).toBe('never')
+    expect(status.find('[data-test="demo-memory"]').text()).toBe('unknown')
+    expect(status.find('[data-test="demo-guests"]').text()).toBe('3')
+    expect(status.find('[data-test="demo-nodes"]').text()).toBe('0')
+
+    await openSystemTab(wrapper, 'Host')
+    await openSystemTab(wrapper, 'Demo')
+
+    expect(api.demoStatus).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-test="demo-last-sweep"]').text()).toBe(new Date(1800000000 * 1000).toLocaleString())
+    expect(wrapper.find('[data-test="demo-memory"]').text()).toBe('6144 MB')
+    expect(wrapper.find('[data-test="demo-guests"]').text()).toBe('0')
+    expect(wrapper.find('[data-test="demo-nodes"]').text()).toBe('1')
+    wrapper.unmount()
+  })
+
+  it('sweeps once, summarises the result in a toast, and refreshes the status', async () => {
+    api.demoStatus
+      .mockResolvedValueOnce({
+        data: { last_sweep_at: null, mem_available_mb: 8192, guests_active: 1, demo_nodes_running: 1 }
+      })
+      .mockResolvedValueOnce({
+        data: { last_sweep_at: 1800000123, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 0 }
+      })
+      .mockResolvedValueOnce({
+        data: { last_sweep_at: 1800000456, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 0 }
+      })
+    api.demoSweep.mockResolvedValue({
+      data: { guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, mem_available_mb: 6144 }
+    })
+
+    const wrapper = await mountSystemDemoView()
+    const button = wrapper.find('[data-test="demo-sweep"]')
+    expect(button.text()).toBe('Sweep now')
+
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(api.demoSweep).toHaveBeenCalledTimes(1)
+    expect(toasts.some((toast) => toast.kind === 'success'
+      && toast.message === 'Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped.')).toBe(true)
+    expect(api.demoStatus).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-test="demo-last-sweep"]').text()).toBe(new Date(1800000123 * 1000).toLocaleString())
+    expect(wrapper.find('[data-test="demo-memory"]').text()).toBe('6144 MB')
+    expect(wrapper.find('[data-test="demo-sweep"]').element.disabled).toBe(false)
+
+    api.demoSweep.mockResolvedValueOnce({
+      data: { guests_purged: 0, labs_wiped: 0, nodes_reaped: 1, labs_failed: 2, mem_available_mb: 6144 }
+    })
+    await wrapper.find('[data-test="demo-sweep"]').trigger('click')
+    await flushPromises()
+
+    expect(api.demoSweep).toHaveBeenCalledTimes(2)
+    expect(toasts.some((toast) => toast.kind === 'warn'
+      && toast.message === 'Sweep complete: 0 guests purged, 0 labs wiped, 1 node stopped; 2 labs could not be wiped and will be retried.')).toBe(true)
+    expect(api.demoStatus).toHaveBeenCalledTimes(3)
+    expect(wrapper.find('[data-test="demo-last-sweep"]').text()).toBe(new Date(1800000456 * 1000).toLocaleString())
+    expect(wrapper.find('[data-test="demo-sweep"]').element.disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows a sweep error, keeps the status, and re-enables the button', async () => {
+    api.demoSweep.mockRejectedValue(new Error('The sweeper is unavailable.'))
+
+    const wrapper = await mountSystemDemoView()
+    const statusBefore = wrapper.find('[data-test="demo-status"]').text()
+    await wrapper.find('[data-test="demo-sweep"]').trigger('click')
+    await flushPromises()
+
+    expect(api.demoSweep).toHaveBeenCalledTimes(1)
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('The sweeper is unavailable.'))).toBe(true)
+    expect(api.demoStatus).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="demo-status"]').text()).toBe(statusBefore)
+    expect(wrapper.find('[data-test="demo-sweep"]').element.disabled).toBe(false)
+    expect(wrapper.find('[data-test="demo-sweep"]').text()).toBe('Sweep now')
     wrapper.unmount()
   })
 })
