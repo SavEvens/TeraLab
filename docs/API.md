@@ -161,12 +161,14 @@ Guest identity properties:
   expiration and the slot frees once the session lapses. The guest is otherwise
   an ordinary `editor` account, but the per-lab demo limits are enforced on
   create, save, import, apply, and start; see
-  [Per-lab demo limits](#per-lab-demo-limits). The idle-wipe/sweep settings
-  (`demo_idle_wipe_minutes`, `demo_sweep_interval`) are still stored policy and
-  are **not enforced yet**, so an idle guest lab is not removed automatically.
-  The caps bound a lab's size, not its behaviour: a guest can still use the
-  host's CPU and disk within those bounds, so only expose the demo to visitors
-  you would trust with a constrained `editor` account.
+  [Per-lab demo limits](#per-lab-demo-limits). The idle and sweep settings
+  (`demo_guest_idle_hours`, `demo_idle_wipe_minutes`, `demo_sweep_interval`)
+  are enforced by the guest sweeper described in
+  [Demo sweeper and capacity](#demo-sweeper-and-capacity): an idle guest is
+  purged, and an idle guest lab is stopped and wiped, even while the account
+  is still valid. The caps bound a lab's size, not its behaviour: a guest can
+  still use the host's CPU and disk within those bounds, so only expose the
+  demo to visitors you would trust with a constrained `editor` account.
 - The password hash is random, generated from a value that is never disclosed,
   so a guest identity cannot be signed in to with credentials. The session
   returned here is the only way in.
@@ -248,7 +250,9 @@ Where the guard runs:
   `POST /api/v2/labs/{id}/nodes/{node}/start` (v2 and the legacy v1 alias)
   re-check the lab's **current** topology, not only the request. A lab authored
   while a cap was higher therefore refuses to start after the cap is lowered,
-  with the same messages.
+  with the same messages. A guest start also refuses with `409` when the host
+  is below the memory floor; see
+  [Demo sweeper and capacity](#demo-sweeper-and-capacity).
 - `POST /api/v2/nodes/start` is the raw agent route: a guest is refused with
   `403 The demo starts nodes from the lab editor.` before the body is parsed.
   Guests start nodes through the lab node-start route above.
@@ -281,6 +285,168 @@ API, which rejects every templated node with
 `Template "x" is not available on the demo.` Non-guests, and a guest whose
 allowlist could not be read, see the unfiltered picker; the API still enforces
 the caps either way.
+
+## Demo sweeper and capacity
+
+The demo tier reclaims guests and their resources on its own: there is no cron
+job and no systemd timer. A sweep runs **lazily**, at most once every
+`demo_sweep_interval` seconds (default 300), from these request paths:
+
+- `GET /api/v2/labs` runs a due sweep before it lists labs;
+- `POST /api/v2/labs/{id}/start` runs a due sweep before the start;
+- `POST /api/v2/labs/{id}/nodes/{node}/start` runs a due sweep before the node
+  start;
+- the legacy v1 node-start route runs a due sweep before the start.
+
+Between sweeps nothing is reclaimed, so the interval bounds how long an expired
+guest keeps its resources. Sweeps only act on **guest** resources: labs owned by an admin or a
+non-guest `editor` are never reaped or wiped, and the sweeper never deletes
+images or image-store files. Every action is a stop or a wipe through the
+existing agent and lab calls, so run directories and lab bridges are removed
+exactly as a user-initiated stop or wipe removes them.
+
+A sweep performs these steps in order:
+
+1. **Activity.** For each guest, the effective activity time is the later of the
+   guest's newest session (`MAX(sessions.last_seen_at)`) and the newest
+   `last_activity` the agent reports for the guest's running nodes. Console
+   input and output count as node activity, so a visitor typing in a console is
+   not idle; see [Agent activity](#agent-activity). A running node that reports
+   no `last_activity` makes its owner's node activity **unknown**, not idle.
+2. **Guest purge.** A guest is purged when `expiration` has passed (the hard
+   TTL, `demo_guest_ttl_hours`) **or** when its activity is known to be idle —
+   no recorded activity at all, or the newest one older than
+   `demo_guest_idle_hours` — whichever comes first. Its labs are
+   stopped and wiped, its sessions are deleted, and the user row is removed; the
+   concurrency slot is free afterwards. The purge is audited as `demo.sweep`
+   with reason `ttl` or `idle`.
+   If a lab wipe fails, that guest is **kept** (user and sessions) so the next
+   sweep can retry — deleting it would orphan the lab's files. The failure is
+   audited as `demo.sweep` with `result: failed`, the reason, the guest id, and
+   the failing `lab_ids`, and the other guests are still processed. The failed
+   labs are counted in `labs_failed`.
+3. **Guest-lab idle wipe.** A running guest lab whose nodes and owner sessions
+   have been inactive for `demo_idle_wipe_minutes` is stopped and wiped. The
+   guest identity survives this step; only its lab is reclaimed, and the wipe is
+   audited as `demo.sweep` with reason `lab_idle`. A lab whose activity cannot be
+   determined, or whose wipe fails, is left for the next sweep.
+4. **Memory reaper.** While `MemAvailable` from `/proc/meminfo` is below
+   `demo_memory_floor_mb`, the most recently started guest node is stopped
+   through the agent, memory is read again, and the next newest node is stopped
+   if the floor is still not met. Only nodes in guest-owned labs are candidates.
+   The reaper **stops** a node, it never wipes it, so the node's disk state
+   survives and the guest can start it again. Each stop is audited as
+   `demo.reap`. If the kernel has not yet returned the freed memory, the reaper
+   can stop one more node than strictly necessary; it never stops a node it did
+   not audit.
+5. The sweep records its finish time, which the status endpoint reports as
+   `last_sweep_at`.
+
+The sweeper acts only on readings it actually has:
+
+- If `/proc/meminfo` cannot be read, there is no capacity refusal and no
+  reaping.
+- If the agent status cannot be read, no guest is idle-purged and no lab is
+  idle-wiped or reaped: only the hard TTL is enforced, because it needs no
+  activity reading. Session activity alone is **not** enough to declare a guest
+  idle when its nodes are unknown.
+- A running node whose agent status carries no `last_activity` is unknown
+  activity for its owner: that guest is not idle-purged, and a lab containing
+  such a node is not idle-wiped.
+
+A **lazy** sweep never fails the request that triggered it: an exception is
+logged (as `teralab demo sweep failed: …`) and the lab list or start proceeds.
+The admin `POST /api/v2/system/demo/sweep` calls the sweeper directly instead,
+so a manual sweep still returns the error.
+
+### `GET /api/v2/system/demo/status`
+
+Administrator only; no CSRF header (read-only). It reports the last sweep, the
+memory the reaper measures, and the demo's current size:
+
+```json
+{
+  "data": {
+    "last_sweep_at": 1795172800,
+    "mem_available_mb": 6312,
+    "guests_active": 3,
+    "demo_nodes_running": 11
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `last_sweep_at` | Unix time of the last completed sweep; `null` before the first sweep |
+| `mem_available_mb` | `MemAvailable` from `/proc/meminfo`, in MB; `null` when it cannot be read |
+| `guests_active` | Guest account rows (`guest = 1`), including any that expired but no sweep has removed yet |
+| `demo_nodes_running` | Nodes currently running in guest-owned labs |
+
+### `POST /api/v2/system/demo/sweep`
+
+Administrator only, with `X-CSRF-Token`. Runs a sweep immediately, regardless of
+`demo_sweep_interval`, and returns its summary:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "guests_purged": 1,
+    "labs_wiped": 2,
+    "labs_failed": 1,
+    "nodes_reaped": 2,
+    "mem_available_mb": 4096
+  }
+}
+```
+
+`labs_wiped` counts the guest labs removed by both the purge and the idle-wipe
+step; `labs_failed` counts guest labs whose wipe failed during a purge (their
+guests were kept for the next sweep); `nodes_reaped` counts the nodes the reaper
+stopped. When there is nothing to reclaim the counts are `0`;
+`mem_available_mb` reports the host value, or `null` when it cannot be read. A
+manual sweep is also audited as `demo.sweep` with `manual: true` and the
+summary. This is the action behind **Sweep now** in **System → Demo**.
+
+### Capacity refusal
+
+When a guest starts a lab or a node and `MemAvailable` is below
+`demo_memory_floor_mb`, the start is refused with:
+
+```
+409 The demo is at capacity right now; try again shortly.
+```
+
+The check is host-wide and guest-only: admin and non-guest `editor` starts are
+never refused by it, and a guest start is refused whenever the host is below the
+floor, even when the guest's own labs are stopped. The lab-start and v2 and v1
+node-start routes sweep first, so reaching the limit also reclaims the newest
+guest nodes on the way to the refusal; retrying shortly afterwards succeeds once
+the memory is released. An unreadable `/proc/meminfo` fails open, so a probe
+problem cannot block the demo. The message is stable and may be matched by
+clients.
+
+### Agent activity
+
+Node activity comes from the agent's per-node `last_activity` field. It is
+exposed as **Unix seconds**, nullable, in `GET /api/v2/labs/{id}/nodes` (and in
+the agent status payload, hence `GET /api/v2/system/host`). The agent updates it
+on every successful console read and write — the serial PTY path and the
+`docker exec` path alike — so activity is console-driven, not just API-driven. A
+freshly started node reports `last_activity` at or just after `started`.
+
+The value lives **in memory** and is not written to the node state file, so an
+agent restart resets it:
+
+- a **running** node that is re-registered after the restart reports the
+  re-registration time (`now`), because its console may be in use;
+- a **stopped** node that is restored keeps its recorded `started`;
+- with no value at all the activity is **unknown**, never idle.
+
+A restart therefore makes a running node look newer, never older, so a live
+guest is not idle-wiped on stale evidence; a guest that is really active is also
+protected by its session activity and by new console I/O. `last_activity` is not
+a long-term record; it only decides idle cleanup.
 
 ## Account
 
@@ -614,6 +780,11 @@ stored and validated even when `demo_enabled` is `0`.
 Omit a key from the `PUT` body to leave its stored value unchanged; send `""`
 for a Turnstile key to clear it. `demo_enabled` and `turnstile_enabled` also
 accept JSON booleans and the strings `"0"`/`"1"`.
+
+The demo sweeper keeps its own bookkeeping row (`demo_last_sweep_at`) outside
+the defaults, so it never appears in `GET /api/v2/system/settings` and cannot be
+written through `PUT`; read it from
+[`GET /api/v2/system/demo/status`](#get-apiv2systemdemostatus) instead.
 
 **Turnstile keys:** the shipped `turnstile_site_key` and `turnstile_secret_key`
 are Cloudflare's public Turnstile *testing* credentials. They always validate

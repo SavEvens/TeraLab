@@ -679,6 +679,12 @@ paths:
     get:
       tags: [labs]
       summary: List labs visible to the current user
+      description: |
+        Runs a due demo sweep first, at most once per `demo_sweep_interval`
+        seconds, so expired guests and idle guest labs are reclaimed without a
+        cron job or timer. Admin and non-guest editor labs are never swept. A
+        sweep failure is logged and does not fail this request. See
+        docs/API.md.
       responses:
         '200':
           description: Labs
@@ -899,10 +905,15 @@ paths:
         Re-checks the lab's current topology against the demo caps for a guest
         before any agent call, so a lab authored while a cap was higher refuses
         to start after the cap is lowered.
+
+        A guest start runs a due demo sweep first, then refuses with 409 when
+        host memory is below `demo_memory_floor_mb`. Admin and non-guest editor
+        starts are unaffected.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '202': { description: Started with job_id }
+        '409': { description: "Guest start at capacity: The demo is at capacity right now; try again shortly." }
         '422': { description: "Guest demo limit: node count, template, or RAM" }
   /api/v2/labs/{id}/stop:
     post:
@@ -937,10 +948,44 @@ paths:
     get:
       tags: [nodes]
       summary: Per-node agent state
+      description: |
+        Agent-reported state per node. `last_activity` is Unix seconds of the
+        last console read or write, or null when the agent has no value (for
+        example when the node was never registered); it is in memory and is
+        reset at an agent restart. The demo sweeper treats a null value as
+        unknown, never as idle. See docs/API.md.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
-        '200': { description: Node states }
+        '200':
+          description: Node states
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [lab_id, nodes]
+                    properties:
+                      lab_id: { type: string }
+                      nodes:
+                        type: array
+                        items:
+                          type: object
+                          required: [node_id, agent_id, name, type, state, ready, last_activity]
+                          properties:
+                            node_id: { type: string }
+                            agent_id: { type: string }
+                            name: { type: string }
+                            type: { type: string }
+                            state: { type: string }
+                            ready: { type: boolean }
+                            last_activity:
+                              type: integer
+                              nullable: true
+                              description: "Unix seconds of the last console read or write; null when unknown"
   /api/v2/labs/{id}/restore:
     post:
       tags: [labs]
@@ -1263,12 +1308,14 @@ paths:
       summary: Start one lab node
       description: |
         Re-checks the lab's current topology against the demo caps for a guest
-        before starting the node.
+        before starting the node. Runs a due demo sweep first, then refuses with
+        409 when host memory is below `demo_memory_floor_mb`.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: node, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Running }
+        '409': { description: "Guest start at capacity: The demo is at capacity right now; try again shortly." }
         '422': { description: "Guest demo limit: node count, template, or RAM" }
   /api/v2/labs/{id}/nodes/{node}/stop:
     post:
@@ -1313,6 +1360,93 @@ paths:
       summary: Update runtime settings (admin)
       responses:
         '200': { description: Updated }
+  /api/v2/system/demo/status:
+    get:
+      tags: [system]
+      summary: Demo sweeper status (admin)
+      description: |
+        Administrator only. Read-only, so no `X-CSRF-Token` header is needed.
+        The values are the ones the demo sweeper uses: the time of the last
+        sweep, the host memory it compares with `demo_memory_floor_mb`, and the
+        demo's size. `last_sweep_at` is null before the first sweep. See
+        docs/API.md.
+      responses:
+        '200':
+          description: Demo status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [last_sweep_at, mem_available_mb, guests_active, demo_nodes_running]
+                    properties:
+                      last_sweep_at:
+                        type: integer
+                        nullable: true
+                        description: "Unix time of the last completed sweep; null before the first sweep"
+                      mem_available_mb:
+                        type: integer
+                        nullable: true
+                        description: "`MemAvailable` from /proc/meminfo, in MB; null when it cannot be read"
+                      guests_active:
+                        type: integer
+                        minimum: 0
+                        description: "Guest account rows (guest = 1), including expired ones no sweep has removed yet"
+                      demo_nodes_running:
+                        type: integer
+                        minimum: 0
+                        description: "Nodes currently running in guest-owned labs"
+        '403': { description: Administrator role required }
+  /api/v2/system/demo/sweep:
+    post:
+      tags: [system]
+      summary: Run a demo sweep now (admin)
+      description: |
+        Administrator only, with CSRF. Ignores `demo_sweep_interval` and runs the
+        guest sweep immediately: expired and idle guests are purged, idle guest
+        labs are wiped, and the newest guest nodes are stopped while host memory
+        is below `demo_memory_floor_mb`. A guest whose lab wipe fails is kept
+        (with its sessions) for the next sweep and counted in `labs_failed`. Only
+        guest resources are touched and images are never deleted. Counts are 0
+        when nothing was reclaimed. The lazy sweep swallows its own errors, but
+        this endpoint calls the sweeper directly, so a failure is returned here.
+        This is the action behind **Sweep now** in System → Demo. See
+        docs/API.md.
+      responses:
+        '200':
+          description: Sweep summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data]
+                properties:
+                  status: { type: string, enum: [success] }
+                  data:
+                    type: object
+                    required: [guests_purged, labs_wiped, labs_failed, nodes_reaped, mem_available_mb]
+                    properties:
+                      guests_purged: { type: integer, minimum: 0 }
+                      labs_wiped:
+                        type: integer
+                        minimum: 0
+                        description: "Guest labs wiped by the purge and idle-wipe steps combined"
+                      labs_failed:
+                        type: integer
+                        minimum: 0
+                        description: "Guest labs whose wipe failed during a purge; the guest was kept for the next sweep"
+                      nodes_reaped:
+                        type: integer
+                        minimum: 0
+                        description: "Guest nodes stopped by the memory reaper"
+                      mem_available_mb:
+                        type: integer
+                        nullable: true
+                        description: "Host MemAvailable after the sweep; null when it cannot be read"
+        '403': { description: Administrator role or invalid CSRF token }
   /api/v2/system/backup:
     get:
       tags: [system]
