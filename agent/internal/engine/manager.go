@@ -44,6 +44,7 @@ type NodeInfo struct {
 	State         string    `json:"state"`
 	PID           int       `json:"pid,omitempty"`
 	Started       time.Time `json:"started,omitempty"`
+	LastActivity  time.Time `json:"last_activity,omitempty"`
 	RunDir        string    `json:"run_dir"`
 	Taps          []string  `json:"taps,omitempty"`
 	Console       string    `json:"console"`
@@ -79,6 +80,7 @@ type Node struct {
 	StatePath    string
 	State        string
 	Started      time.Time
+	LastActivity time.Time
 	Done         chan struct{}
 	Ready        atomic.Bool
 
@@ -90,6 +92,10 @@ type Node struct {
 	// writeMu serialises console writes so an agent command replay cannot
 	// interleave with a user typing on the same pty.
 	writeMu sync.Mutex
+
+	// consoleStream wraps PTY when the engine console must report activity on
+	// I/O (docker exec); nil means PTY is read and written directly.
+	consoleStream io.ReadWriter
 }
 
 type Manager struct {
@@ -472,6 +478,21 @@ func (m *Manager) Count() int {
 	return count
 }
 
+// touchActivity records console activity for one node. The timestamp is
+// in-memory only: a running node restored after an agent restart is treated as
+// active again at re-registration, which errs on the safe side because it
+// never causes a wrongful idle wipe. Unknown node ids are ignored.
+func (m *Manager) touchActivity(id string) {
+	if id == "" {
+		return
+	}
+	m.mu.Lock()
+	if node, ok := m.nodes[id]; ok {
+		node.LastActivity = time.Now()
+	}
+	m.mu.Unlock()
+}
+
 // VNC returns the loopback VNC port and password for a running node.
 func (m *Manager) VNC(id string) (int, string, bool) {
 	m.mu.Lock()
@@ -608,20 +629,21 @@ func (m *Manager) wait(node *Node) {
 
 func (m *Manager) info(node *Node) NodeInfo {
 	info := NodeInfo{
-		ID:          node.Spec.ID,
-		LabID:       node.Spec.LabID,
-		Name:        node.Spec.Name,
-		Engine:      node.Spec.Engine,
-		Image:       node.Spec.Image,
-		State:       node.State,
-		RunDir:      node.RunDir,
-		Taps:        append([]string(nil), node.Taps...),
-		Console:     node.Spec.Console,
-		ConsolePort: node.ConsolePort,
-		Started:     node.Started,
-		Cgroup:      node.CgroupPath,
-		VNCPort:     node.VNCPort,
-		Ready:       node.State == "running" && node.Ready.Load(),
+		ID:           node.Spec.ID,
+		LabID:        node.Spec.LabID,
+		Name:         node.Spec.Name,
+		Engine:       node.Spec.Engine,
+		Image:        node.Spec.Image,
+		State:        node.State,
+		RunDir:       node.RunDir,
+		Taps:         append([]string(nil), node.Taps...),
+		Console:      node.Spec.Console,
+		ConsolePort:  node.ConsolePort,
+		Started:      node.Started,
+		LastActivity: node.LastActivity,
+		Cgroup:       node.CgroupPath,
+		VNCPort:      node.VNCPort,
+		Ready:        node.State == "running" && node.Ready.Load(),
 	}
 	if node.Cmd != nil && node.Cmd.Process != nil {
 		info.PID = node.Cmd.Process.Pid
@@ -662,31 +684,46 @@ func readCgroupUsage(path string) (int64, int64) {
 }
 
 func (m *Manager) register(node *Node) (NodeInfo, error) {
+	// A running node with no recorded activity is either a fresh launch or a
+	// node restored after an agent restart; both count as active now, so a
+	// quiet guest is never idle-wiped on stale evidence. A stopped restore has
+	// no console to be active on and keeps its start time.
+	if node.LastActivity.IsZero() {
+		if node.State == "running" {
+			node.LastActivity = time.Now()
+		} else {
+			node.LastActivity = node.Started
+		}
+	}
 	m.saveNodeState(node)
 
+	// Publish the node and snapshot its info in one critical section: the
+	// docker pump goroutine may already be touching activity, and State can
+	// change as the engine exits.
 	m.mu.Lock()
 	m.nodes[node.Spec.ID] = node
+	info := m.info(node)
 	m.mu.Unlock()
 
 	if node.Spec.Engine == "docker" {
 		m.logger.Info("docker node registered",
-			"id", node.Spec.ID,
+			"id", info.ID,
 			"container", node.ContainerID,
-			"state", node.State,
-			"run_dir", node.RunDir,
+			"state", info.State,
+			"run_dir", info.RunDir,
 		)
-		return m.info(node), nil
+		return info, nil
 	}
 
 	go m.wait(node)
 	m.logger.Info("node started",
-		"id", node.Spec.ID,
-		"engine", node.Spec.Engine,
-		"pid", node.Cmd.Process.Pid,
-		"run_dir", node.RunDir,
+		"id", info.ID,
+		"engine", info.Engine,
+		"pid", info.PID,
+		"run_dir", info.RunDir,
 	)
 
-	return m.info(node), nil
+	return info, nil
 }
 
 // saveNodeState persists what a later agent process needs to re-register a

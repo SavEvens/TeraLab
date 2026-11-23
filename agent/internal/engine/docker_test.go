@@ -660,6 +660,101 @@ esac`
 	}
 }
 
+func TestDockerConsoleIOTouchesActivity(t *testing.T) {
+	// The fake console command stays in the foreground so the docker exec pty
+	// lives and accepts writes like a real container console.
+	body := `case "$1" in
+image) exit 0 ;;
+inspect) cat <<'JSON'
+[{"Id":"fakeid","Config":{"Image":"frrouting/frr:10.0.1","Labels":{"teralab.node":"node-1","teralab.lab":"lab-1"}},"State":{"Status":"running","Running":true,"Pid":4242},"NetworkSettings":{"SandboxKey":"/var/run/docker/netns/abc"}}]
+JSON
+  ;;
+start) exit 0 ;;
+exec) exec cat ;;
+*) exit 0 ;;
+esac`
+	binary, _ := fakeDocker(t, body)
+	manager := newDockerTestManager(t, binary)
+	captureNetworkRun(manager)
+	spec := dockerTestSpec(t)
+
+	info, err := manager.startDocker(spec, t.TempDir())
+	if err != nil {
+		t.Fatalf("start docker: %v", err)
+	}
+	if info.State != "running" {
+		t.Fatalf("node is not running: %+v", info)
+	}
+
+	manager.mu.Lock()
+	node := manager.nodes[info.ID]
+	if node.consoleStream == nil {
+		manager.mu.Unlock()
+		t.Fatal("docker console is not activity-wrapped")
+	}
+	stale := time.Now().Add(-time.Hour)
+	node.LastActivity = stale
+	manager.mu.Unlock()
+
+	session, ok := manager.AttachPTY(info.ID)
+	if !ok {
+		t.Fatal("docker console is not attachable")
+	}
+	defer session.Close()
+
+	if _, err := session.Write([]byte("show version\n")); err != nil {
+		t.Fatalf("write docker console: %v", err)
+	}
+	if activity := nodeActivity(manager, node); !activity.After(stale) {
+		t.Fatalf("docker console write did not touch activity: %v", activity)
+	}
+}
+
+func TestDockerConsoleOutputDuringRegistrationTouchesActivity(t *testing.T) {
+	// Console output starts as soon as the node is registered, so the pump
+	// goroutine touches activity while register snapshots NodeInfo.
+	body := `case "$1" in
+image) exit 0 ;;
+inspect) cat <<'JSON'
+[{"Id":"fakeid","Config":{"Image":"frrouting/frr:10.0.1","Labels":{"teralab.node":"node-1","teralab.lab":"lab-1"}},"State":{"Status":"running","Running":true,"Pid":4242},"NetworkSettings":{"SandboxKey":"/var/run/docker/netns/abc"}}]
+JSON
+  ;;
+start) exit 0 ;;
+exec) while true; do echo hello; sleep 0.02; done ;;
+*) exit 0 ;;
+esac`
+	binary, _ := fakeDocker(t, body)
+	manager := newDockerTestManager(t, binary)
+	captureNetworkRun(manager)
+	spec := dockerTestSpec(t)
+
+	info, err := manager.startDocker(spec, t.TempDir())
+	if err != nil {
+		t.Fatalf("start docker: %v", err)
+	}
+	if info.LastActivity.Before(info.Started) {
+		t.Fatalf("running node activity %v is before its start %v", info.LastActivity, info.Started)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		manager.mu.Lock()
+		node := manager.nodes[info.ID]
+		var activity time.Time
+		if node != nil {
+			activity = node.LastActivity
+		}
+		manager.mu.Unlock()
+		if activity.After(info.LastActivity) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("console output did not touch activity after registration (stuck at %v)", info.LastActivity)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestDockerConsoleFailureIsNotFatal(t *testing.T) {
 	body := `case "$1" in
 image) exit 0 ;;
