@@ -207,11 +207,14 @@ final class SystemController
      */
     private function tail(string $path, int $lines): array
     {
+        $size = filesize($path) ?: 0;
+        if ($size === 0) {
+            return [];
+        }
         $handle = fopen($path, 'rb');
         if ($handle === false) {
             return [];
         }
-        $size = filesize($path) ?: 0;
         $read = min($size, 524288);
         fseek($handle, -$read, SEEK_END);
         $data = (string) fread($handle, $read);
