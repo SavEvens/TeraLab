@@ -13,7 +13,7 @@ the kernel remain separate components with their own licences.
 - `qemu-system-x86_64`, `qemu-img`
 - `composer` (only when `api/vendor` is absent)
 - Go 1.27+ (only when no prebuilt agent is supplied)
-- Node 20+ and npm (to build the Vue UI; prebuilt `ui/dist` is used when present)
+- Node 22.12+ or 24+ and npm (to build the Vue UI; prebuilt `ui/dist` is used when present)
 - Apache 2.4 with `mod_proxy`, `mod_proxy_fcgi`, `mod_proxy_wstunnel`,
   `mod_setenvif`, and `mod_rewrite`
 - Optional: `openvswitch-switch` for LACP forwarding
@@ -782,6 +782,25 @@ systemctl status teralab-agent
 ```
 
 See `docs/API.md` for the lab lifecycle endpoints.
+
+## Dependency audits
+
+Maintainers run three dependency audits before a release:
+
+```sh
+(cd api && composer audit --locked --no-interaction)
+(cd agent && go install golang.org/x/vuln/cmd/govulncheck@v1.10.0 &&
+  "$(go env GOPATH)/bin/govulncheck" ./...)
+(cd ui && npm ci --no-fund && npm audit --omit=dev && npm audit)
+```
+
+The first `npm audit` covers the production graph and must be clean. The second
+covers the dev/test toolchain (`vite`, `vitest`, Playwright) and is enforced
+too, so a new advisory fails CI rather than only appearing in a report.
+`govulncheck` is pinned to v1.10.0; v1.1.4 panics on the Go 1.27 toolchain used
+by CI. The `dependency-audit` CI job runs the same commands on every push and
+pull request, and a weekly scheduled workflow repeats them so advisories
+published between releases are noticed.
 
 ## Uninstall
 
