@@ -74,6 +74,7 @@ function testRouter() {
     history: createMemoryHistory(),
     routes: [
       { path: '/labs', name: 'labs', component: { template: '<div />' } },
+      { path: '/labs/:id', name: 'editor', component: { template: '<div />' } },
       { path: '/appliances', name: 'appliances', component: { template: '<div />' } },
       { path: '/system', name: 'system', component: { template: '<div />' } }
     ]
@@ -134,17 +135,23 @@ describe('router redirects', () => {
 
 describe('LabsView create-project dialog', () => {
   const mountLabs = async () => {
+    const localRouter = testRouter()
+    await localRouter.push('/labs')
+    await localRouter.isReady()
     const wrapper = mount(LabsView, {
-      global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
+      global: {
+        plugins: [localRouter],
+        stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } }
+      }
     })
     await flushPromises()
-    return wrapper
+    return { wrapper, router: localRouter }
   }
 
-  it('creates a project with a folder and closes the dialog', async () => {
+  it('creates a project with a folder, closes the dialog, and opens the editor', async () => {
     api.createLab.mockResolvedValue({ data: { id: 'new1', name: 'Dialog Lab' } })
     api.moveLab.mockResolvedValue({ data: { id: 'new1' } })
-    const wrapper = await mountLabs()
+    const { wrapper, router: localRouter } = await mountLabs()
     expect(wrapper.find('.empty').text()).toContain('Create a project, drop a `.unl` file, or import one.')
 
     await clickButton(wrapper, 'Create project')
@@ -159,7 +166,11 @@ describe('LabsView create-project dialog', () => {
     expect(api.createLab).toHaveBeenCalledWith({ name: 'Dialog Lab', networks: [], nodes: [] })
     expect(api.moveLab).toHaveBeenCalledWith('new1', 'e2e-folder')
     expect(wrapper.find('.create-project').exists()).toBe(false)
+    expect(localRouter.currentRoute.value.name).toBe('editor')
+    expect(localRouter.currentRoute.value.params.id).toBe('new1')
 
+    await localRouter.push('/labs')
+    await flushPromises()
     await clickButton(wrapper, 'Create project')
     const reopened = wrapper.find('.create-project').findAll('input')
     expect(reopened[0].element.value).toBe('')
@@ -167,8 +178,40 @@ describe('LabsView create-project dialog', () => {
     wrapper.unmount()
   })
 
+  it('opens the editor after creating a project from YAML', async () => {
+    api.importLab.mockResolvedValue({ data: { id: 'yaml1', name: 'Yaml Lab' }, meta: { warnings: [] } })
+    const { wrapper, router: localRouter } = await mountLabs()
+
+    await clickButton(wrapper, 'Create project')
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'From YAML').trigger('click')
+    await flushPromises()
+    await wrapper.find('textarea[aria-label="Lab YAML"]').setValue('name: Yaml Lab\nnodes: {}\n')
+    await wrapper.find('.create-project form.yaml-form').trigger('submit')
+    await flushPromises()
+
+    expect(api.importLab).toHaveBeenCalled()
+    expect(wrapper.find('.create-project').exists()).toBe(false)
+    expect(localRouter.currentRoute.value.name).toBe('editor')
+    expect(localRouter.currentRoute.value.params.id).toBe('yaml1')
+    wrapper.unmount()
+  })
+
+  it('reloads the list instead of navigating when the created lab has no id', async () => {
+    api.createLab.mockResolvedValue({ data: { name: 'Untitled' } })
+    const { wrapper, router: localRouter } = await mountLabs()
+
+    await clickButton(wrapper, 'Create project')
+    await wrapper.find('.create-project').findAll('input')[0].setValue('Untitled')
+    await wrapper.find('.create-project form').trigger('submit')
+    await flushPromises()
+
+    expect(localRouter.currentRoute.value.name).toBe('labs')
+    expect(api.labs).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
   it('dismisses the dialog with Cancel and resets the fields', async () => {
-    const wrapper = await mountLabs()
+    const { wrapper } = await mountLabs()
 
     await clickButton(wrapper, 'Create project')
     const inputs = wrapper.find('.create-project').findAll('input')
@@ -186,7 +229,7 @@ describe('LabsView create-project dialog', () => {
   })
 
   it('closes the dialog on Escape', async () => {
-    const wrapper = await mountLabs()
+    const { wrapper } = await mountLabs()
 
     await clickButton(wrapper, 'Create project')
     expect(wrapper.find('.create-project').exists()).toBe(true)
@@ -200,7 +243,7 @@ describe('LabsView create-project dialog', () => {
 
   it('keeps a create error inside the dialog', async () => {
     api.createLab.mockRejectedValue(new Error('name already exists'))
-    const wrapper = await mountLabs()
+    const { wrapper } = await mountLabs()
 
     await clickButton(wrapper, 'Create project')
     await wrapper.find('.create-project').findAll('input')[0].setValue('Duplicate')

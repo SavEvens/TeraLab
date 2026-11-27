@@ -11,7 +11,7 @@ import ToastHost from '../src/components/ToastHost.vue'
 import ImagesView from '../src/views/ImagesView.vue'
 import SystemView from '../src/views/SystemView.vue'
 import PasswordChangeDialog from '../src/components/PasswordChangeDialog.vue'
-import { api } from '../src/api'
+import { api, uploadImageWithProgress } from '../src/api'
 import { session } from '../src/stores/session'
 import { notify, toasts, dismiss } from '../src/stores/toasts'
 
@@ -624,6 +624,64 @@ describe('ImagesView', () => {
     expect(api.images).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
+
+  const submitUpload = async (wrapper) => {
+    const input = wrapper.find('form.upload input[type="file"]')
+    const file = new File(['image'], 'base.qcow2', { type: 'application/octet-stream' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await wrapper.find('form.upload').trigger('submit')
+    await flushPromises()
+  }
+
+  it('maps an uploaded image to the chosen template', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    api.templates.mockResolvedValue({
+      data: [
+        { id: 'csr1000v', name: 'CSR1000V', kind: 'qemu' },
+        { id: 'iol', name: 'Cisco IOL', kind: 'iol' }
+      ]
+    })
+    uploadImageWithProgress.mockResolvedValue({ data: { id: 'img-new', name: 'base' } })
+    api.mapImageTemplate.mockResolvedValue({ status: 'success' })
+
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    const templateSelect = wrapper.find('select[aria-label="Upload template"]')
+    expect(templateSelect.exists()).toBe(true)
+    expect(templateSelect.findAll('option').map((option) => option.element.value)).toEqual(['', 'csr1000v'])
+    await templateSelect.setValue('csr1000v')
+    await submitUpload(wrapper)
+
+    expect(uploadImageWithProgress).toHaveBeenCalledTimes(1)
+    expect(api.mapImageTemplate).toHaveBeenCalledWith('img-new', 'csr1000v')
+    expect(toasts.some((toast) => toast.kind === 'success' && toast.message === 'Image uploaded and mapped to csr1000v')).toBe(true)
+    expect(wrapper.find('select[aria-label="Upload template"]').element.value).toBe('')
+
+    await wrapper.find('select[aria-label="Image kind"]').setValue('iso')
+    expect(wrapper.find('select[aria-label="Upload template"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps the uploaded image when the template mapping fails', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    uploadImageWithProgress.mockResolvedValue({ data: { id: 'img-new', name: 'base' } })
+    api.mapImageTemplate.mockRejectedValue(new Error('template not found'))
+
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    await wrapper.find('select[aria-label="Upload template"]').setValue('csr1000v')
+    await submitUpload(wrapper)
+
+    expect(api.mapImageTemplate).toHaveBeenCalledWith('img-new', 'csr1000v')
+    expect(toasts.some((toast) => toast.kind === 'warning'
+      && toast.message === 'Image uploaded but the template mapping failed: template not found')).toBe(true)
+    expect(wrapper.find('p.error[role="alert"]').exists()).toBe(false)
+    expect(api.images).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('select[aria-label="Upload template"]').element.value).toBe('')
+    wrapper.unmount()
+  })
 })
 
 
@@ -1200,6 +1258,53 @@ describe('SystemView demo', () => {
     expect(wrapper.find('[data-test="demo-status"]').text()).toBe(statusBefore)
     expect(wrapper.find('[data-test="demo-sweep"]').element.disabled).toBe(false)
     expect(wrapper.find('[data-test="demo-sweep"]').text()).toBe('Sweep now')
+    wrapper.unmount()
+  })
+})
+
+describe('SystemView account settings', () => {
+  beforeEach(() => {
+    session.user = { id: 'user1', username: 'admin', role: 'admin' }
+    api.host.mockResolvedValue({
+      data: { load1: 0.1, load5: 0.1, load15: 0.1, cpu_usage_percent: 5, disk_free_bytes: 1, disk_total_bytes: 2, nodes: [], engines: [], interfaces: [] }
+    })
+    api.settings.mockResolvedValue({ data: settingsFixture() })
+    api.logs.mockResolvedValue({ data: { lines: [] } })
+    api.tokens.mockResolvedValue({ data: [] })
+    api.users.mockResolvedValue({ data: usersFixture() })
+    api.version.mockResolvedValue({ product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://example.test', components: [] })
+  })
+
+  it('offers the password dialog from Settings to non-admins', async () => {
+    session.user = { id: 'user3', username: 'viewer', role: 'user' }
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const account = wrapper.find('.account-block')
+    expect(account.exists()).toBe(true)
+    expect(account.text()).toContain('Account')
+    expect(account.text()).toContain('Change the password for your own account.')
+    expect(wrapper.find('.settings-panel form button[type="submit"]').element.disabled).toBe(true)
+
+    const changePassword = account.findAll('button').find((button) => button.text() === 'Change password')
+    expect(changePassword).toBeTruthy()
+    await changePassword.trigger('click')
+    expect(wrapper.find('#password-modal-title').exists()).toBe(true)
+    expect(wrapper.find('.password-modal').exists()).toBe(true)
+
+    await wrapper.find('.password-modal').findAll('button').find((button) => button.text() === 'Cancel').trigger('click')
+    expect(wrapper.find('.password-modal').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows the Account block to admins as well', async () => {
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const account = wrapper.find('.account-block')
+    expect(account.exists()).toBe(true)
+    expect(account.findAll('button').some((button) => button.text() === 'Change password')).toBe(true)
+    expect(wrapper.find('.settings-panel form button[type="submit"]').element.disabled).toBe(false)
     wrapper.unmount()
   })
 })

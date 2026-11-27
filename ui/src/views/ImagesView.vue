@@ -22,6 +22,12 @@
       <label>Name (optional)
         <input v-model="name" placeholder="base" aria-label="Image name" />
       </label>
+      <label v-if="kind !== 'iso'">Template
+        <select v-model="uploadTemplate" aria-label="Upload template">
+          <option value="">—</option>
+          <option v-for="template in uploadTemplates" :key="template.id" :value="template.id">{{ template.id }}</option>
+        </select>
+      </label>
       <label>File
         <input ref="fileInput" type="file" aria-label="Image file" required />
       </label>
@@ -56,10 +62,12 @@
           </td>
           <td><code>{{ (image.sha256 || '').slice(0, 12) }}</code></td>
           <td>{{ new Date(image.created_at * 1000).toLocaleDateString() }}</td>
-          <td class="actions">
-            <button class="ghost" @click="inspect(image)">Details</button>
-            <button v-if="canEdit" class="ghost" @click="openRename(image)">Rename</button>
-            <button v-if="canEdit" class="danger" @click="remove(image)">{{ image.external ? 'Unlink' : 'Delete' }}</button>
+          <td>
+            <div class="row-actions">
+              <button class="ghost" @click="inspect(image)">Details</button>
+              <button v-if="canEdit" class="ghost" @click="openRename(image)">Rename</button>
+              <button v-if="canEdit" class="danger" @click="remove(image)">{{ image.external ? 'Unlink' : 'Delete' }}</button>
+            </div>
           </td>
         </tr>
       </tbody>
@@ -232,7 +240,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api, uploadImageWithProgress } from '../api'
 import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
@@ -245,6 +253,7 @@ const images = ref([])
 const templates = ref([])
 const kind = ref('qemu')
 const name = ref('')
+const uploadTemplate = ref('')
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const details = ref(null)
@@ -253,6 +262,9 @@ const renameDialog = ref({ open: false, image: null, name: '', reference: '', sa
 const fileInput = ref(null)
 const canEdit = computed(() => ['admin', 'editor'].includes(session.user?.role || 'user'))
 const canAdmin = computed(() => session.user?.role === 'admin')
+const uploadTemplates = computed(() => templates.value.filter((template) => template.kind === kind.value))
+
+watch(kind, () => { uploadTemplate.value = '' })
 
 const adopt = ref({
   open: false,
@@ -307,8 +319,19 @@ async function upload() {
     form.append('kind', kind.value)
     if (name.value.trim()) form.append('name', name.value.trim())
     form.append('file', file)
-    await uploadImageWithProgress(form, (value) => { uploadProgress.value = value })
-    notify('success', 'Image uploaded')
+    const response = await uploadImageWithProgress(form, (value) => { uploadProgress.value = value })
+    const created = response?.data
+    if (uploadTemplate.value && created?.id) {
+      try {
+        await api.mapImageTemplate(created.id, uploadTemplate.value)
+        notify('success', `Image uploaded and mapped to ${uploadTemplate.value}`)
+      } catch (exception) {
+        notify('warning', `Image uploaded but the template mapping failed: ${exception.message}`)
+      }
+    } else {
+      notify('success', 'Image uploaded')
+    }
+    uploadTemplate.value = ''
     name.value = ''
     fileInput.value.value = ''
     await load()
