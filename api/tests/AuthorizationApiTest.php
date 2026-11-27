@@ -17,9 +17,12 @@ use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Http\V1Session;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class AuthorizationApiTest extends TestCase
 {
+    use StaticAssets;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private const USER_PASSWORD = 'Teralab-User-2026!';
@@ -41,6 +44,7 @@ final class AuthorizationApiTest extends TestCase
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
         mkdir($this->root . '/data/templates', 0770, true);
+        $this->installStaticAssets($this->root);
         copy(
             dirname(__DIR__) . '/templates/builtin/vpcs.yaml',
             $this->root . '/data/templates/vpcs.yaml',

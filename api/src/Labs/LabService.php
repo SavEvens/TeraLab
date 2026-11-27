@@ -12,6 +12,8 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Image\ImageReferences;
+use TeraLab\Api\Policy\IconPolicy;
+use TeraLab\Api\Policy\PicturePolicy;
 use TeraLab\Api\Snapshots\SnapshotRepository;
 use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\Templates\DockerOptions;
@@ -38,6 +40,8 @@ final class LabService
         private readonly ?TemplateRepository $templates = null,
         private readonly ?LabYamlCompiler $yamlCompiler = null,
         private readonly ?DemoGuard $demoGuard = null,
+        private readonly ?IconPolicy $icons = null,
+        private readonly ?PicturePolicy $pictures = null,
     ) {
     }
 
@@ -1365,7 +1369,21 @@ final class LabService
                 continue;
             }
             $type = (string) ($node['type'] ?? 'qemu');
-            if (in_array($type, ['text', 'picture'], true)) {
+            if ($type === 'picture') {
+                $image = $node['image'] ?? '';
+                if (!$this->picturePolicy()->isValid($image)) {
+                    $warnings[] = [
+                        'type' => 'picture_blocked',
+                        'node' => (string) ($node['name'] ?? $node['id'] ?? ''),
+                        'value' => is_string($image) ? $image : '',
+                        'message' => 'Picture "' . (string) ($node['name'] ?? $node['id'] ?? '')
+                            . '" uses an image source TeraLab will not load; replace it with a local '
+                            . '/images/ file or a small image data URI before saving.',
+                    ];
+                }
+                continue;
+            }
+            if ($type === 'text') {
                 continue;
             }
             if (!in_array($type, self::ENGINES, true)) {
@@ -1734,9 +1752,10 @@ final class LabService
             if (!is_array($node)) {
                 continue;
             }
-            // A docker node stores a container reference in `image`; it is not
-            // an image-store path and must be preserved verbatim.
-            if (($node['type'] ?? '') === 'docker') {
+            // A docker node stores a container reference in `image`; a picture
+            // node stores a data URI or a static /images/ path. Neither is an
+            // image-store lookup, so their values must survive unchanged.
+            if (in_array(($node['type'] ?? ''), ['docker', 'picture'], true)) {
                 continue;
             }
             foreach (['image', 'iso', 'kernel', 'initrd'] as $key) {
@@ -1807,6 +1826,16 @@ final class LabService
         return is_string($value) ? $value : '';
     }
 
+    private function iconPolicy(): IconPolicy
+    {
+        return $this->icons ?? new IconPolicy($this->config->root);
+    }
+
+    private function picturePolicy(): PicturePolicy
+    {
+        return $this->pictures ?? new PicturePolicy($this->config->root);
+    }
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -1829,6 +1858,13 @@ final class LabService
                 throw new HttpException(422, 'Duplicate node id: ' . $id);
             }
             $seen[$id] = true;
+            $type = (string) ($raw['type'] ?? 'qemu');
+            $label = (string) ($raw['name'] ?? $id);
+            $icon = $this->iconPolicy()->validate($raw['icon'] ?? '', 'Node "' . $label . '" icon');
+            $image = (string) ($raw['image'] ?? '');
+            if ($type === 'picture') {
+                $image = $this->picturePolicy()->validate($raw['image'] ?? '', 'Node "' . $label . '" image');
+            }
             $interfaces = [];
             foreach (($raw['interfaces'] ?? []) as $interface) {
                 if (!is_array($interface)) {
@@ -1857,10 +1893,10 @@ final class LabService
             $nodes[] = [
                 'id' => $id,
                 'name' => (string) ($raw['name'] ?? $id),
-                'type' => (string) ($raw['type'] ?? 'qemu'),
+                'type' => $type,
                 'template' => (string) ($raw['template'] ?? ''),
-                'icon' => (string) ($raw['icon'] ?? ''),
-                'image' => (string) ($raw['image'] ?? ''),
+                'icon' => $icon,
+                'image' => $image,
                 'iso' => (string) ($raw['iso'] ?? ''),
                 'kernel' => (string) ($raw['kernel'] ?? ''),
                 'initrd' => (string) ($raw['initrd'] ?? ''),
@@ -1906,13 +1942,26 @@ final class LabService
             if ($id === '') {
                 continue;
             }
+            $attributes = $this->normalizeAttributes($raw['attributes'] ?? [], ['id', 'name', 'type', 'left', 'top']);
+            $networkLabel = (string) ($raw['name'] ?? ('Net-' . $id));
+            if (array_key_exists('icon', $raw) || array_key_exists('icon', $attributes)) {
+                $icon = $this->iconPolicy()->validate(
+                    $raw['icon'] ?? $attributes['icon'] ?? '',
+                    'Network "' . $networkLabel . '" icon',
+                );
+                if ($icon === '') {
+                    unset($attributes['icon']);
+                } else {
+                    $attributes['icon'] = $icon;
+                }
+            }
             $networks[] = [
                 'id' => $id,
-                'name' => (string) ($raw['name'] ?? ('Net-' . $id)),
+                'name' => $networkLabel,
                 'type' => (string) ($raw['type'] ?? 'bridge'),
                 'left' => max(0, (int) ($raw['left'] ?? 0)),
                 'top' => max(0, (int) ($raw['top'] ?? 0)),
-                'attributes' => $this->normalizeAttributes($raw['attributes'] ?? [], ['id', 'name', 'type', 'left', 'top']),
+                'attributes' => $attributes,
             ];
         }
 

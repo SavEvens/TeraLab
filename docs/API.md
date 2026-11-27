@@ -722,6 +722,11 @@ lab-scoped routes above; the server derives that id.
 - `GET|POST /api/v2/system/tokens` and `DELETE /system/tokens/{id}` manage
   scoped bearer tokens.
 - `GET|POST /api/v2/images`, `GET|DELETE /api/v2/images/{id}`, `PATCH` to rename.
+  Reads (`GET`) stay available to every authenticated user; upload, rename,
+  delete, template mapping, and legacy import require the `admin` role.
+- Template and image catalogue mutations require the `admin` role; editors,
+  users, and demo guests are read-only. This prevents an editor from shadowing
+  an allowlisted built-in template or replacing a shared image.
 - Uploads larger than the PHP `post_max_size` return 413 with an actionable
   message; the installer raises the PHP limits to 4G.
 - `GET /api/v2/templates` lists built-in and custom YAML templates.
@@ -729,7 +734,24 @@ lab-scoped routes above; the server derives that id.
 - `GET /api/v2/templates/{id}/export` downloads a template YAML.
 - `POST /api/v2/templates/import` imports YAML (multipart `file`).
 - `POST /api/v2/templates/{id}/duplicate` creates a custom copy.
-- `PUT /api/v2/templates/{id}` creates/updates a custom YAML template (editor).
+- `PUT /api/v2/templates/{id}` creates/updates a custom YAML template.
+- Built-in template ids are reserved. `PUT`, `DELETE`, and `import` answer
+  `409 Built-in template IDs are reserved.` when the id exists under
+  `api/templates/builtin/`. Duplicating a built-in produces a non-reserved
+  `<id>-copy` custom template and never overwrites the built-in.
+- Template and lab `icon` values are allowlisted: `""` or exactly one existing
+  basename from `html/images/icons/` (names may contain spaces, e.g.
+  `Cisco ACS.png`). Paths, `..`, `/`, `\`, control characters, URLs, and
+  unknown names answer `422`.
+- Picture annotations (`type: picture`) accept only `""`, a
+  `data:image/(png|jpeg|gif|webp|svg+xml);base64,...` URI whose base64 payload
+  is at most 512 KiB (`PicturePolicy::MAX_ENCODED_BYTES`), or a same-origin
+  `/images/...` path that resolves to an existing non-PHP regular file under
+  `html/images/`. `javascript:`, `file:`, protocol-relative values,
+  `http(s)://`, `/api/...`, traversal, query/fragment strings, and over-cap
+  data URIs answer `422`. A legacy lab whose picture uses a disallowed value
+  stays readable: the value is preserved and reported as a `picture_blocked`
+  warning, and a save that still contains it is rejected until it is replaced.
 - The `PUT`/`POST` template endpoints validate a bounded `options.docker`
   block (`image`, `console_command`, `cap_add`, `pull`, `daemons`,
   `config_path`); unknown keys are rejected, and `kind: docker` requires
@@ -755,21 +777,15 @@ lab-scoped routes above; the server derives that id.
   removes the run directories of labs that no longer exist, using the live
   lab list (trash excluded) as the keep-set.
 
-Demo guests are read-only for the shared catalogues. Template reads
-(`GET /api/v2/templates`, `/templates/{id}`, `/templates/{id}/export`) stay
-available, but `POST /api/v2/templates/import`,
-`POST /api/v2/templates/{id}/duplicate`, `PUT /api/v2/templates/{id}`, and
-`DELETE /api/v2/templates/{id}` answer
-`403 The demo does not allow template changes.` This prevents a guest from
-shadowing an allowlisted builtin with a custom template.
-
-Image reads (`GET /api/v2/images`, `/images/{id}`) stay available, but
-`POST /api/v2/images/import`, `POST /api/v2/images`, `DELETE /api/v2/images/{id}`,
-`PATCH /api/v2/images/{id}` (rename), and `PUT /api/v2/images/{id}/template`
-answer `403 The demo does not allow image changes.` `POST /api/v2/images/import`
-enforces the admin role in the controller after the guest check, so a guest
-receives the demo policy message and a non-guest gets the same admin-only
-result as before.
+Demo guests, editors, and ordinary users are read-only for the shared
+catalogues. Template reads (`GET /api/v2/templates`, `/templates/{id}`,
+`/templates/{id}/export`) and image reads (`GET /api/v2/images`, `/images/{id}`)
+stay available. Every catalogue mutation, including template
+import/duplicate/save/delete and image upload/delete/rename/map/import,
+requires the `admin` role and answers `403 Insufficient permissions.` for
+every non-admin, guests included. The admin requirement is enforced in route
+middleware and again in the controllers. This prevents a guest from shadowing
+an allowlisted builtin with a custom template.
 
 ## System settings
 

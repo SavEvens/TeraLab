@@ -16,9 +16,12 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class LabApiTest extends TestCase
 {
+    use StaticAssets;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private string $root;
@@ -43,6 +46,7 @@ final class LabApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-labapi-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installStaticAssets($this->root);
         $config = Config::forTests($this->root, $this->root . '/data');
         $agent = new AgentClient($config, function (string $method, string $path, array $payload): array {
             $this->calls[] = ['path' => $path, 'payload' => $payload];

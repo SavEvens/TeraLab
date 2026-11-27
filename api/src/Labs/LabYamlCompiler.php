@@ -9,6 +9,8 @@ namespace TeraLab\Api\Labs;
 use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Policy\IconPolicy;
+use TeraLab\Api\Policy\PicturePolicy;
 use TeraLab\Api\Templates\TemplateRepository;
 
 /**
@@ -51,8 +53,15 @@ final class LabYamlCompiler
     public function __construct(
         private readonly TemplateRepository $templates,
         private readonly LabYamlLayout $layout = new LabYamlLayout(),
+        ?IconPolicy $icons = null,
+        ?PicturePolicy $pictures = null,
     ) {
+        $this->icons = $icons ?? new IconPolicy($templates->root());
+        $this->pictures = $pictures ?? new PicturePolicy($templates->root());
     }
+
+    private readonly IconPolicy $icons;
+    private readonly PicturePolicy $pictures;
 
     /**
      * @return array{
@@ -404,9 +413,10 @@ final class LabYamlCompiler
             if (!is_string($body['icon'])) {
                 throw new HttpException(422, $context . ': icon must be text.');
             }
-            if (trim($body['icon']) !== '') {
-                $this->assertXmlSafe(trim($body['icon']), 'Network "' . $key . '" icon');
-                $attributes['icon'] = trim($body['icon']);
+            $icon = $this->icons->validate($body['icon'], $context . ' icon');
+            if ($icon !== '') {
+                $this->assertXmlSafe($icon, $context . ' icon');
+                $attributes['icon'] = $icon;
             }
         }
 
@@ -571,6 +581,10 @@ final class LabYamlCompiler
         $this->assertXmlSafe($image, $context . ': image');
         $this->assertXmlSafe($console, $context . ': console');
         $this->assertXmlSafe($icon, $context . ': icon');
+        $icon = $this->icons->validate($icon, $context . ': icon');
+        if ($kind === 'picture') {
+            $image = $this->pictures->validate($image, $context . ': image');
+        }
 
         $config = '';
         if (array_key_exists('config', $body) && $body['config'] !== null) {

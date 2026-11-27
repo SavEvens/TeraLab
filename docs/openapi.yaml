@@ -53,7 +53,20 @@ components:
         name: { type: string }
         type: { type: string, enum: [qemu, vpcs, iol, dynamips, text, picture] }
         template: { type: string }
-        image: { type: string, description: "Portable image reference (never a path)" }
+        icon:
+          type: string
+          description: |
+            Empty or an existing basename from `html/images/icons/` (names may
+            contain spaces, e.g. `Cisco ACS.png`). Paths, `..`, `/`, `\`,
+            URLs, control characters, and unknown names are rejected with 422.
+        image:
+          type: string
+          description: |
+            For engine nodes, a portable image-store reference (never a path).
+            For `type: picture`, only an empty value, a
+            `data:image/(png|jpeg|gif|webp|svg+xml);base64,` URI whose base64
+            payload is at most 512 KiB, or an existing `/images/` static file
+            is accepted. Other values return 422.
         iso: { type: string, description: "Portable image reference (never a path)" }
         console: { type: string, enum: [telnet, vnc] }
         cpu: { type: integer, minimum: 1 }
@@ -156,7 +169,9 @@ components:
           items:
             type: object
             properties:
-              type: { type: string }
+              type:
+                type: string
+                description: "e.g. image_unmapped, demo_limited, or picture_blocked"
               message: { type: string }
               node: { type: string }
               network: { type: string }
@@ -173,7 +188,10 @@ components:
           description: |
             For YAML labs: image_unmapped, image_missing, network_unsupported,
             or node_unsupported. A `.unl` import by a demo guest adds
-            demo_limited when a node's RAM was clamped to the demo cap.
+            demo_limited when a node's RAM was clamped to the demo cap. A
+            legacy picture node whose image is outside the current picture
+            policy adds picture_blocked; the value is preserved and the lab
+            remains readable.
         message: { type: string }
         node: { type: string, description: "Node name, when the warning is node-specific" }
         network: { type: string, description: "Network id, when the warning is network-specific" }
@@ -1025,7 +1043,13 @@ paths:
   /api/v2/templates/import:
     post:
       tags: [templates]
-      summary: Import a YAML template
+      summary: Import a YAML template (admin)
+      description: |
+        Administrator only. The uploaded YAML must declare `schema: 1` and a
+        matching `id`. `icon` must be empty or an existing basename in
+        `html/images/icons/` (for example `Router.png` or `Cisco ACS.png`);
+        paths, `..`, URLs, control characters, and unknown names return 422.
+        A built-in template id is reserved and returns 409.
       requestBody:
         required: true
         content:
@@ -1037,7 +1061,9 @@ paths:
                 file: { type: string, format: binary }
       responses:
         '201': { description: Imported }
-        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '409': { description: "Built-in template IDs are reserved." }
+        '422': { description: "Invalid YAML, template id, or icon" }
   /api/v2/templates/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -1048,16 +1074,37 @@ paths:
         '200': { description: Template }
     put:
       tags: [templates]
-      summary: Create or update a custom template
+      summary: Create or update a custom template (admin)
+      description: |
+        Administrator only. The body is `{"yaml": "..."}`. The YAML must
+        declare `schema: 1` and an `id` that matches the route. `icon` must be
+        empty or an existing basename in `html/images/icons/`; paths, `..`,
+        URLs, control characters, and unknown names return 422. Built-in ids
+        are reserved and return 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [yaml]
+              properties:
+                yaml: { type: string, description: "Template YAML document" }
       responses:
         '200': { description: Saved }
-        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '409': { description: "Built-in template IDs are reserved." }
+        '422': { description: "Invalid YAML, template id, or icon" }
     delete:
       tags: [templates]
-      summary: Delete a custom template
+      summary: Delete a custom template (admin)
+      description: |
+        Administrator only. Only a custom template can be removed; a built-in
+        id returns 409 and is never deleted.
       responses:
         '200': { description: Deleted }
-        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '409': { description: "Built-in template IDs are reserved." }
   /api/v2/templates/{id}/export:
     get:
       tags: [templates]
@@ -1069,12 +1116,17 @@ paths:
   /api/v2/templates/{id}/duplicate:
     post:
       tags: [templates]
-      summary: Duplicate a template
+      summary: Duplicate a template (admin)
+      description: |
+        Administrator only. Duplicating a built-in template is allowed and
+        creates a non-reserved `<id>-copy` custom template; it never
+        overwrites the built-in.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Duplicated }
-        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '404': { description: Template not found }
   /api/v2/docker/images:
     get:
       tags: [images]
@@ -1116,7 +1168,11 @@ paths:
                     items: { $ref: '#/components/schemas/Image' }
     post:
       tags: [images]
-      summary: Upload an image with kind and optional name
+      summary: Upload an image with kind and optional name (admin)
+      description: |
+        Administrator only. The optional `name` is a display name: it is
+        trimmed, limited to 128 bytes, and must not contain control characters
+        (422 otherwise).
       requestBody:
         required: true
         content:
@@ -1126,11 +1182,11 @@ paths:
               required: [kind, file]
               properties:
                 kind: { type: string, enum: [qemu, iso, iol, dynamips] }
-                name: { type: string }
+                name: { type: string, description: "Display name, max 128 bytes, no control characters" }
                 file: { type: string, format: binary }
       responses:
         '201': { description: Stored }
-        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
         '422': { description: Validation error }
   /api/v2/images/import:
     post:
@@ -1142,9 +1198,9 @@ paths:
         inside the image store for each selected file and registers it with
         `external = 1`; nothing is copied and the source tree is never
         modified. Licence files (`iourc`, `licence`, `license`) are never
-        registered. A demo guest is refused first with the demo policy
-        message; the admin role is enforced in the controller, so non-guests
-        get the same admin-only result as before.
+        registered. The route requires the administrator role; every
+        non-admin, including a demo guest, receives 403
+        `Insufficient permissions.`
       requestBody:
         required: true
         content:
@@ -1171,7 +1227,7 @@ paths:
       responses:
         '200': { description: Dry-run entries or import results }
         '401': { description: Authentication required }
-        '403': { description: "Administrator role required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role required; editors, users, and demo guests are read-only" }
         '422': { description: Invalid root or request body }
   /api/v2/images/{id}:
     parameters:
@@ -1190,26 +1246,32 @@ paths:
                   data: { $ref: '#/components/schemas/Image' }
     patch:
       tags: [images]
-      summary: Rename an image (name and/or portable reference)
+      summary: Rename an image (name and/or portable reference) (admin)
+      description: |
+        Administrator only. The display name is trimmed, limited to 128 bytes,
+        and must not contain control characters (422 otherwise).
       responses:
         '200': { description: Renamed }
-        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
         '409': { description: Reference already in use }
+        '422': { description: Invalid display name or portable reference }
     delete:
       tags: [images]
-      summary: Delete an unreferenced image
+      summary: Delete an unreferenced image (admin)
       responses:
         '200': { description: Deleted }
-        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '409': { description: "Image is referenced by a lab or a running node" }
   /api/v2/images/{id}/template:
     put:
       tags: [images]
-      summary: Map an image to a template
+      summary: Map an image to a template (admin)
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Mapped }
-        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '404': { description: Image or template not found }
   /api/v2/jobs:
     get:
       tags: [jobs]

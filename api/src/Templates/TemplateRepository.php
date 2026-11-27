@@ -11,13 +11,22 @@ use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Policy\IconPolicy;
 
 final class TemplateRepository
 {
     private const KINDS = ['qemu', 'vpcs', 'iol', 'dynamips', 'docker'];
 
-    public function __construct(private readonly Config $config)
+    private readonly IconPolicy $icons;
+
+    public function __construct(private readonly Config $config, ?IconPolicy $icons = null)
     {
+        $this->icons = $icons ?? new IconPolicy($config->root);
+    }
+
+    public function root(): string
+    {
+        return $this->config->root;
     }
 
     /**
@@ -30,6 +39,12 @@ final class TemplateRepository
             $templates[$entry['id']] = $entry;
         }
         foreach ($this->files($this->config->templatesDir, 'custom') as $entry) {
+            // A custom file that predates the reserved-id rule must not shadow
+            // a built-in template. It stays on disk for manual cleanup but is
+            // never resolved or listed.
+            if (is_file($this->builtinDir() . '/' . $entry['id'] . '.yaml')) {
+                continue;
+            }
             $templates[$entry['id']] = $entry;
         }
         ksort($templates);
@@ -45,6 +60,10 @@ final class TemplateRepository
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
             return null;
         }
+        $builtin = $this->builtinDir() . '/' . $id . '.yaml';
+        if (is_file($builtin)) {
+            return $this->load($builtin, 'builtin');
+        }
         $custom = $this->config->templatesDir . '/' . $id . '.yaml';
         if (is_file($custom)) {
             try {
@@ -52,10 +71,6 @@ final class TemplateRepository
             } catch (HttpException) {
                 return null;
             }
-        }
-        $builtin = $this->builtinDir() . '/' . $id . '.yaml';
-        if (is_file($builtin)) {
-            return $this->load($builtin, 'builtin');
         }
 
         return null;
@@ -68,6 +83,9 @@ final class TemplateRepository
     {
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
             throw new HttpException(422, 'Invalid template id.');
+        }
+        if (is_file($this->builtinDir() . '/' . $id . '.yaml')) {
+            throw new HttpException(409, 'Built-in template IDs are reserved.');
         }
         $parsed = $this->parse($yaml);
         if (($parsed['id'] ?? null) !== $id) {
@@ -120,10 +138,10 @@ final class TemplateRepository
         if (!is_string($id) || $id === '') {
             throw new HttpException(422, 'Template id is required.');
         }
-        $this->validate($parsed);
         if (is_file($this->builtinDir() . '/' . $id . '.yaml')) {
             throw new HttpException(409, 'A built-in template already uses this id.');
         }
+        $this->validate($parsed);
         if (is_file($this->config->templatesDir . '/' . $id . '.yaml')) {
             throw new HttpException(409, 'A custom template already uses this id.');
         }
@@ -157,6 +175,12 @@ final class TemplateRepository
 
     public function deleteCustom(string $id): void
     {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
+            throw new HttpException(422, 'Invalid template id.');
+        }
+        if (is_file($this->builtinDir() . '/' . $id . '.yaml')) {
+            throw new HttpException(409, 'Built-in template IDs are reserved.');
+        }
         $path = $this->config->templatesDir . '/' . $id . '.yaml';
         if (!is_file($path)) {
             throw new HttpException(404, 'Custom template not found.');
@@ -243,6 +267,9 @@ final class TemplateRepository
         }
         if (!in_array($template['kind'] ?? null, self::KINDS, true)) {
             throw new HttpException(422, 'Invalid template kind.');
+        }
+        if (array_key_exists('icon', $template)) {
+            $this->icons->validate($template['icon'], 'Template icon');
         }
         $defaults = $template['defaults'] ?? [];
         if (!is_array($defaults)) {

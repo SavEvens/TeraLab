@@ -137,6 +137,70 @@ final class ImageApiTest extends TestCase
         self::assertCount(1, $this->json($list)['data']);
     }
 
+    public function testEditorsCannotMutateImages(): void
+    {
+        $image = $this->uploadImage("QFI\xfb" . str_repeat('a', 96), 'shared-editor.qcow2');
+        $before = $this->json($this->request('GET', '/api/v2/images'))['data'];
+
+        [$editorCookie, $editorCsrf] = $this->editorSession();
+        $savedCookie = $this->cookie;
+        $savedCsrf = $this->csrf;
+        $this->cookie = $editorCookie;
+        $this->csrf = $editorCsrf;
+
+        $cases = [
+            ['POST', '/api/v2/images', [], $this->uploaded("QFI\xfb" . str_repeat('b', 64), 'editor.qcow2'), ['kind' => 'qemu']],
+            ['DELETE', '/api/v2/images/' . $image['id'], [], null, []],
+            ['PATCH', '/api/v2/images/' . $image['id'], ['name' => 'Stolen'], null, []],
+            ['PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'csr1000v'], null, []],
+            ['POST', '/api/v2/images/import', ['root' => $this->addons(), 'dry_run' => true], null, []],
+        ];
+        foreach ($cases as [$method, $path, $body, $file, $fields]) {
+            $response = $this->request($method, $path, $body, [], $file, $fields);
+            self::assertSame(403, $response->getStatusCode(), $method . ' ' . $path);
+        }
+        self::assertSame($before, $this->json($this->request('GET', '/api/v2/images'))['data']);
+        self::assertFileDoesNotExist($this->root . '/data/images/editor.qcow2');
+
+        // Admins can still mutate the shared catalogue.
+        $this->cookie = $savedCookie;
+        $this->csrf = $savedCsrf;
+        $rename = $this->request('PATCH', '/api/v2/images/' . $image['id'], ['name' => 'Admin renamed']);
+        self::assertSame(200, $rename->getStatusCode(), (string) $rename->getBody());
+        self::assertSame('Admin renamed', $this->json($rename)['data']['name']);
+        $mapped = $this->request('PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'csr1000v']);
+        self::assertSame(200, $mapped->getStatusCode(), (string) $mapped->getBody());
+        $delete = $this->request('DELETE', '/api/v2/images/' . $image['id']);
+        self::assertSame(200, $delete->getStatusCode(), (string) $delete->getBody());
+    }
+
+    public function testAdminImageUploadIsAudited(): void
+    {
+        $image = $this->uploadImage("QFI\xfb" . str_repeat('c', 72), 'audited.qcow2');
+        $rows = $this->pdo->query(
+            "SELECT user_id, action, target, result, details_json FROM audit_log WHERE action = 'image.upload'"
+        )->fetchAll(PDO::FETCH_ASSOC);
+        self::assertNotSame([], $rows);
+        $row = $rows[array_key_last($rows)];
+        self::assertSame($image['id'], $row['target']);
+        self::assertSame('success', $row['result']);
+        self::assertNotNull($row['user_id']);
+        $details = json_decode((string) $row['details_json'], true);
+        self::assertIsArray($details);
+        self::assertSame($image['sha256'], $details['sha256'] ?? null);
+    }
+
+    public function testImageDisplayNameRejectsControlCharactersAndLength(): void
+    {
+        foreach ([str_repeat('a', 129), "bad\nname", '   '] as $name) {
+            $upload = $this->request('POST', '/api/v2/images', [], [], $this->uploaded("QFI\xfb" . str_repeat('d', 64), 'named.qcow2'), [
+                'kind' => 'qemu',
+                'name' => $name,
+            ]);
+            self::assertSame(422, $upload->getStatusCode(), var_export($name, true));
+        }
+    }
+
     public function testImportRouteRequiresAdmin(): void
     {
         [$editorCookie, $editorCsrf] = $this->editorSession();
@@ -319,7 +383,7 @@ final class ImageApiTest extends TestCase
             $response = $this->request($method, $path, $body, [], $file, $fields);
             self::assertSame(403, $response->getStatusCode(), $method . ' ' . $path);
             self::assertSame(
-                'The demo does not allow image changes.',
+                'Insufficient permissions.',
                 (string) $this->json($response)['message'],
             );
         }

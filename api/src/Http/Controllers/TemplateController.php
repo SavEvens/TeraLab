@@ -67,7 +67,10 @@ final class TemplateController
             throw new HttpException(422, 'yaml is required.');
         }
         $template = $this->templates->saveCustom($args['id'] ?? '', $yaml);
-        $this->audit->log((string) $user['id'], $this->address($request), 'template.save', (string) $template['id'], 'success');
+        $this->audit->log((string) $user['id'], $this->address($request), 'template.save', (string) $template['id'], 'success', [
+            'kind' => $template['kind'] ?? null,
+            'source' => $template['source'] ?? 'custom',
+        ]);
 
         return Json::response($response, ['status' => 'success', 'data' => $template]);
     }
@@ -104,7 +107,10 @@ final class TemplateController
         $stream = $file->getStream();
         $stream->rewind();
         $template = $this->templates->import($stream->getContents());
-        $this->audit->log((string) $user['id'], $this->address($request), 'template.import', (string) $template['id'], 'success');
+        $this->audit->log((string) $user['id'], $this->address($request), 'template.import', (string) $template['id'], 'success', [
+            'kind' => $template['kind'] ?? null,
+            'source' => $template['source'] ?? 'custom',
+        ]);
 
         return Json::response($response, ['status' => 'success', 'data' => $template], 201);
     }
@@ -116,7 +122,10 @@ final class TemplateController
     {
         $user = $this->mutableUser($request);
         $template = $this->templates->duplicate($args['id'] ?? '');
-        $this->audit->log((string) $user['id'], $this->address($request), 'template.duplicate', (string) $template['id'], 'success');
+        $this->audit->log((string) $user['id'], $this->address($request), 'template.duplicate', (string) $template['id'], 'success', [
+            'from' => (string) ($args['id'] ?? ''),
+            'kind' => $template['kind'] ?? null,
+        ]);
 
         return Json::response($response, ['status' => 'success', 'data' => $template]);
     }
@@ -128,21 +137,24 @@ final class TemplateController
     {
         $user = $this->mutableUser($request);
         $this->templates->deleteCustom($args['id'] ?? '');
-        $this->audit->log((string) $user['id'], $this->address($request), 'template.delete', (string) ($args['id'] ?? ''), 'success');
+        $this->audit->log((string) $user['id'], $this->address($request), 'template.delete', (string) ($args['id'] ?? ''), 'success', [
+            'source' => 'custom',
+        ]);
 
         return Json::response($response, ['status' => 'success']);
     }
 
     /**
-     * Template mutations are editor work on the shared catalogue; guests are
-     * read-only so they cannot shadow an allowlisted builtin template.
+     * Catalogue mutations are admin work on a shared resource. Guests are
+     * included in the admin requirement; the demo check remains a second
+     * defence for routes that are reached without the role middleware.
      *
      * @return array<string, mixed>
      */
     private function mutableUser(ServerRequestInterface $request): array
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
+        $this->access->requireRole($user, 'admin');
         $actor = $this->demoGuard->actor((string) ($user['id'] ?? ''));
         if ($actor !== null && DemoPolicy::isGuest($actor)) {
             throw new HttpException(403, 'The demo does not allow template changes.');
