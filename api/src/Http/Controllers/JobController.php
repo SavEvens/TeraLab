@@ -23,9 +23,17 @@ final class JobController
 
     public function index(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
-        $this->access->user($request);
+        $user = $this->access->user($request);
+        $jobs = $this->jobs->all();
+        if (!$this->access->isAdmin($user)) {
+            $userId = (string) ($user['id'] ?? '');
+            $jobs = array_values(array_filter(
+                $jobs,
+                static fn (array $job): bool => (string) ($job['created_by'] ?? '') === $userId,
+            ));
+        }
 
-        return Json::response($response, ['data' => $this->jobs->all()]);
+        return Json::response($response, ['data' => $jobs]);
     }
 
     /**
@@ -33,11 +41,12 @@ final class JobController
      */
     public function show(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        $this->access->user($request);
+        $user = $this->access->user($request);
         $job = $this->jobs->find($args['id'] ?? '');
         if ($job === null) {
             throw new HttpException(404, 'Job not found.');
         }
+        $this->assertJobAccess($user, $job);
 
         return Json::response($response, ['data' => $job]);
     }
@@ -48,9 +57,27 @@ final class JobController
     public function cancel(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $this->jobs->cancel($args['id'] ?? '');
+        $job = $this->jobs->find($args['id'] ?? '');
+        if ($job === null) {
+            throw new HttpException(404, 'Job not found.');
+        }
+        $this->assertJobAccess($user, $job);
+        $this->jobs->cancel((string) $job['id']);
 
         return Json::response($response, ['status' => 'success']);
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     * @param array<string, mixed> $job
+     */
+    private function assertJobAccess(array $user, array $job): void
+    {
+        if ($this->access->isAdmin($user)) {
+            return;
+        }
+        if ((string) ($job['created_by'] ?? '') !== (string) ($user['id'] ?? '')) {
+            throw new HttpException(403, 'You do not have access to this job.');
+        }
     }
 }

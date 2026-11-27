@@ -772,6 +772,7 @@ try {
   await page.getByRole('link', { name: 'System' }).click()
   await page.waitForURL('**/ui/system')
   await page.waitForSelector('[role="tab"]')
+  const viewerHasHostTab = await page.getByRole('tab', { name: 'Host', exact: true }).count()
   const viewerHasUsersTab = await page.getByRole('tab', { name: 'Users' }).count()
   const viewerHasDemoTab = await page.getByRole('tab', { name: 'Demo', exact: true }).count()
   const usersForbidden = await page.evaluate(async () => (await fetch('/api/v2/users', { credentials: 'same-origin' })).status)
@@ -999,6 +1000,7 @@ try {
     demoNodesBefore,
     demoSweepToast,
     demoSweepSummary,
+    viewerHasHostTab,
     viewerHasUsersTab,
     viewerHasDemoTab,
     usersForbidden,
@@ -1243,6 +1245,7 @@ try {
   ) {
     throw new Error(`demo sweep summary is wrong: ${JSON.stringify(demoSweepSummary)}`)
   }
+  if (viewerHasHostTab !== 0) throw new Error('non-admin still sees the admin-only Host tab')
   if (viewerHasUsersTab !== 0) throw new Error('non-admin still sees the Users tab')
   if (viewerHasDemoTab !== 0) throw new Error('non-admin still sees the Demo tab')
   if (usersForbidden !== 403) throw new Error(`GET /api/v2/users returned ${usersForbidden} for a non-admin`)

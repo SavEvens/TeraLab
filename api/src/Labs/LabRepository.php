@@ -68,6 +68,11 @@ final class LabRepository
     }
 
     /**
+     * Legacy/display lookup by canonical id or basename.
+     *
+     * Never use this for authorization: two labs in different folders may share
+     * a basename. Authenticated operations use findById().
+     *
      * @return array<string, mixed>|null
      */
     public function find(string $id): ?array
@@ -80,6 +85,27 @@ final class LabRepository
         }
 
         return null;
+    }
+
+    /**
+     * Resolve exactly one lab by its canonical id.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findById(string $id): ?array
+    {
+        if ($id === '') {
+            return null;
+        }
+
+        $matches = [];
+        foreach ($this->all() as $lab) {
+            if ((string) ($lab['id'] ?? '') === $id) {
+                $matches[] = $lab;
+            }
+        }
+
+        return count($matches) === 1 ? $matches[0] : null;
     }
 
     /**

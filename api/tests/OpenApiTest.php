@@ -48,7 +48,8 @@ final class OpenApiTest extends TestCase
             '/api/v2/labs/{id}/wipe',
             '/api/v2/labs/{id}/export',
             '/api/v2/labs/import',
-            '/api/v2/nodes/console',
+            '/api/v2/labs/{id}/nodes/{node}/console',
+            '/api/v2/labs/{id}/nodes/{node}/status',
             '/api/v2/templates',
             '/api/v2/images',
             '/api/v2/images/import',
@@ -63,6 +64,60 @@ final class OpenApiTest extends TestCase
         ] as $path) {
             self::assertArrayHasKey($path, $paths, 'missing OpenAPI path ' . $path);
         }
+    }
+
+    public function testRawAgentNodePathsAreRemoved(): void
+    {
+        foreach ([
+            '/api/v2/nodes/start',
+            '/api/v2/nodes/stop',
+            '/api/v2/nodes/wipe',
+            '/api/v2/nodes/status',
+            '/api/v2/nodes/console',
+        ] as $path) {
+            self::assertArrayNotHasKey($path, $this->spec['paths'], 'raw node path must be removed: ' . $path);
+        }
+    }
+
+    public function testLabScopedNodeRoutesDocumentParametersAndSecurity(): void
+    {
+        $console = $this->spec['paths']['/api/v2/labs/{id}/nodes/{node}/console'] ?? null;
+        self::assertIsArray($console);
+        self::assertArrayHasKey('post', $console);
+        $post = $console['post'];
+        self::assertIsArray($post);
+        self::assertSame('nodes', $post['tags'][0]);
+        self::assertStringContainsString('CSRF', (string) ($post['description'] ?? ''));
+        self::assertSame(
+            [
+                ['name' => 'id', 'in' => 'path', 'required' => true, 'schema' => ['type' => 'string']],
+                ['name' => 'node', 'in' => 'path', 'required' => true, 'schema' => ['type' => 'string']],
+            ],
+            $post['parameters'],
+        );
+        self::assertSame(
+            '#/components/schemas/ConsoleSession',
+            $post['responses']['200']['content']['application/json']['schema']['properties']['data']['$ref'],
+        );
+
+        $status = $this->spec['paths']['/api/v2/labs/{id}/nodes/{node}/status'] ?? null;
+        self::assertIsArray($status);
+        self::assertArrayHasKey('get', $status);
+        $get = $status['get'];
+        self::assertIsArray($get);
+        self::assertSame('nodes', $get['tags'][0]);
+        self::assertStringContainsString('read', (string) ($get['description'] ?? ''));
+        self::assertSame(
+            [
+                ['name' => 'id', 'in' => 'path', 'required' => true, 'schema' => ['type' => 'string']],
+                ['name' => 'node', 'in' => 'path', 'required' => true, 'schema' => ['type' => 'string']],
+            ],
+            $get['parameters'],
+        );
+        self::assertSame(
+            '#/components/schemas/NodeStatus',
+            $get['responses']['200']['content']['application/json']['schema']['properties']['data']['$ref'],
+        );
     }
 
     public function testEveryOperationHasSummaryAndResponses(): void

@@ -108,7 +108,7 @@ final class LabService
      */
     public function save(string $id, array $input, ?int $expectedRevision, ?string $userId = null, bool $isAdmin = false): array
     {
-        [$lab, $path] = $this->load($id);
+        [$lab, $path] = $this->loadById($id);
         if ($userId !== null) {
             $this->locks->assertEditable((string) $lab['id'], $userId, $isAdmin);
         }
@@ -275,7 +275,7 @@ final class LabService
         ?string $userId = null,
         bool $isAdmin = false,
     ): array {
-        [$lab, $path] = $this->load($id);
+        [$lab, $path] = $this->loadById($id);
         if ($userId !== null) {
             $this->locks->assertEditable((string) $lab['id'], $userId, $isAdmin);
         }
@@ -358,7 +358,7 @@ final class LabService
      */
     public function export(string $id): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
 
         return [
             'filename' => $this->slug((string) $lab['name']) . '.unl',
@@ -371,7 +371,7 @@ final class LabService
      */
     public function snapshots(string $id): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         $repository = $this->snapshotRepository();
 
         return $repository->all((string) $lab['id']);
@@ -382,7 +382,7 @@ final class LabService
      */
     public function createSnapshot(string $id, string $name, ?string $userId): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         $name = trim($name);
         if ($name === '' || strlen($name) > 128) {
             throw new HttpException(422, 'Snapshot name is required.');
@@ -402,7 +402,7 @@ final class LabService
      */
     public function restoreSnapshot(string $id, string $snapshotID, ?string $userId = null, bool $isAdmin = false): array
     {
-        [$lab, $path] = $this->load($id);
+        [$lab, $path] = $this->loadById($id);
         if ($userId !== null) {
             $this->locks->assertEditable((string) $lab['id'], $userId, $isAdmin);
         }
@@ -424,7 +424,7 @@ final class LabService
 
     public function deleteSnapshot(string $id, string $snapshotID): void
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         if (!$this->snapshotRepository()->delete((string) $lab['id'], $snapshotID)) {
             throw new HttpException(404, 'Snapshot not found.');
         }
@@ -444,7 +444,7 @@ final class LabService
      */
     public function duplicate(string $id, ?string $ownerId = null): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         $this->demoGuard?->assertCanAuthor($ownerId, $this->labNodes($lab));
         $lab['id'] = $this->uuid();
         $lab['name'] = self::labName($lab['name'] . ' copy');
@@ -464,7 +464,7 @@ final class LabService
      */
     public function move(string $id, string $folder, ?string $ownerId = null): array
     {
-        [$lab, $oldPath] = $this->load($id);
+        [$lab, $oldPath] = $this->loadById($id);
         $folder = trim($folder, '/');
         if ($folder !== '' && preg_match('#^[A-Za-z0-9][A-Za-z0-9_./-]{0,127}$#', $folder) !== 1) {
             throw new HttpException(422, 'Invalid lab folder.');
@@ -491,7 +491,7 @@ final class LabService
 
     public function delete(string $id, ?string $userId = null): void
     {
-        [$lab, $path] = $this->load($id);
+        [$lab, $path] = $this->loadById($id);
         $this->assertNoRunningNodes($lab);
         $this->purgeExpiredTrash();
 
@@ -634,7 +634,7 @@ final class LabService
      */
     public function start(string $id, ?string $userId = null, bool $isAdmin = false): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         $this->demoGuard?->assertCanAuthor($userId, $this->labNodes($lab));
         $this->demoGuard?->assertMemoryFloor($userId);
         $nodes = $this->engineNodes($lab);
@@ -701,7 +701,7 @@ final class LabService
      */
     public function stop(string $id, ?string $userId = null, bool $isAdmin = false): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         $stopped = [];
         foreach ($this->engineNodes($lab) as $node) {
             $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
@@ -727,7 +727,7 @@ final class LabService
      */
     public function wipe(string $id, ?string $userId = null, bool $isAdmin = false): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         $wiped = [];
         foreach ($this->engineNodes($lab) as $node) {
             $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
@@ -760,7 +760,7 @@ final class LabService
      */
     public function startNode(string $id, string $nodeID, ?string $userId = null, bool $isAdmin = false): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         $this->demoGuard?->assertCanAuthor($userId, $this->labNodes($lab));
         $this->demoGuard?->assertMemoryFloor($userId);
         $node = $this->findNode($lab, $nodeID);
@@ -785,9 +785,9 @@ final class LabService
      */
     public function stopNode(string $id, string $nodeID, ?string $userId = null, bool $isAdmin = false): array
     {
-        [$lab] = $this->load($id);
-        $this->findNode($lab, $nodeID);
-        $result = $this->agent->stop($this->agentNodeID((string) $lab['id'], $nodeID));
+        [$lab] = $this->loadById($id);
+        $node = $this->findNode($lab, $nodeID);
+        $result = $this->agent->stop($this->agentNodeID((string) $lab['id'], (string) $node['id']));
         if ($userId !== null) {
             $this->locks->release((string) $lab['id'], $userId, $isAdmin);
         }
@@ -800,9 +800,9 @@ final class LabService
      */
     public function wipeNode(string $id, string $nodeID, ?string $userId = null, bool $isAdmin = false): array
     {
-        [$lab] = $this->load($id);
-        $this->findNode($lab, $nodeID);
-        $agentID = $this->agentNodeID((string) $lab['id'], $nodeID);
+        [$lab] = $this->loadById($id);
+        $node = $this->findNode($lab, $nodeID);
+        $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
         try {
             $this->agent->stop($agentID);
         } catch (HttpException $exception) {
@@ -820,11 +820,40 @@ final class LabService
     }
 
     /**
+     * Open a console for a lab-scoped node.
+     *
+     * The caller has already authorized the lab; this resolves the node inside
+     * that lab and derives the agent id server-side.
+     *
+     * @return array<string, mixed>
+     */
+    public function openConsole(string $id, string $nodeID): array
+    {
+        [$lab] = $this->loadById($id);
+        $node = $this->findNode($lab, $nodeID);
+
+        return $this->agent->openConsole($this->agentNodeID((string) $lab['id'], (string) $node['id']));
+    }
+
+    /**
+     * Agent state and usage for one lab-scoped node.
+     *
+     * @return array<string, mixed>
+     */
+    public function nodeStatus(string $id, string $nodeID): array
+    {
+        [$lab] = $this->loadById($id);
+        $node = $this->findNode($lab, $nodeID);
+
+        return $this->agent->nodeStatus($this->agentNodeID((string) $lab['id'], (string) $node['id']));
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function nodes(string $id): array
     {
-        [$lab] = $this->load($id);
+        [$lab] = $this->loadById($id);
         $result = [];
         foreach ($this->engineNodes($lab) as $node) {
             $agentID = $this->agentNodeID((string) $lab['id'], (string) $node['id']);
@@ -856,9 +885,15 @@ final class LabService
     }
 
     /**
+     * Resolve exactly one lab by canonical id.
+     *
+     * Basenames are deliberately not accepted here: two labs in different
+     * folders can share one, so the authorization check and the write must
+     * resolve the same unique lab.
+     *
      * @return array{0: array<string, mixed>, 1: string}
      */
-    private function load(string $id): array
+    private function loadById(string $id): array
     {
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
             throw new HttpException(422, 'Invalid lab id.');
@@ -871,6 +906,7 @@ final class LabService
             new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
             \RecursiveIteratorIterator::LEAVES_ONLY
         );
+        $match = null;
         foreach ($iterator as $file) {
             if (!$file->isFile() || strtolower($file->getExtension()) !== 'unl') {
                 continue;
@@ -887,9 +923,16 @@ final class LabService
             } catch (\Throwable) {
                 continue;
             }
-            if ((string) $lab['id'] === $id || basename($path, '.unl') === $id) {
-                return [$this->normaliseReferences($lab), $path];
+            if ((string) $lab['id'] !== $id) {
+                continue;
             }
+            if ($match !== null) {
+                throw new HttpException(409, 'Ambiguous lab id.');
+            }
+            $match = [$this->normaliseReferences($lab), $path];
+        }
+        if ($match !== null) {
+            return $match;
         }
 
         throw new HttpException(404, 'Lab not found.');

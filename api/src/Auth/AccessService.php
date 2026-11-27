@@ -55,44 +55,65 @@ final class AccessService
     }
 
     /**
+     * The effective role for one lab.
+     *
+     * Global admins and lab owners are admins. A permission row supplies the
+     * local ceiling: `user` is read-only, `editor` may edit, and `admin` may
+     * grant. A global `user` is capped at read even with a local editor row; a
+     * global `editor` is capped at edit unless the local row is admin. An
+     * unknown stored role is read as `user` instead of being trusted.
+     *
+     * A missing permission row is reported as `user`, but it grants no access:
+     * callers must use requireLabRole()/assertLabAccessWithRole() or
+     * filterLabs(), which enforce the explicit grant.
+     *
      * @param array<string, mixed> $user
-     * @return array<string, mixed>
+     * @param array<string, mixed> $lab
      */
-    public function assertLabAccess(array $user, string $labID): array
+    public function labRole(array $user, array $lab): string
     {
-        $lab = $this->labs->find($labID);
-        if ($lab === null) {
-            throw new HttpException(404, 'Lab not found.');
-        }
-        if (!$this->canAccess($user, $lab)) {
-            throw new HttpException(403, 'You do not have access to this lab.');
-        }
-
-        return $lab;
+        return $this->effectiveRole($user, $lab)[0];
     }
 
     /**
      * @param array<string, mixed> $user
      * @param array<string, mixed> $lab
      */
-    public function canAccess(array $user, array $lab): bool
+    public function requireLabRole(array $user, array $lab, string $minimum): void
     {
-        if ($this->isAdmin($user)) {
-            return true;
+        [$role, $granted] = $this->effectiveRole($user, $lab);
+        if (!$granted || (self::RANK[$role] ?? 0) < (self::RANK[$minimum] ?? 99)) {
+            throw new HttpException(403, 'You do not have access to this lab.');
         }
-        $owner = $lab['attributes']['owner'] ?? null;
-        if (is_string($owner) && $owner === (string) ($user['id'] ?? '')) {
-            return true;
-        }
-        $statement = $this->pdo->prepare(
-            'SELECT COUNT(*) FROM permissions WHERE lab_id = :lab_id AND user_id = :user_id'
-        );
-        $statement->execute([
-            ':lab_id' => (string) ($lab['id'] ?? ''),
-            ':user_id' => (string) ($user['id'] ?? ''),
-        ]);
+    }
 
-        return (int) $statement->fetchColumn() > 0;
+    /**
+     * Resolve exactly one canonical lab and require the effective role.
+     *
+     * The route id is never a basename: authorization and the service call both
+     * use the returned `id`.
+     *
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
+    public function assertLabAccessWithRole(array $user, string $labId, string $minimum): array
+    {
+        $lab = $this->labs->findById($labId);
+        if ($lab === null) {
+            throw new HttpException(404, 'Lab not found.');
+        }
+        $this->requireLabRole($user, $lab, $minimum);
+
+        return $lab;
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
+    public function assertLabAccess(array $user, string $labID): array
+    {
+        return $this->assertLabAccessWithRole($user, $labID, 'user');
     }
 
     /**
@@ -108,8 +129,76 @@ final class AccessService
 
         return array_values(array_filter(
             $labs,
-            fn (array $lab): bool => $this->canAccess($user, $lab),
+            function (array $lab) use ($user): bool {
+                [$role, $granted] = $this->effectiveRole($user, $lab);
+
+                return $granted && (self::RANK[$role] ?? 0) >= self::RANK['user'];
+            },
         ));
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     * @param array<string, mixed> $lab
+     * @return array{0: string, 1: bool} Effective role and explicit-grant flag.
+     */
+    private function effectiveRole(array $user, array $lab): array
+    {
+        $global = $this->normaliseRole($user['role'] ?? null);
+        if ($global === 'admin') {
+            return ['admin', true];
+        }
+        if ($this->isOwner($user, $lab)) {
+            return ['admin', true];
+        }
+
+        $local = $this->permissionRole($lab, $user);
+        $granted = $local !== null;
+        if ($global === 'user') {
+            return ['user', $granted];
+        }
+        if ($local === 'admin') {
+            return ['admin', true];
+        }
+        if ($local === 'editor') {
+            return ['editor', true];
+        }
+
+        return ['user', $granted];
+    }
+
+    /**
+     * @param array<string, mixed> $user
+     * @param array<string, mixed> $lab
+     */
+    private function isOwner(array $user, array $lab): bool
+    {
+        $owner = $lab['attributes']['owner'] ?? null;
+
+        return is_string($owner) && $owner !== '' && $owner === (string) ($user['id'] ?? '');
+    }
+
+    /**
+     * @param array<string, mixed> $lab
+     * @param array<string, mixed> $user
+     */
+    private function permissionRole(array $lab, array $user): ?string
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT role FROM permissions WHERE lab_id = :lab_id AND user_id = :user_id'
+        );
+        $statement->execute([
+            ':lab_id' => (string) ($lab['id'] ?? ''),
+            ':user_id' => (string) ($user['id'] ?? ''),
+        ]);
+        $role = $statement->fetchColumn();
+
+        return $role === false ? null : $this->normaliseRole($role);
+    }
+
+    private function normaliseRole(mixed $role): string
+    {
+        return is_string($role) && isset(self::RANK[$role]) ? $role : 'user';
     }
 
     public function grant(string $labID, string $userID, string $role): void
@@ -148,8 +237,16 @@ final class AccessService
             . 'JOIN users u ON u.id = p.user_id WHERE p.lab_id = :lab_id ORDER BY u.username'
         );
         $statement->execute([':lab_id' => $labID]);
+        $rows = $statement->fetchAll();
+        foreach ($rows as &$row) {
+            if (is_array($row)) {
+                $row['role'] = $this->normaliseRole($row['role'] ?? null);
+            }
+        }
+        unset($row);
 
-        return $statement->fetchAll();
+        /** @var list<array<string, mixed>> $rows */
+        return $rows;
     }
 
     /**

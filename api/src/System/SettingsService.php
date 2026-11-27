@@ -31,6 +31,7 @@ final class SettingsService
         'turnstile_enabled' => 0,
         'turnstile_site_key' => '3x00000000000000000000FF',
         'turnstile_secret_key' => '1x0000000000000000000000000000000AA',
+        'legacy_v1_enabled' => 0,
     ];
 
     /** Keys stored as integers, regardless of their textual representation. */
@@ -47,10 +48,11 @@ final class SettingsService
         'demo_idle_wipe_minutes',
         'demo_sweep_interval',
         'turnstile_enabled',
+        'legacy_v1_enabled',
     ];
 
     /** Integer settings that are on/off switches. */
-    private const BOOL_KEYS = ['demo_enabled', 'turnstile_enabled'];
+    private const BOOL_KEYS = ['demo_enabled', 'turnstile_enabled', 'legacy_v1_enabled'];
 
     /**
      * Inclusive bounds for integer settings whose message can be generic.

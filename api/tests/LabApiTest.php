@@ -24,6 +24,7 @@ final class LabApiTest extends TestCase
     private string $root;
     /** @var SlimApp<\DI\Container> */
     private SlimApp $app;
+    private AgentClient $agent;
     private string $cookie = '';
     private string $csrf = '';
     private \PDO $pdo;
@@ -82,6 +83,7 @@ final class LabApiTest extends TestCase
         });
 
         $this->pdo = (new Database($config))->pdo();
+        $this->agent = $agent;
         $this->app = (new App($config, $agent))->create();
         $this->registerImage('base.qcow2');
         $setup = $this->request('POST', '/api/v2/setup', [
@@ -97,7 +99,7 @@ final class LabApiTest extends TestCase
         $this->remove($this->root);
     }
 
-    public function testCreateStartExportImportAndV1NodeLifecycle(): void
+    public function testCreateStartExportImportAndLabScopedNodeLifecycle(): void
     {
         $create = $this->request('POST', '/api/v2/labs', [
             'name' => 'API Lab',
@@ -135,7 +137,14 @@ final class LabApiTest extends TestCase
         self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
         self::assertNotSame($lab['id'], $this->json($import)['data']['id']);
 
-        // Legacy v1 core routes: login, auth, labs, node start/stop/wipe.
+        // Lab-scoped node lifecycle replaces the removed raw agent routes.
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/stop')->getStatusCode());
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/start')->getStatusCode());
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/stop')->getStatusCode());
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/wipe')->getStatusCode());
+
+        // Legacy v1 is opt-in and read-only when enabled.
+        $this->enableLegacyV1();
         $login = $this->request('POST', '/api/auth/login', [
             'username' => 'admin',
             'password' => self::PASSWORD,
@@ -152,15 +161,9 @@ final class LabApiTest extends TestCase
         self::assertNotEmpty($this->json($labs)['data']);
 
         $path = (string) $lab['path'];
-        $v1Start = $this->request('GET', '/api/labs/' . $path . '/nodes/1/start', [], [], $v1Cookie);
-        self::assertSame(200, $v1Start->getStatusCode(), (string) $v1Start->getBody());
-        self::assertSame('success', $this->json($v1Start)['status']);
-
-        $v1Stop = $this->request('GET', '/api/labs/' . $path . '/nodes/1/stop', [], [], $v1Cookie);
-        self::assertSame(200, $v1Stop->getStatusCode());
-
-        $v1Wipe = $this->request('GET', '/api/labs/' . $path . '/nodes/1/wipe', [], [], $v1Cookie);
-        self::assertSame(200, $v1Wipe->getStatusCode());
+        self::assertSame(405, $this->request('GET', '/api/labs/' . $path . '/nodes/1/start', [], [], $v1Cookie)->getStatusCode());
+        self::assertSame(405, $this->request('GET', '/api/labs/' . $path . '/nodes/1/stop', [], [], $v1Cookie)->getStatusCode());
+        self::assertSame(405, $this->request('GET', '/api/labs/' . $path . '/nodes/1/wipe', [], [], $v1Cookie)->getStatusCode());
     }
 
     public function testSaveIncrementsRevisionAndRejectsStaleWrites(): void
@@ -215,6 +218,10 @@ final class LabApiTest extends TestCase
         $row = $this->labRow($list, (string) $lab['id']);
         self::assertFalse($row['running']);
         self::assertSame(0, $row['running_nodes']);
+        // The UI offers owner actions from this field; it must be the user id.
+        $adminID = (string) $this->pdo->query("SELECT id FROM users WHERE username = 'admin'")->fetchColumn();
+        self::assertSame($adminID, $row['owner']);
+        self::assertArrayNotHasKey('attributes', $row);
 
         $this->runningNodes = [
             ['id' => 'a-1', 'lab_id' => $lab['id'], 'state' => 'running'],
@@ -700,6 +707,21 @@ final class LabApiTest extends TestCase
         ]);
 
         return $id;
+    }
+
+    private function enableLegacyV1(): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at) '
+            . 'ON CONFLICT(key) DO UPDATE SET value = :value, updated_at = :updated_at'
+        );
+        $statement->execute([
+            ':key' => 'legacy_v1_enabled',
+            ':value' => '1',
+            ':updated_at' => time(),
+        ]);
+        $config = Config::forTests($this->root, $this->root . '/data');
+        $this->app = (new App($config, $this->agent))->create();
     }
 
     /**

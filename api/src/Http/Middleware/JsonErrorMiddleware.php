@@ -37,6 +37,15 @@ final class JsonErrorMiddleware implements MiddlewareInterface
                 $exception->details,
                 $requestId,
             );
+        } catch (\Slim\Exception\HttpException $exception) {
+            // Invalid paths and methods are HTTP errors, not server failures.
+            return Json::error(
+                new Response(),
+                $exception->getCode(),
+                $exception->getMessage(),
+                [],
+                $requestId,
+            );
         } catch (Throwable $exception) {
             $this->logger->error('Unhandled API error', [
                 'exception' => $exception,

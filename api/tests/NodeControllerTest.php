@@ -20,7 +20,7 @@ final class NodeControllerTest extends TestCase
 {
     private const PASSWORD = 'Teralab-Admin-2026!';
 
-    private const GUEST_PASSWORD = 'Teralab-Guest-2026!';
+    private const USER_PASSWORD = 'Teralab-Viewer-2026!';
 
     private string $root;
 
@@ -39,239 +39,92 @@ final class NodeControllerTest extends TestCase
         $this->remove($this->root);
     }
 
-    public function testStartRequiresCsrf(): void
+    public function testConsoleRequiresCsrf(): void
     {
-        [$app, $cookie] = $this->appWithSession();
+        [$app, $cookie, , $lab] = $this->appWithSession();
 
-        $response = $this->request($app, 'POST', '/api/v2/nodes/start', [
-            'id' => 'node1',
-            'name' => 'R1',
-        ], [], $cookie);
+        $response = $this->request($app, 'POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/console', [], [], $cookie);
 
         self::assertSame(403, $response->getStatusCode());
         self::assertSame([], $this->calls);
     }
 
-    public function testStartForwardsSpecAndReturnsAgentState(): void
+    public function testConsoleDerivesTheAgentNodeIdFromTheAuthorizedPair(): void
     {
-        [$app, $cookie, $csrf] = $this->appWithSession();
+        [$app, $cookie, $csrf, $lab] = $this->appWithSession();
 
-        $response = $this->request($app, 'POST', '/api/v2/nodes/start', [
-            'id' => 'node1',
-            'lab_id' => 'lab1',
-            'name' => 'R1',
-            'image' => '/var/lib/teralab/images/router.qcow2',
-            'cpu' => 2,
-            'ram' => 1024,
-            'ethernet' => 2,
-            'networks' => ['tlab0', 'tlab1'],
-            'console' => 'telnet',
-        ], ['X-CSRF-Token' => $csrf], $cookie);
+        $response = $this->request(
+            $app,
+            'POST',
+            '/api/v2/labs/' . $lab['id'] . '/nodes/1/console',
+            [],
+            ['X-CSRF-Token' => $csrf],
+            $cookie,
+        );
 
-        self::assertSame(202, $response->getStatusCode());
-        $body = $this->json($response);
-        self::assertSame('running', $body['data']['state']);
-        self::assertSame('node1', $body['data']['id']);
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+        $body = $this->json($response)['data'];
+        self::assertSame('telnet', $body['kind']);
+        self::assertSame('token1', $body['token']);
+        self::assertStringStartsWith('/ws/console?token=', $body['ws_path']);
 
         self::assertCount(1, $this->calls);
-        $call = $this->calls[0];
-        self::assertSame('POST', $call['method']);
-        self::assertSame('/v1/node.start', $call['path']);
-        self::assertSame('node1', $call['payload']['id']);
-        self::assertSame('lab1', $call['payload']['lab_id']);
-        self::assertSame(2, $call['payload']['cpu']);
-        self::assertSame(1024, $call['payload']['ram']);
-        self::assertSame(['tlab0', 'tlab1'], $call['payload']['networks']);
+        self::assertSame('/v1/console.open', $this->calls[0]['path']);
+        self::assertSame(['node_id' => $lab['id'] . '-1'], $this->calls[0]['payload']);
     }
 
-    public function testGuestRawNodeStartIsRefusedWhileAdminsAreUnaffected(): void
+    public function testConsoleDeniesAnotherUsersLabAndNeverCallsTheAgent(): void
     {
-        [$app, $adminCookie, $adminCsrf] = $this->appWithSession();
-
+        [$app, , , $lab] = $this->appWithSession();
         $config = Config::forTests($this->root, $this->root . '/data');
         $pdo = (new Database($config))->pdo();
         $pdo->prepare(
-            'INSERT INTO users (id, username, password_hash, role, expiration, guest, created_at, updated_at) '
-            . 'VALUES (:id, :username, :password_hash, :role, :expiration, :guest, :created_at, :updated_at)'
+            'INSERT INTO users (id, username, password_hash, role, expiration, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :role, -1, :now, :now)'
         )->execute([
-            ':id' => 'guest-raw',
-            ':username' => 'guest-raw',
-            ':password_hash' => password_hash(self::GUEST_PASSWORD, PASSWORD_ARGON2ID),
+            ':id' => 'other-user',
+            ':username' => 'other-user',
+            ':password_hash' => password_hash(self::USER_PASSWORD, PASSWORD_ARGON2ID),
             ':role' => 'editor',
-            ':expiration' => time() + 600,
-            ':guest' => 1,
-            ':created_at' => time(),
-            ':updated_at' => time(),
+            ':now' => time(),
         ]);
 
         $login = $this->request($app, 'POST', '/api/v2/auth/login', [
-            'username' => 'guest-raw',
-            'password' => self::GUEST_PASSWORD,
-        ], [], '');
+            'username' => 'other-user',
+            'password' => self::USER_PASSWORD,
+        ]);
         self::assertSame(200, $login->getStatusCode(), (string) $login->getBody());
-        $guestCookie = $this->cookie($login);
-        $guestCsrf = (string) $this->json($login)['csrf_token'];
+        $otherCookie = $this->cookie($login);
+        $otherCsrf = (string) $this->json($login)['csrf_token'];
 
-        $payload = [
-            'id' => 'node1',
-            'lab_id' => 'lab1',
-            'name' => 'R1',
-            'ram' => 131072,
-            'ethernet' => 0,
-        ];
-
-        $refused = $this->request(
+        $this->calls = [];
+        $response = $this->request(
             $app,
             'POST',
-            '/api/v2/nodes/start',
-            $payload,
-            ['X-CSRF-Token' => $guestCsrf],
-            $guestCookie,
+            '/api/v2/labs/' . $lab['id'] . '/nodes/1/console',
+            [],
+            ['X-CSRF-Token' => $otherCsrf],
+            $otherCookie,
         );
-        self::assertSame(403, $refused->getStatusCode(), (string) $refused->getBody());
-        self::assertSame(
-            'The demo starts nodes from the lab editor.',
-            (string) $this->json($refused)['message'],
-        );
-        self::assertCount(0, $this->calls, 'the refused guest start must not reach the agent');
 
-        $accepted = $this->request(
-            $app,
-            'POST',
-            '/api/v2/nodes/start',
-            $payload,
-            ['X-CSRF-Token' => $adminCsrf],
-            $adminCookie,
-        );
-        self::assertSame(202, $accepted->getStatusCode(), (string) $accepted->getBody());
-        self::assertCount(1, $this->calls);
-        self::assertSame(131072, $this->calls[0]['payload']['ram']);
-    }
-
-    public function testStartRejectsInvalidFields(): void
-    {
-        [$app, $cookie, $csrf] = $this->appWithSession();
-
-        foreach ([
-            ['name' => 'R1'],
-            ['id' => 'node1'],
-            ['id' => 'node1', 'name' => 'R1', 'cpu' => 1000],
-            ['id' => 'node1', 'name' => 'R1', 'ethernet' => 'two'],
-            ['id' => 'node1', 'name' => 'R1', 'networks' => [1]],
-            ['id' => 'node1', 'name' => 'R1', 'config' => ['hostname R1']],
-            ['id' => 'node1', 'name' => 'R1', 'config' => str_repeat('a', 65537)],
-        ] as $payload) {
-            $response = $this->request(
-                $app,
-                'POST',
-                '/api/v2/nodes/start',
-                $payload,
-                ['X-CSRF-Token' => $csrf],
-                $cookie,
-            );
-            self::assertSame(422, $response->getStatusCode(), json_encode($payload));
-        }
+        self::assertSame(403, $response->getStatusCode(), (string) $response->getBody());
         self::assertSame([], $this->calls);
-    }
-
-    public function testDockerStartForwardsTheImageAndTheDockerBlock(): void
-    {
-        [$app, $cookie, $csrf] = $this->appWithSession();
-
-        $response = $this->request($app, 'POST', '/api/v2/nodes/start', [
-            'id' => 'node1',
-            'lab_id' => 'lab1',
-            'name' => 'R1',
-            'engine' => 'docker',
-            'image' => 'quay.io/frrouting/frr:10.7.1',
-            'cpu' => 1,
-            'ram' => 256,
-            'ethernet' => 1,
-            'networks' => ['tlab0'],
-            'console' => 'telnet',
-            'config' => "frr version 10.7.1\nhostname R1\n!\n",
-            'docker' => [
-                'console_command' => '/usr/bin/vtysh',
-                'cap_add' => ['NET_ADMIN', 'SYS_ADMIN'],
-                'daemons' => ['zebra', 'ospfd'],
-                'config_path' => '/etc/frr/frr.conf',
-                'pull' => false,
-            ],
-        ], ['X-CSRF-Token' => $csrf], $cookie);
-
-        self::assertSame(202, $response->getStatusCode(), (string) $response->getBody());
-        self::assertCount(1, $this->calls);
-        $payload = $this->calls[0]['payload'];
-        self::assertSame('docker', $payload['engine']);
-        self::assertSame('quay.io/frrouting/frr:10.7.1', $payload['image']);
-        self::assertSame("frr version 10.7.1\nhostname R1\n!\n", $payload['config']);
-        self::assertSame([
-            'console_command' => '/usr/bin/vtysh',
-            'cap_add' => ['NET_ADMIN', 'SYS_ADMIN'],
-            'daemons' => ['zebra', 'ospfd'],
-            'config_path' => '/etc/frr/frr.conf',
-            'pull' => false,
-        ], $payload['docker']);
-    }
-
-    public function testDockerStartRejectsAnUnsafeBlockOrMissingImage(): void
-    {
-        [$app, $cookie, $csrf] = $this->appWithSession();
-
-        foreach ([
-            ['engine' => 'docker', 'docker' => ['cap_add' => ['SYS_MODULE']]],
-            ['engine' => 'docker', 'docker' => ['cap_add' => ['SYS_PTRACE']]],
-            ['engine' => 'docker', 'docker' => ['image' => 'x', 'pull' => 'yes']],
-            ['engine' => 'docker'],
-        ] as $payload) {
-            $response = $this->request(
-                $app,
-                'POST',
-                '/api/v2/nodes/start',
-                ['id' => 'node1', 'name' => 'R1'] + $payload,
-                ['X-CSRF-Token' => $csrf],
-                $cookie,
-            );
-            self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
-        }
-        self::assertSame([], $this->calls);
-    }
-
-    public function testStopWipeStatusAndConsole(): void
-    {
-        [$app, $cookie, $csrf] = $this->appWithSession();
-
-        $stop = $this->request($app, 'POST', '/api/v2/nodes/stop', ['id' => 'node1'], ['X-CSRF-Token' => $csrf], $cookie);
-        self::assertSame(200, $stop->getStatusCode());
-
-        $wipe = $this->request($app, 'POST', '/api/v2/nodes/wipe', ['id' => 'node1'], ['X-CSRF-Token' => $csrf], $cookie);
-        self::assertSame(200, $wipe->getStatusCode());
-
-        $status = $this->request($app, 'GET', '/api/v2/nodes/status?id=node1', [], [], $cookie);
-        self::assertSame(200, $status->getStatusCode());
-        self::assertSame('node1', $this->json($status)['data']['id']);
-
-        $console = $this->request($app, 'POST', '/api/v2/nodes/console', ['node_id' => 'node1'], ['X-CSRF-Token' => $csrf], $cookie);
-        self::assertSame(200, $console->getStatusCode());
-        $consoleBody = $this->json($console)['data'];
-        self::assertSame('telnet', $consoleBody['kind']);
-        self::assertSame('token1', $consoleBody['token']);
-        self::assertStringStartsWith('/ws/console?token=', $consoleBody['ws_path']);
-
-        self::assertSame(
-            ['/v1/node.stop', '/v1/node.wipe', '/v1/node.status?id=node1', '/v1/console.open'],
-            array_column($this->calls, 'path'),
-        );
-        self::assertSame(['node_id' => 'node1'], $this->calls[3]['payload']);
     }
 
     public function testVncConsoleUsesProxyPathAndPassword(): void
     {
-        [$app, $cookie, $csrf] = $this->appWithSession(
+        [$app, $cookie, $csrf, $lab] = $this->appWithSession(
             static fn (): string => '{"ok":true,"result":{"kind":"vnc","token":"token1","expires_in":300,"port":5901,"password":"vncpass"}}'
         );
 
-        $response = $this->request($app, 'POST', '/api/v2/nodes/console', ['node_id' => 'node1'], ['X-CSRF-Token' => $csrf], $cookie);
+        $response = $this->request(
+            $app,
+            'POST',
+            '/api/v2/labs/' . $lab['id'] . '/nodes/1/console',
+            [],
+            ['X-CSRF-Token' => $csrf],
+            $cookie,
+        );
 
         self::assertSame(200, $response->getStatusCode());
         $body = $this->json($response)['data'];
@@ -283,11 +136,18 @@ final class NodeControllerTest extends TestCase
 
     public function testTcpConsoleUsesTcpProxyPath(): void
     {
-        [$app, $cookie, $csrf] = $this->appWithSession(
+        [$app, $cookie, $csrf, $lab] = $this->appWithSession(
             static fn (): string => '{"ok":true,"result":{"kind":"telnet","token":"token1","expires_in":300,"port":39083}}'
         );
 
-        $response = $this->request($app, 'POST', '/api/v2/nodes/console', ['node_id' => 'node1'], ['X-CSRF-Token' => $csrf], $cookie);
+        $response = $this->request(
+            $app,
+            'POST',
+            '/api/v2/labs/' . $lab['id'] . '/nodes/1/console',
+            [],
+            ['X-CSRF-Token' => $csrf],
+            $cookie,
+        );
 
         self::assertSame(200, $response->getStatusCode());
         $body = $this->json($response)['data'];
@@ -295,14 +155,68 @@ final class NodeControllerTest extends TestCase
         self::assertSame(39083, $body['port']);
     }
 
-    public function testAgentErrorIsPassedThrough(): void
+    public function testUnknownLabNodeDoesNotCallTheAgent(): void
     {
-        [$app, $cookie, $csrf] = $this->appWithSession();
+        [$app, $cookie, $csrf, $lab] = $this->appWithSession();
 
-        $response = $this->request($app, 'POST', '/api/v2/nodes/stop', ['id' => 'missing'], ['X-CSRF-Token' => $csrf], $cookie);
+        $response = $this->request(
+            $app,
+            'POST',
+            '/api/v2/labs/' . $lab['id'] . '/nodes/missing/console',
+            [],
+            ['X-CSRF-Token' => $csrf],
+            $cookie,
+        );
 
         self::assertSame(404, $response->getStatusCode());
-        self::assertSame('node not found', $this->json($response)['message']);
+        self::assertSame([], $this->calls);
+    }
+
+    public function testLabNodesReportStateAndReady(): void
+    {
+        [$app, $cookie, , $lab] = $this->appWithSession();
+
+        $response = $this->request($app, 'GET', '/api/v2/labs/' . $lab['id'] . '/nodes', [], [], $cookie);
+
+        self::assertSame(200, $response->getStatusCode());
+        $node = $this->json($response)['data']['nodes'][0];
+        self::assertSame('stopped', $node['state']);
+        self::assertFalse($node['ready']);
+        self::assertSame($lab['id'] . '-1', $node['agent_id']);
+    }
+
+    public function testNodeStatusIsLabScoped(): void
+    {
+        [$app, $cookie, , $lab] = $this->appWithSession();
+
+        $response = $this->request($app, 'GET', '/api/v2/labs/' . $lab['id'] . '/nodes/1/status', [], [], $cookie);
+
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+        self::assertSame('stopped', $this->json($response)['data']['state']);
+        $calls = array_values(array_filter(
+            $this->calls,
+            static fn (array $call): bool => str_starts_with($call['path'], '/v1/node.status'),
+        ));
+        self::assertCount(1, $calls);
+        self::assertStringContainsString('id=' . rawurlencode($lab['id'] . '-1'), $calls[0]['path']);
+    }
+
+    public function testRawNodeRoutesAreAbsent(): void
+    {
+        [$app, $cookie, $csrf] = $this->appWithSession();
+        $this->calls = [];
+
+        foreach ([
+            ['POST', '/api/v2/nodes/start', ['id' => 'node1', 'name' => 'R1']],
+            ['POST', '/api/v2/nodes/stop', ['id' => 'node1']],
+            ['POST', '/api/v2/nodes/wipe', ['id' => 'node1']],
+            ['GET', '/api/v2/nodes/status?id=node1', []],
+            ['POST', '/api/v2/nodes/console', ['node_id' => 'node1']],
+        ] as [$method, $path, $body]) {
+            $response = $this->request($app, $method, $path, $body, ['X-CSRF-Token' => $csrf], $cookie);
+            self::assertSame(404, $response->getStatusCode(), $method . ' ' . $path);
+        }
+        self::assertSame([], $this->calls);
     }
 
     public function testAgentClientSpeaksTheUnixSocketProtocol(): void
@@ -386,7 +300,7 @@ PHP;
     }
 
     /**
-     * @return array{SlimApp<\DI\Container>, string, string}
+     * @return array{SlimApp<\DI\Container>, string, string, array<string, mixed>}
      */
     private function appWithSession(?\Closure $consoleResponse = null): array
     {
@@ -394,34 +308,16 @@ PHP;
         $client = new AgentClient($config, function (string $method, string $path, array $payload) use ($consoleResponse): array {
             $this->calls[] = ['method' => $method, 'path' => $path, 'payload' => $payload];
 
-            if (($payload['id'] ?? '') === 'missing') {
-                return [404, '{"ok":false,"error":{"code":"not_found","message":"node not found"}}'];
-            }
-            if ($path === '/v1/node.start') {
-                return [200, json_encode([
-                    'ok' => true,
-                    'result' => [
-                        'id' => $payload['id'] ?? '',
-                        'name' => $payload['name'] ?? '',
-                        'state' => 'running',
-                        'pid' => 4321,
-                        'run_dir' => '/var/lib/teralab/run/node',
-                        'console' => 'telnet',
-                    ],
-                ], JSON_THROW_ON_ERROR)];
-            }
             if (str_starts_with($path, '/v1/node.status')) {
-                return [200, '{"ok":true,"result":{"id":"node1","state":"running"}}'];
+                return [200, '{"ok":true,"result":{"id":"node","state":"stopped","ready":false}}'];
+            }
+            if ($path === '/v1/console.open') {
+                return [200, $consoleResponse !== null
+                    ? $consoleResponse()
+                    : '{"ok":true,"result":{"kind":"telnet","token":"token1","expires_in":300}}'];
             }
 
-            return match ($path) {
-                '/v1/node.stop' => [200, '{"ok":true,"result":{"state":"stopped"}}'],
-                '/v1/node.wipe' => [200, '{"ok":true,"result":{"state":"wiped"}}'],
-                '/v1/console.open' => [200, $consoleResponse !== null
-                    ? $consoleResponse()
-                    : '{"ok":true,"result":{"kind":"telnet","token":"token1","expires_in":300}}'],
-                default => [200, '{"ok":true,"result":{}}'],
-            };
+            return [200, '{"ok":true,"result":{}}'];
         });
 
         $app = (new App($config, $client))->create();
@@ -429,9 +325,23 @@ PHP;
             'username' => 'admin',
             'password' => self::PASSWORD,
         ]);
-        $body = $this->json($setup);
+        self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
+        $cookie = $this->cookie($setup);
+        $csrf = (string) $this->json($setup)['csrf_token'];
 
-        return [$app, $this->cookie($setup), (string) $body['csrf_token']];
+        $created = $this->request($app, 'POST', '/api/v2/labs', [
+            'name' => 'Console Lab',
+            'nodes' => [[
+                'id' => '1',
+                'name' => 'PC1',
+                'type' => 'vpcs',
+                'interfaces' => [],
+            ]],
+        ], ['X-CSRF-Token' => $csrf], $cookie);
+        self::assertSame(201, $created->getStatusCode(), (string) $created->getBody());
+        $this->calls = [];
+
+        return [$app, $cookie, $csrf, $this->json($created)['data']];
     }
 
     /**
