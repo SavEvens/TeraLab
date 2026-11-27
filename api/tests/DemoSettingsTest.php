@@ -84,6 +84,7 @@ final class DemoSettingsTest extends TestCase
         self::assertSame(0, $all['turnstile_enabled']);
         self::assertSame('3x00000000000000000000FF', $all['turnstile_site_key']);
         self::assertSame('1x0000000000000000000000000000000AA', $all['turnstile_secret_key']);
+        self::assertSame(0, $all['legacy_v1_enabled']);
 
         // Existing keys keep their defaults, types, and helper behaviour.
         self::assertSame('UTC', $all['timezone']);
@@ -125,6 +126,7 @@ final class DemoSettingsTest extends TestCase
         yield 'demo_idle_wipe_minutes' => ['demo_idle_wipe_minutes', 15, 1440];
         yield 'demo_sweep_interval' => ['demo_sweep_interval', 60, 3600];
         yield 'turnstile_enabled' => ['turnstile_enabled', 0, 1];
+        yield 'legacy_v1_enabled' => ['legacy_v1_enabled', 0, 1];
         // Pre-existing keys must keep their bounds too.
         yield 'session_ttl' => ['session_ttl', 300, 86400];
         yield 'max_upload_bytes' => ['max_upload_bytes', 1048576, 10737418240];
@@ -132,7 +134,7 @@ final class DemoSettingsTest extends TestCase
 
     public function testBooleanSettingsRejectOtherValues(): void
     {
-        foreach (['demo_enabled', 'turnstile_enabled'] as $key) {
+        foreach (['demo_enabled', 'turnstile_enabled', 'legacy_v1_enabled'] as $key) {
             $values = $this->settings->update([$key => 1]);
             self::assertSame(1, $values[$key]);
             $values = $this->settings->update([$key => true]);

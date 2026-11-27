@@ -6,7 +6,8 @@
 The API is JSON-only under `/api/v2`. The OpenAPI 3.1 draft is in
 `docs/openapi.yaml`. State-changing requests require the
 session cookie and `X-CSRF-Token` (returned by setup, login, guest entry, and
-`/auth/me`).
+`/auth/me`). The legacy v1 adapter is **disabled by default**; see
+[v1 compatibility](#v1-compatibility).
 
 ## Health
 
@@ -57,11 +58,12 @@ to 5 per window of 15 minutes for one username and address, and answer 429
 
 ### Captcha on sign-in
 
-When `turnstile_enabled` is `1`, `POST /api/v2/auth/login` and the legacy
-`POST /api/auth/login` both require a Cloudflare Turnstile token. Send it as the
-JSON field `cf-turnstile-response` (the widget's name) or, for clients that
-cannot shape the body, as the `CF-Turnstile-Response` header. The token is sent
-to Cloudflare for verification together with the resolved client address.
+When `turnstile_enabled` is `1`, `POST /api/v2/auth/login` and, while
+`legacy_v1_enabled` is `1`, the legacy `POST /api/auth/login` both require a
+Cloudflare Turnstile token. Send it as the JSON field
+`cf-turnstile-response` (the widget's name) or, for clients that cannot shape
+the body, as the `CF-Turnstile-Response` header. The token is sent to
+Cloudflare for verification together with the resolved client address.
 
 - Missing, expired, already-used, or rejected token: 422 `Captcha verification
   failed; try again.` The legacy route uses the v1 envelope with `status:
@@ -247,15 +249,14 @@ Where the guard runs:
   topology before writing it back. An over-cap snapshot answers `422` and the
   lab is left unchanged.
 - `POST /api/v2/labs/{id}/start` and
-  `POST /api/v2/labs/{id}/nodes/{node}/start` (v2 and the legacy v1 alias)
-  re-check the lab's **current** topology, not only the request. A lab authored
-  while a cap was higher therefore refuses to start after the cap is lowered,
-  with the same messages. A guest start also refuses with `409` when the host
-  is below the memory floor; see
-  [Demo sweeper and capacity](#demo-sweeper-and-capacity).
-- `POST /api/v2/nodes/start` is the raw agent route: a guest is refused with
-  `403 The demo starts nodes from the lab editor.` before the body is parsed.
-  Guests start nodes through the lab node-start route above.
+  `POST /api/v2/labs/{id}/nodes/{node}/start` re-check the lab's **current**
+  topology, not only the request. A lab authored while a cap was higher
+  therefore refuses to start after the cap is lowered, with the same messages.
+  A guest start also refuses with `409` when the host is below the memory
+  floor; see [Demo sweeper and capacity](#demo-sweeper-and-capacity).
+- Node start/stop/wipe and console require the effective `edit` role on the
+  canonical lab. The agent node id is always derived server-side from that
+  lab+node pair; the client never supplies it.
 
 The `.unl` import response reports each clamp in `data.warnings` and
 `meta.warnings` (both carry the same list) as a `demo_limited` entry:
@@ -294,9 +295,8 @@ job and no systemd timer. A sweep runs **lazily**, at most once every
 
 - `GET /api/v2/labs` runs a due sweep before it lists labs;
 - `POST /api/v2/labs/{id}/start` runs a due sweep before the start;
-- `POST /api/v2/labs/{id}/nodes/{node}/start` runs a due sweep before the node
-  start;
-- the legacy v1 node-start route runs a due sweep before the start.
+- `POST /api/v2/labs/{id}/nodes/{node}/start` runs a due sweep after the lab
+  authorization check and before the node start.
 
 Between sweeps nothing is reclaimed, so the interval bounds how long an expired
 guest keeps its resources. Sweeps only act on **guest** resources: labs owned by an admin or a
@@ -429,7 +429,7 @@ When a guest starts a lab or a node and `MemAvailable` is below
 
 The check is host-wide and guest-only: admin and non-guest `editor` starts are
 never refused by it, and a guest start is refused whenever the host is below the
-floor, even when the guest's own labs are stopped. The lab-start and v2 and v1
+floor, even when the guest's own labs are stopped. The lab-start and lab-scoped
 node-start routes sweep first, so reaching the limit also reclaims the newest
 guest nodes on the way to the refusal; retrying shortly afterwards succeeds once
 the memory is released. An unreadable `/proc/meminfo` fails open, so a probe
@@ -534,12 +534,17 @@ address; passwords are never logged.
 | POST | `/api/v2/labs/{id}/stop` | Stop all nodes and remove lab bridges |
 | POST | `/api/v2/labs/{id}/wipe` | Stop, wipe node state, and remove bridges |
 | GET | `/api/v2/labs/{id}/nodes` | Per-node agent state |
+| POST | `/api/v2/labs/{id}/nodes/{node}/start` | Start one node |
+| POST | `/api/v2/labs/{id}/nodes/{node}/stop` | Stop one node |
+| POST | `/api/v2/labs/{id}/nodes/{node}/wipe` | Wipe one node |
+| POST | `/api/v2/labs/{id}/nodes/{node}/console` | Issue a console token |
+| GET | `/api/v2/labs/{id}/nodes/{node}/status` | Agent state and usage for one node |
 | GET | `/api/v2/labs/trash` | Trashed labs (30-day restore window) |
 | POST | `/api/v2/labs/{id}/restore` | Restore a trashed lab |
 | DELETE | `/api/v2/labs/trash/{id}` | Permanently delete a trashed lab |
 | GET | `/api/v2/labs/{id}/permissions` | Admin: list per-lab permissions |
 | POST | `/api/v2/labs/{id}/permissions` | Admin: grant `{username, role}` |
-| DELETE | `/api/v2/labs/{id}/permissions/{user}` | Admin: revoke |
+| DELETE | `/api/v2/labs/{id}/permissions/{username}` | Admin: revoke |
 
 `GET /api/v2/labs/{id}/snapshots` lists checkpoints;
 `POST /api/v2/labs/{id}/snapshots` creates one;
@@ -669,28 +674,43 @@ curl -b jar $B/api/v2/labs/<id>/nodes
 
 ## Nodes and consoles
 
-`POST /api/v2/nodes/start|stop|wipe|console` and
-`GET /api/v2/nodes/status?id=...` operate on agent node ids. Console responses
-return `kind`, `token`, `ws_path` (`/ws/console`, `/ws/vnc`, `/ws/tcp`), and
-for VNC the generated password.
+The public node contract is lab-scoped:
 
-`POST /api/v2/nodes/start` is the raw agent route. A demo guest is refused with
-`403 The demo starts nodes from the lab editor.` before the request body is
-parsed; `stop`, `wipe`, `status`, and `console` are unchanged. Guests start
-nodes through `POST /api/v2/labs/{id}/nodes/{node}/start`, which re-checks the
-demo caps.
+- `POST /api/v2/labs/{id}/nodes/{node}/start|stop|wipe`
+- `POST /api/v2/labs/{id}/nodes/{node}/console`
+- `GET /api/v2/labs/{id}/nodes/{node}/status`
+- `GET /api/v2/labs/{id}/nodes` for the whole lab
+
+Every route resolves the canonical lab, requires the effective `edit` role
+(`read` for status and the lab node list), and derives the agent node id from
+the authorized lab+node pair. The client never sends an agent node id.
+
+Console responses return `kind`, `token`, `ws_path` (`/ws/console`,
+`/ws/vnc`, `/ws/tcp`), and for VNC the generated password. Node start re-checks
+the demo caps and the memory floor; stop and wipe require the same lab role but
+are never blocked by an authoring cap, so a guest can always tear down its own
+lab.
+
+The former raw `/api/v2/nodes/start|stop|wipe|status|console` routes were
+removed. Clients that built `<lab-id>-<node-id>` themselves must switch to the
+lab-scoped routes above; the server derives that id.
 
 ## Networks, engines, images
 
-- `POST /api/v2/labs/{id}/networks` with `{"networks":[{"id":"0"}]}`.
-- `POST /api/v2/labs/{id}/networks/cleanup`.
+- `POST /api/v2/labs/{id}/networks` with `{"networks":[{"id":"0","name":"Net-1"}]}`.
+  Requires the effective `edit` role on the canonical lab. Every id must be
+  declared in the lab's `network_list`; unknown ids and any client-supplied
+  `bridge` name answer 422. The agent allocates the bridge.
+- `POST /api/v2/labs/{id}/networks/cleanup` requires the same lab role and
+  removes only that lab's bridges.
 - `GET /api/v2/engines` reports qemu/vpcs/dynamips/iol/docker availability.
-- `GET /api/v2/docker/images` lists container images already pulled on the
-  agent host (`reference`, `id`, `size`, `created`) for the node Inspector.
-  Any authenticated user may call it; it never pulls or deletes an image.
-  Docker or the agent being unavailable returns 502.
-- `GET /api/v2/system/host` reports load, CPU usage (`cpu_usage_percent`),
-  disk, nodes, engines, and host interfaces.
+- `GET /api/v2/docker/images` is **admin-only** and lists already-pulled
+  container image references for the node Inspector. The response is
+  `[{"reference":"…"}]`; Docker-internal ids, sizes, timestamps, and host paths
+  are not exposed. It never pulls or deletes an image. Docker or the agent
+  being unavailable returns 502.
+- `GET /api/v2/system/host` is **admin-only** and reports load, CPU usage
+  (`cpu_usage_percent`), disk, nodes, engines, and host interfaces.
 - `GET /api/v2/labs/{id}/nodes` reports per-node `state` and `ready`; `ready`
   turns true when the guest answers on its console, not when the process
   starts.
@@ -728,8 +748,9 @@ demo caps.
 - `DELETE /api/v2/templates/{id}` removes a custom template.
 - `PUT /api/v2/images/{id}/template` maps an image to a template.
 - `GET /api/v2/jobs`, `GET /api/v2/jobs/{id}` report job records; lab
-  start/stop/wipe return `job_id`. `POST /api/v2/jobs/{id}/cancel` cancels a
-  queued/running job.
+  start/stop/wipe return `job_id`. Admins see every job; every other user sees
+  only jobs they created. `POST /api/v2/jobs/{id}/cancel` applies the same
+  creator-or-admin check and cancels a queued/running job.
 - `POST /api/v2/maintenance/reconcile` reclaims orphaned resources; it also
   removes the run directories of labs that no longer exist, using the live
   lab list (trash excluded) as the keep-set.
@@ -781,6 +802,7 @@ accepted range.
 | `turnstile_enabled` | integer `0`/`1` | `0` | Require a Turnstile token |
 | `turnstile_site_key` | string | `3x00000000000000000000FF` | 0–128 printable ASCII characters; `""` stores “not configured” and overrides the default |
 | `turnstile_secret_key` | string | `1x0000000000000000000000000000000AA` | 0–128 printable ASCII characters; `""` stores “not configured” and overrides the default; omitted from `GET` responses for non-admin users |
+| `legacy_v1_enabled` | integer `0`/`1` | `0` | Register the read-only v1 adapter under `/api/auth`, `/api/status`, `/api/folders`, and `/api/labs` |
 
 The first four keys pre-date the demo tier and keep their earlier
 defaults, types, and bounds. `demo_allowed_templates` is a single
@@ -788,8 +810,8 @@ comma-separated string, not a JSON array. The demo and Turnstile keys are
 stored and validated even when `demo_enabled` is `0`.
 
 Omit a key from the `PUT` body to leave its stored value unchanged; send `""`
-for a Turnstile key to clear it. `demo_enabled` and `turnstile_enabled` also
-accept JSON booleans and the strings `"0"`/`"1"`.
+for a Turnstile key to clear it. `demo_enabled`, `turnstile_enabled`, and
+`legacy_v1_enabled` also accept JSON booleans and the strings `"0"`/`"1"`.
 
 The demo sweeper keeps its own bookkeeping row (`demo_last_sweep_at`) outside
 the defaults, so it never appears in `GET /api/v2/system/settings` and cannot be
@@ -810,6 +832,24 @@ requests. Read-only tokens reject non-GET methods.
 
 ## v1 compatibility
 
-`/api/auth`, `/api/status`, `/api/folders`, `/api/labs`, and the legacy
-`/api/labs{path}/nodes/{id}/start|stop|wipe` routes remain available with
-`unetlab_session` cookies. They are deprecated and do not bypass v2 auth.
+The legacy adapter is **disabled by default**: with
+`legacy_v1_enabled = 0`, every `/api/auth`, `/api/status`, `/api/folders`, and
+`/api/labs` path returns 404. Enable it only for a legacy client during a
+migration window.
+
+When enabled it is **read-only and access-filtered**:
+
+- `POST /api/auth/login`, `GET /api/auth`, `GET /api/auth/logout`,
+  `GET /api/status`, `GET /api/folders`, `GET /api/labs`, and
+  `GET /api/labs/{path}` are available with `unetlab_session` (or
+  `teralab_session`) cookies.
+- `GET /api/labs` and `GET /api/folders` return only labs the caller can read;
+  full node configuration is never returned for an unauthorized lab.
+- `GET /api/labs/{path}` requires the effective `read` role on the canonical
+  lab and answers 403 for another user's lab.
+- Node `start|stop|wipe` paths and every lab mutation answer **405**. Use the
+  CSRF-protected v2 lab-scoped routes instead.
+- `GET /api/auth/logout` is a documented CSRF exception: it only removes the
+  caller's own session and changes no lab state.
+
+The v1 adapter does not bypass v2 authentication or the per-lab role matrix.

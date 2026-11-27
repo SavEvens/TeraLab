@@ -27,6 +27,8 @@ final class GuestApiTest extends TestCase
     private const REMOTE_IP = '127.0.0.1';
 
     private string $root;
+    private Config $config;
+    private \Closure $turnstileTransport;
     /** @var SlimApp<\DI\Container> */
     private SlimApp $app;
     private PDO $pdo;
@@ -39,9 +41,9 @@ final class GuestApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-guest-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
-        $config = Config::forTests($this->root, $this->root . '/data');
+        $this->config = Config::forTests($this->root, $this->root . '/data');
 
-        $transport = function (string $url, array $form): array {
+        $this->turnstileTransport = function (string $url, array $form): array {
             self::assertSame(TurnstileVerifier::ENDPOINT, $url);
             $this->turnstileCalls[] = $form;
 
@@ -52,9 +54,31 @@ final class GuestApiTest extends TestCase
             };
         };
 
-        $this->app = (new App($config, null, new TurnstileVerifier($transport)))->create();
-        $this->pdo = (new Database($config))->pdo();
+        $this->app = $this->createApp();
+        $this->pdo = (new Database($this->config))->pdo();
         $this->settings = new SettingsService($this->pdo);
+    }
+
+    /**
+     * @return SlimApp<\DI\Container>
+     */
+    private function createApp(): SlimApp
+    {
+        return (new App($this->config, null, new TurnstileVerifier($this->turnstileTransport)))->create();
+    }
+
+    private function enableLegacyV1(): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at) '
+            . 'ON CONFLICT(key) DO UPDATE SET value = :value, updated_at = :updated_at'
+        );
+        $statement->execute([
+            ':key' => 'legacy_v1_enabled',
+            ':value' => '1',
+            ':updated_at' => time(),
+        ]);
+        $this->app = $this->createApp();
     }
 
     protected function tearDown(): void
@@ -291,6 +315,7 @@ final class GuestApiTest extends TestCase
             'turnstile_enabled' => 1,
             'turnstile_secret_key' => 'budget-test-secret',
         ]);
+        $this->enableLegacyV1();
         $credentials = ['username' => 'admin', 'password' => self::PASSWORD];
 
         for ($attempt = 1; $attempt <= RateLimiter::CAPTCHA_MAX_ATTEMPTS; $attempt++) {
@@ -444,6 +469,7 @@ final class GuestApiTest extends TestCase
             'turnstile_enabled' => 1,
             'turnstile_secret_key' => 'login-test-secret',
         ]);
+        $this->enableLegacyV1();
 
         $credentials = ['username' => 'admin', 'password' => self::PASSWORD];
 

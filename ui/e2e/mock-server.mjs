@@ -149,7 +149,7 @@ export function startMockServer(port = 8099) {
   let lab = {
     id: 'lab1',
     name: 'Editor Lab',
-    owner: 'admin',
+    owner: 'user1',
     path: 'Editor-Lab.unl',
     revision: 1,
     description: '',
@@ -551,7 +551,7 @@ export function startMockServer(port = 8099) {
       const created = {
         id: `newlab${createdLabs.length + 1}`,
         name,
-        owner: 'admin',
+        owner: 'user1',
         path: `${name.replace(/\s+/g, '-')}.unl`,
         revision: 1,
         format: 'teralab-2',
@@ -584,7 +584,7 @@ export function startMockServer(port = 8099) {
         const imported = {
           id: `yamllab${++yamlImportCount}`,
           name,
-          owner: 'admin',
+          owner: 'user1',
           path: `${name.replace(/\s+/g, '-')}.unl`,
           revision: 1,
           format: 'teralab-2',
@@ -781,11 +781,13 @@ export function startMockServer(port = 8099) {
         { id: 'frr', name: 'FRR Router', kind: 'docker', options: { docker: { image: 'frrouting/frr:v8.4.1' } }, defaults: { cpu: 1, ram: 256, ethernet: 1, console: 'telnet' }, icon: 'Router.png', source: 'builtin' }
       ] })
     }
-    // Locally pulled container images; docker nodes suggest these as they type.
+    // Locally pulled container images; administrator-only and reference-only.
     if (path === '/api/v2/docker/images' && request.method === 'GET') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       return send(response, 200, { data: [
-        { reference: 'frrouting/frr:v8.4.1', id: 'sha256:1111111111111111111111111111111111111111111111111111111111111111', size: '91.2MB', created: '2026-11-01T10:00:00Z' },
-        { reference: 'alpine:3.20', id: 'sha256:2222222222222222222222222222222222222222222222222222222222222222', size: '7.81MB', created: '2026-11-02T10:00:00Z' }
+        { reference: 'frrouting/frr:v8.4.1' },
+        { reference: 'alpine:3.20' }
       ] })
     }
     if (path === '/api/v2/labs/lab1/snapshots' && request.method === 'GET') return send(response, 200, { data: snapshots })
@@ -807,7 +809,20 @@ export function startMockServer(port = 8099) {
       states[decodeURIComponent(nodeId)] = action === 'start' ? 'running' : 'stopped'
       return send(response, 200, { status: 'success', data: { state: 'ok' } })
     }
+    const nodeConsoleMatch = /^\/api\/v2\/labs\/([^/]+)\/nodes\/([^/]+)\/console$/.exec(path)
+    if (request.method === 'POST' && nodeConsoleMatch) {
+      return send(response, 200, {
+        data: {
+          kind: 'telnet',
+          token: 'mock',
+          ws_path: `/ws/console?token=mock&lab=${encodeURIComponent(nodeConsoleMatch[1])}&node=${encodeURIComponent(nodeConsoleMatch[2])}`,
+          expires_in: 300
+        }
+      })
+    }
     if (path === '/api/v2/system/host') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       return send(response, 200, { data: { load1: 0.2, load5: 0.1, load15: 0.1, cpu_usage_percent: 12.5, disk_free_bytes: 1000000, disk_total_bytes: 2000000, nodes: [], engines: [{ name: 'qemu', available: true, version: '10.0' }, { name: 'dynamips', available: false, version: '' }], interfaces: [{ name: 'eth0', up: true, mac: '00:11:22:33:44:55', addresses: ['192.0.2.10'] }, { name: 'eth1', up: false, mac: '00:11:22:33:44:56', addresses: [] }] } })
     }
     if (path === '/api/v2/system/settings' && request.method === 'GET') return send(response, 200, { data: settings })
@@ -919,9 +934,6 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { status: 'success' })
     }
     if (path === '/api/v2/engines') return send(response, 200, { data: [] })
-    if (path === '/api/v2/nodes/console') {
-      return send(response, 200, { data: { kind: 'telnet', ws_path: '/ws/console?token=mock', expires_in: 300 } })
-    }
     return send(response, 404, { message: 'not found' })
   })
 

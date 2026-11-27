@@ -12,8 +12,7 @@ export const consoleState = reactive({
 let nextId = 1
 
 export async function openConsole(labId, node, name) {
-  const agentId = `${labId}-${node.id}`
-  const payload = await api.console(agentId)
+  const payload = await api.labNodeConsole(labId, node.id)
   const data = payload.data
   const existing = consoleState.tabs.find((tab) => tab.nodeId === node.id && tab.labId === labId)
   if (existing) {

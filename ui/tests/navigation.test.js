@@ -27,6 +27,11 @@ vi.mock('../src/api', () => ({
     tokens: vi.fn(),
     users: vi.fn(),
     images: vi.fn(),
+    dockerImages: vi.fn(),
+    labNodeConsole: vi.fn(),
+    labNodeStart: vi.fn(),
+    labNodeStop: vi.fn(),
+    labNodeWipe: vi.fn(),
     templates: vi.fn(),
     template: vi.fn(),
     version: vi.fn(),
@@ -255,6 +260,28 @@ describe('LabsView create-project dialog', () => {
     expect(api.moveLab).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+
+  it('only offers Delete to global admins and the lab owner', async () => {
+    const labs = [
+      { id: 'own', name: 'Own lab', owner: 'user2', path: 'own.unl', revision: 1, nodes: 0, running: false, lock: null, format: 'legacy' },
+      { id: 'other', name: 'Other lab', owner: 'user1', path: 'other.unl', revision: 1, nodes: 0, running: false, lock: null, format: 'legacy' }
+    ]
+    api.labs.mockResolvedValue({ data: labs })
+    session.user = { id: 'user2', username: 'editor', role: 'editor' }
+
+    const { wrapper } = await mountLabs()
+    const rowFor = (name) => wrapper.findAll('tbody tr').find((row) => row.text().includes(name))
+    const hasDelete = (row) => row.findAll('button').some((button) => button.text() === 'Delete')
+
+    expect(hasDelete(rowFor('Own lab'))).toBe(true)
+    expect(hasDelete(rowFor('Other lab'))).toBe(false)
+    wrapper.unmount()
+
+    session.user = { id: 'user1', username: 'admin', role: 'admin' }
+    const admin = await mountLabs()
+    expect(admin.wrapper.findAll('button').filter((button) => button.text() === 'Delete')).toHaveLength(2)
+    admin.wrapper.unmount()
+  })
 })
 
 describe('SystemView About tab', () => {
@@ -272,15 +299,36 @@ describe('SystemView About tab', () => {
     wrapper.unmount()
   })
 
-  it('falls back to Host for unknown or hidden tabs', async () => {
+  it('falls back to Settings for unknown or hidden tabs for non-admins', async () => {
     session.user = { id: 'user3', username: 'viewer', role: 'user' }
     const { wrapper } = await mountAt(SystemView, '/system?tab=nope')
-    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe('Host')
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe('Settings')
     wrapper.unmount()
 
     const second = await mountAt(SystemView, '/system?tab=Users')
-    expect(second.wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe('Host')
+    expect(second.wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe('Settings')
     second.wrapper.unmount()
+  })
+
+  it('never shows Host or requests host status for non-admins', async () => {
+    session.user = { id: 'user3', username: 'viewer', role: 'user' }
+    const { wrapper } = await mountAt(SystemView, '/system?tab=Host')
+
+    const tabs = wrapper.findAll('[role="tab"]').map((tab) => tab.text())
+    expect(tabs).not.toContain('Host')
+    expect(tabs).toContain('Settings')
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe('Settings')
+    expect(api.host).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps Host as the default tab and loads host status for admins', async () => {
+    const { wrapper } = await mountAt(SystemView, '/system')
+
+    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toContain('Host')
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe('Host')
+    expect(api.host).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
   })
 })
 

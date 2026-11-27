@@ -232,7 +232,7 @@ try {
 
   // Telnet WebSocket through Apache /ws/console on a real VPCS node.
   await call('POST', `/labs/${consoleLab.id}/start`)
-  const consoleInfo = (await call('POST', '/nodes/console', { node_id: `${consoleLab.id}-1` })).data
+  const consoleInfo = (await call('POST', `/labs/${consoleLab.id}/nodes/1/console`)).data
   const ws = new WebSocket(`${base.replace(/^http/, 'ws')}${consoleInfo.ws_path}`)
   let consoleText = ''
   await new Promise((resolve, reject) => {

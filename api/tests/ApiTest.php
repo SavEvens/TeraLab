@@ -14,6 +14,7 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Psr7\Factory\StreamFactory;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
+use TeraLab\Api\Database\Database;
 use TeraLab\Api\Http\V1Session;
 
 final class ApiTest extends TestCase
@@ -32,6 +33,13 @@ final class ApiTest extends TestCase
         copy(__DIR__ . '/fixtures/sample.unl', $this->root . '/labs/sample.unl');
 
         $config = Config::forTests($this->root, $this->root . '/data');
+        // These tests exercise the legacy adapter, which is off by default.
+        (new App($config))->create();
+        $pdo = (new Database($config))->pdo();
+        $pdo->prepare(
+            'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at) '
+            . 'ON CONFLICT(key) DO UPDATE SET value = :value, updated_at = :updated_at'
+        )->execute([':key' => 'legacy_v1_enabled', ':value' => '1', ':updated_at' => time()]);
         $this->app = (new App($config))->create();
     }
 
@@ -193,7 +201,7 @@ final class ApiTest extends TestCase
         self::assertSame('sample.unl', $labBody['data']['filename']);
 
         $unsupported = $this->request('POST', '/api/labs', [], [], $legacyCookie);
-        self::assertSame(501, $unsupported->getStatusCode());
+        self::assertSame(405, $unsupported->getStatusCode());
 
         $logout = $this->request('GET', '/api/auth/logout', [], [], $legacyCookie);
         self::assertSame(200, $logout->getStatusCode());

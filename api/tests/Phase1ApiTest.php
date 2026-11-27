@@ -354,7 +354,7 @@ final class Phase1ApiTest extends TestCase
         $nodes = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes', [], [], $this->adminCookie);
         self::assertSame(200, $nodes->getStatusCode());
 
-        $status = $this->request('GET', '/api/v2/nodes/status?id=' . rawurlencode((string) $lab['id'] . '-1'), [], [], $this->adminCookie);
+        $status = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes/1/status', [], [], $this->adminCookie);
         self::assertSame(200, $status->getStatusCode());
         $usage = $this->json($status)['data'];
         self::assertSame(123, $usage['memory_bytes']);

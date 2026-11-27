@@ -344,6 +344,34 @@ describe('Inspector', () => {
     expect(labels.some((text) => text.includes('Startup config'))).toBe(false)
   })
 
+  it('hides pulled-image suggestions when the caller may not list them', () => {
+    const templates = [{ id: 'frr', name: 'FRR Router', kind: 'docker', options: { docker: { image: 'frrouting/frr:v8.4.1' } } }]
+    const node = {
+      id: '7',
+      position: { x: 0, y: 0 },
+      data: {
+        name: 'FRR7', template: 'frr', kind: 'docker', image: '', iso: '', console: 'telnet',
+        cpu: 1, ram: 256, serial: 0, interfaces: [{ id: 0 }]
+      }
+    }
+    const wrapper = mount(Inspector, {
+      props: {
+        node,
+        templates,
+        images: [],
+        dockerImages: [{ reference: 'frrouting/frr:v8.4.1' }],
+        dockerImageSuggestions: false
+      }
+    })
+
+    const input = wrapper.find('input[list="docker-image-options"]')
+    expect(input.exists()).toBe(true)
+    expect(input.attributes('placeholder')).toBe('frrouting/frr:v8.4.1')
+    expect(wrapper.find('datalist#docker-image-options').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Empty uses the template default (frrouting/frr:v8.4.1)')
+    expect(wrapper.text()).not.toContain('Pulled images are offered')
+  })
+
   it('falls back to a generic container placeholder without a template image', () => {
     const node = {
       id: '8',

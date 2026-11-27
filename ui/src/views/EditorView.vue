@@ -79,6 +79,7 @@
           :templates="templates"
           :images="images"
           :docker-images="dockerImages"
+          :docker-image-suggestions="canListDockerImages"
           @update="updateNode"
           @delete="deleteNode"
           @console="openNodeConsole"
@@ -264,6 +265,9 @@ const contextMenu = ref(null)
 const zoom = computed(() => Math.round(((viewport.value?.zoom ?? 1)) * 100))
 const consoleOpen = computed(() => consoleState.tabs.length > 0)
 const isGuest = computed(() => session.user?.guest === true)
+// GET /docker/images is administrator-only. Editors still edit the container
+// reference, but the picker must not request an endpoint that would 403.
+const canListDockerImages = computed(() => session.user?.role === 'admin')
 const selectionCount = computed(() => getSelectedNodes.value.length || (selected.value ? 1 : 0))
 const canUndo = computed(() => history.value.length > 0)
 const canRedo = computed(() => future.value.length > 0)
@@ -364,6 +368,7 @@ function rebuildEdges() {
 // Local container images are only suggestions for the Inspector. Docker may be
 // unavailable on this host, which must not stop the lab from opening.
 async function loadDockerImages() {
+  if (!canListDockerImages.value) return []
   try {
     return (await api.dockerImages())?.data || []
   } catch {

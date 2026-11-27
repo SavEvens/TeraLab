@@ -8,6 +8,11 @@ info:
     JSON API for TeraLab lab orchestration. State-changing requests require a
     session cookie and the `X-CSRF-Token` header returned by setup, login,
     guest entry, or `/auth/me`. Setup, login, and guest entry are public.
+
+    The legacy v1 adapter (`/api/auth`, `/api/status`, `/api/folders`,
+    `/api/labs`) is registered only when `legacy_v1_enabled=1` (default `0`).
+    When enabled it is read-only: node actions and lab mutations return 405,
+    and lab/folder reads are filtered by the same per-lab access rules as v2.
   license:
     name: AGPL-3.0-or-later
     identifier: AGPL-3.0-or-later
@@ -96,23 +101,36 @@ components:
     DockerImage:
       type: object
       description: |
-        A container image already pulled on the agent host, as displayed by
-        `docker image ls`. All values are display strings; the API never parses
-        them back into a reference or a byte count.
-      required: [reference, id, size, created]
+        A container image reference already pulled on the agent host. Only the
+        reference is exposed to the browser; local image ids, sizes, timestamps,
+        and Docker host paths are never returned.
+      required: [reference]
       properties:
         reference:
           type: string
           description: "Container reference (`repository:tag`) usable as a docker node image"
-        id:
-          type: string
-          description: "Local image id, for example `sha256:…`"
-        size:
-          type: string
-          description: "Human-readable size from docker, for example `158MB`"
-        created:
-          type: string
-          description: "Creation timestamp as reported by docker"
+    ConsoleSession:
+      type: object
+      required: [kind, token, expires_in, ws_path]
+      properties:
+        kind: { type: string, enum: [telnet, vnc] }
+        token: { type: string, description: "Short-lived console capability; plan 07 moves it out of the URL query" }
+        expires_in: { type: integer }
+        ws_path: { type: string, description: "WebSocket path, currently carrying the token as a query parameter" }
+        password: { type: string, description: "Generated VNC password when kind is vnc" }
+        port: { type: integer, description: "TCP proxy port when the agent returns one" }
+    NodeStatus:
+      type: object
+      description: Agent-reported state and resource usage for one lab node.
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        state: { type: string }
+        ready: { type: boolean }
+        memory_bytes: { type: integer }
+        cpu_usage_usec: { type: integer }
+        uptime_seconds: { type: integer }
+        last_activity: { type: integer, nullable: true }
     Lab:
       type: object
       required: [id, name, revision]
@@ -405,9 +423,13 @@ paths:
   /api/v2/system/host:
     get:
       tags: [system]
-      summary: Host load, disk, nodes, and engine versions
+      summary: Host load, disk, nodes, and engine versions (admin)
+      description: |
+        Admin-only. Exposes host interfaces, MAC/IP addresses, node run
+        details, and engine versions.
       responses:
         '200': { description: Host status }
+        '403': { description: Administrator role required }
   /api/v2/setup:
     post:
       tags: [auth]
@@ -994,62 +1016,6 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Restored }
-  /api/v2/nodes/start:
-    post:
-      tags: [nodes]
-      summary: Start an agent node by id
-      description: |
-        Raw agent route. A demo guest is refused before the body is parsed;
-        guests start nodes through
-        `POST /api/v2/labs/{id}/nodes/{node}/start` instead, which re-checks
-        the demo caps. `stop`, `wipe`, `status`, and `console` are unchanged.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [id]
-              properties:
-                id: { type: string }
-      responses:
-        '200': { description: Running }
-        '403': { description: "Editor role required, or a demo guest (use the lab node-start route)" }
-  /api/v2/nodes/stop:
-    post:
-      tags: [nodes]
-      summary: Stop an agent node by id
-      responses:
-        '200': { description: Stopped }
-  /api/v2/nodes/wipe:
-    post:
-      tags: [nodes]
-      summary: Wipe an agent node by id
-      responses:
-        '200': { description: Wiped }
-  /api/v2/nodes/status:
-    get:
-      tags: [nodes]
-      summary: Agent node state and resource usage
-      parameters:
-        - { name: id, in: query, required: true, schema: { type: string } }
-      responses:
-        '200': { description: Node status }
-  /api/v2/nodes/console:
-    post:
-      tags: [nodes]
-      summary: Issue a short-lived console token
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [node_id]
-              properties:
-                node_id: { type: string }
-      responses:
-        '200': { description: Console kind; token; and WebSocket path }
   /api/v2/templates:
     get:
       tags: [templates]
@@ -1112,13 +1078,13 @@ paths:
   /api/v2/docker/images:
     get:
       tags: [images]
-      summary: List locally pulled Docker images
+      summary: List locally pulled Docker image references (admin)
       description: |
-        Read-only suggestions for the node Inspector. Docker images already
-        present on the agent host are returned with their reference, local id,
-        display size and creation time; dangling images are skipped and
-        duplicate references are merged. The API never pulls, inspects or
-        deletes a container image, and the image store is not involved.
+        Admin-only, read-only suggestions for the node Inspector. Only
+        container references are returned; local ids, display sizes, creation
+        times, and Docker host paths are never exposed. The API never pulls,
+        inspects or deletes a container image, and the image store is not
+        involved.
       responses:
         '200':
           description: Locally pulled container images, sorted by reference
@@ -1131,6 +1097,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/DockerImage' }
         '401': { description: Authentication required }
+        '403': { description: Administrator role required }
         '502': { description: "Docker is unavailable, the agent cannot be reached, or the agent returned an invalid image list" }
   /api/v2/images:
     get:
@@ -1247,24 +1214,29 @@ paths:
     get:
       tags: [jobs]
       summary: List recent jobs
+      description: Admins see every job; other users see only jobs they created.
       responses:
         '200': { description: Jobs }
   /api/v2/jobs/{id}:
     get:
       tags: [jobs]
       summary: Job state and progress
+      description: Admins may read any job; other users only their own.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Job }
+        '403': { description: Job belongs to another user }
   /api/v2/jobs/{id}/cancel:
     post:
       tags: [jobs]
       summary: Cancel a queued job
+      description: Admins may cancel any job; other users only their own.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Cancelled }
+        '403': { description: Job belongs to another user or CSRF is missing }
         '409': { description: Job cannot be cancelled safely }
   /api/v2/labs/{id}/snapshots:
     parameters:
@@ -1330,11 +1302,63 @@ paths:
     post:
       tags: [nodes]
       summary: Wipe one lab node
+      description: |
+        Requires the effective `edit` role on the canonical lab and
+        `X-CSRF-Token`. The agent node id is derived from the authorized
+        lab+node pair.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: node, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Wiped }
+        '403': { description: "Lab edit role or CSRF required" }
+  /api/v2/labs/{id}/nodes/{node}/console:
+    post:
+      tags: [nodes]
+      summary: Issue a short-lived console token for one lab node
+      description: |
+        Requires the effective `edit` role on the canonical lab and
+        `X-CSRF-Token`. The client sends no agent node id: the server resolves
+        the node inside the authorized lab and derives the agent id.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: node, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Console kind, token, and WebSocket path
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ConsoleSession' }
+        '403': { description: "Lab edit role or CSRF required" }
+        '404': { description: Lab or node not found }
+        '502': { description: The agent did not return a console token }
+  /api/v2/labs/{id}/nodes/{node}/status:
+    get:
+      tags: [nodes]
+      summary: Agent state and resource usage for one lab node
+      description: |
+        Requires the effective `read` role on the canonical lab. The agent
+        node id is derived from the authorized lab+node pair. Prefer
+        `GET /api/v2/labs/{id}/nodes` when the whole lab is needed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: node, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Node status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/NodeStatus' }
+        '403': { description: "Lab read role required" }
+        '404': { description: Lab or node not found }
   /api/v2/system/status:
     get:
       tags: [system]

@@ -114,6 +114,7 @@ export const api = {
   labNodeStart: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/start`, { method: 'POST' }),
   labNodeStop: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/stop`, { method: 'POST' }),
   labNodeWipe: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/wipe`, { method: 'POST' }),
+  labNodeConsole: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/console`, { method: 'POST' }),
   snapshots: (id) => request(`/labs/${encodeURIComponent(id)}/snapshots`),
   createSnapshot: (id, name) => request(`/labs/${encodeURIComponent(id)}/snapshots`, { method: 'POST', body: { name } }),
   restoreSnapshot: (id, snapshot) => request(`/labs/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(snapshot)}/restore`, { method: 'POST' }),
@@ -155,11 +156,7 @@ export const api = {
   setImageReference: (id, reference) => request(`/images/${encodeURIComponent(id)}`, { method: 'PATCH', body: { reference } }),
   mapImageTemplate: (id, template) => request(`/images/${encodeURIComponent(id)}/template`, { method: 'PUT', body: { template } }),
   engines: () => request('/engines'),
-  job: (id) => request(`/jobs/${encodeURIComponent(id)}`),
-  console: (nodeId) => request('/nodes/console', { method: 'POST', body: { node_id: nodeId } }),
-  nodeStart: (id) => request('/nodes/start', { method: 'POST', body: { id } }),
-  nodeStop: (id) => request('/nodes/stop', { method: 'POST', body: { id } }),
-  nodeWipe: (id) => request('/nodes/wipe', { method: 'POST', body: { id } })
+  job: (id) => request(`/jobs/${encodeURIComponent(id)}`)
 }
 
 export function wsUrl(path) {

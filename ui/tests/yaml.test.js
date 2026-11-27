@@ -397,6 +397,21 @@ describe('EditorView YAML entry point', () => {
     wrapper.unmount()
   })
 
+  it('does not request the admin-only docker image list for editors', async () => {
+    session.user = { id: 'user1', username: 'editor', role: 'editor' }
+    const wrapper = await mountEditor()
+    expect(api.dockerImages).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('loads docker image suggestions for admins', async () => {
+    session.user = { id: 'user1', username: 'admin', role: 'admin' }
+    api.dockerImages.mockResolvedValue({ data: [{ reference: 'frrouting/frr:v8.4.1' }] })
+    const wrapper = await mountEditor()
+    expect(api.dockerImages).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('passes the health template allowlist to the picker for a guest', async () => {
     session.user = { id: 'guest1', username: 'g-0123456789abcdef', role: 'editor', guest: true }
     api.templates.mockResolvedValue({

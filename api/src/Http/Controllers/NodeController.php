@@ -8,79 +8,34 @@ namespace TeraLab\Api\Http\Controllers;
 
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
-use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
-use TeraLab\Api\System\DemoGuard;
-use TeraLab\Api\System\DemoPolicy;
-use TeraLab\Api\Templates\DockerOptions;
+use TeraLab\Api\Labs\LabService;
 
 final class NodeController
 {
     public function __construct(
-        private readonly AgentClient $agent,
-        private readonly Config $config,
         private readonly AccessService $access,
-        private readonly DemoGuard $demoGuard,
+        private readonly LabService $labs,
+        private readonly Config $config,
     ) {
     }
 
-    public function start(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    /**
+     * Open a console through a lab-scoped node pair.
+     *
+     * The client never supplies an agent node id: the authorized lab and node
+     * resolve it on the server.
+     *
+     * @param array<string, string> $args
+     */
+    public function console(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        $this->requireEditor($request);
         $user = $this->access->user($request);
-        $actor = $this->demoGuard->actor((string) ($user['id'] ?? ''));
-        if ($actor !== null && DemoPolicy::isGuest($actor) && !DemoPolicy::isExpired($actor)) {
-            throw new HttpException(403, 'The demo starts nodes from the lab editor.');
-        }
-        $data = Json::body($request);
-        $spec = $this->spec($data);
-
-        return Json::response($response, [
-            'status' => 'accepted',
-            'data' => $this->agent->start($spec),
-        ], 202);
-    }
-
-    public function stop(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
-    {
-        $this->requireEditor($request);
-        $id = $this->id(Json::body($request));
-
-        return Json::response($response, [
-            'status' => 'success',
-            'data' => $this->agent->stop($id),
-        ]);
-    }
-
-    public function wipe(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
-    {
-        $this->requireEditor($request);
-        $id = $this->id(Json::body($request));
-
-        return Json::response($response, [
-            'status' => 'success',
-            'data' => $this->agent->wipe($id),
-        ]);
-    }
-
-    public function status(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
-    {
-        $id = $request->getQueryParams()['id'] ?? null;
-        if (!is_string($id) || $id === '') {
-            throw new HttpException(422, 'id is required.');
-        }
-
-        return Json::response($response, ['data' => $this->agent->nodeStatus($id)]);
-    }
-
-    public function console(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
-    {
-        $this->requireEditor($request);
-        $id = $this->id(Json::body($request), 'node_id');
-        $session = $this->agent->openConsole($id);
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
+        $session = $this->labs->openConsole((string) $lab['id'], $args['node'] ?? '');
         $token = $session['token'] ?? null;
         if (!is_string($token) || $token === '') {
             throw new HttpException(502, 'The agent did not return a console token.');
@@ -110,134 +65,5 @@ final class NodeController
         }
 
         return Json::response($response, ['data' => $data]);
-    }
-
-    private function requireEditor(ServerRequestInterface $request): void
-    {
-        $this->access->requireRole($this->access->user($request), 'editor');
-    }
-
-    /**
-     * @param array<string, mixed> $data
-     */
-    private function id(array $data, string $key = 'id'): string
-    {
-        $id = $data[$key] ?? null;
-        if (!is_string($id) || $id === '') {
-            throw new HttpException(422, $key . ' is required.');
-        }
-
-        return $id;
-    }
-
-    /**
-     * @param array<string, mixed> $data
-     * @return array<string, mixed>
-     */
-    private function spec(array $data): array
-    {
-        $spec = [
-            'id' => $this->id($data),
-            'name' => $this->string($data, 'name', required: true, maxLength: 128),
-        ];
-
-        foreach (['engine', 'lab_id', 'image', 'iso', 'kernel', 'initrd', 'append', 'nic', 'machine', 'console', 'uuid', 'platform', 'iourc'] as $key) {
-            $value = $this->string($data, $key);
-            if ($value !== null) {
-                $spec[$key] = $value;
-            }
-        }
-
-        // Node startup config is engine-agnostic and passed through verbatim;
-        // the agent enforces the 64 KiB/NUL limit. It is larger than the
-        // general string limit above, hence the separate call.
-        $config = $this->string($data, 'config', maxLength: 65536);
-        if ($config !== null) {
-            $spec['config'] = $config;
-        }
-
-        foreach (['cpu' => 64, 'ram' => 131072, 'ethernet' => 16, 'nvram' => 4096] as $key => $maximum) {
-            $value = $data[$key] ?? null;
-            if ($value === null) {
-                continue;
-            }
-            if (!is_int($value) || $value < 0 || $value > $maximum) {
-                throw new HttpException(422, $key . ' is out of range.');
-            }
-            $spec[$key] = $value;
-        }
-
-        $engine = $spec['engine'] ?? 'qemu';
-        if (!in_array($engine, ['qemu', 'vpcs', 'dynamips', 'iol', 'docker'], true)) {
-            throw new HttpException(422, 'Unsupported engine.');
-        }
-        if ($engine === 'docker') {
-            if (($spec['image'] ?? '') === '') {
-                throw new HttpException(422, 'Docker nodes require a container image.');
-            }
-            // The engine runs a docker exec PTY: telnet is the only console a
-            // docker node can have, so normalise here as LabService does.
-            $spec['console'] = 'telnet';
-            $docker = $data['docker'] ?? null;
-            if ($docker !== null) {
-                if (!is_array($docker)) {
-                    throw new HttpException(422, 'docker must be a mapping.');
-                }
-                DockerOptions::validate(['docker' => $docker]);
-                $spec['docker'] = DockerOptions::spec(['docker' => $docker]);
-            }
-        }
-
-        $slots = $data['slots'] ?? null;
-        if ($slots !== null) {
-            if (!is_array($slots)) {
-                throw new HttpException(422, 'slots must be a list.');
-            }
-            foreach ($slots as $slot) {
-                if (!is_string($slot)) {
-                    throw new HttpException(422, 'slots must be a list of strings.');
-                }
-            }
-            $spec['slots'] = $slots;
-        }
-
-        $networks = $data['networks'] ?? null;
-        if ($networks !== null) {
-            if (!is_array($networks)) {
-                throw new HttpException(422, 'networks must be a list.');
-            }
-            foreach ($networks as $network) {
-                if (!is_string($network)) {
-                    throw new HttpException(422, 'networks must be a list of strings.');
-                }
-            }
-            $spec['networks'] = $networks;
-        }
-
-        return $spec;
-    }
-
-    /**
-     * @param array<string, mixed> $data
-     */
-    private function string(
-        array $data,
-        string $key,
-        bool $required = false,
-        int $maxLength = 512,
-    ): ?string {
-        $value = $data[$key] ?? null;
-        if ($value === null || $value === '') {
-            if ($required) {
-                throw new HttpException(422, $key . ' is required.');
-            }
-
-            return null;
-        }
-        if (!is_string($value) || strlen($value) > $maxLength) {
-            throw new HttpException(422, 'Invalid ' . $key . '.');
-        }
-
-        return $value;
     }
 }

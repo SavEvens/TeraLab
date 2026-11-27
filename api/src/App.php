@@ -207,7 +207,9 @@ final class App
 
         $container->get(Migrator::class)->migrate();
         $container->get(JobService::class)->reconcile();
-        $timezone = $container->get(\TeraLab\Api\System\SettingsService::class)->string('timezone', 'UTC');
+        $settings = $container->get(\TeraLab\Api\System\SettingsService::class);
+        $legacyV1 = $settings->int('legacy_v1_enabled', 0) === 1;
+        $timezone = $settings->string('timezone', 'UTC');
         if (in_array($timezone, timezone_identifiers_list(), true)) {
             date_default_timezone_set($timezone);
         }
@@ -316,29 +318,19 @@ final class App
         $app->post('/api/v2/labs/{id}/permissions', fn ($request, $response, array $args) => $labs->grant($request, $response, $args))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
-        $app->delete('/api/v2/labs/{id}/permissions/{user}', fn ($request, $response, array $args) => $labs->revoke($request, $response, $args))
+        $app->delete('/api/v2/labs/{id}/permissions/{username}', fn ($request, $response, array $args) => $labs->revoke($request, $response, $args))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
-        // Node lifecycle is delegated to the privileged Go agent.
+        // Node lifecycle is delegated to the privileged Go agent. The public
+        // contract is lab-scoped: the agent node id is always derived from an
+        // authorized lab+node pair, never accepted from the client.
         $nodes = $container->get(NodeController::class);
-        $app->post('/api/v2/nodes/start', fn ($request, $response) => $nodes->start($request, $response))
+        $app->post('/api/v2/labs/{id}/nodes/{node}/console', fn ($request, $response, array $args) => $nodes->console($request, $response, $args))
             ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
-        $app->post('/api/v2/nodes/stop', fn ($request, $response) => $nodes->stop($request, $response))
-            ->add($editorRole())
-            ->add($container->get(CsrfMiddleware::class))
-            ->add($container->get(AuthMiddleware::class));
-        $app->post('/api/v2/nodes/wipe', fn ($request, $response) => $nodes->wipe($request, $response))
-            ->add($editorRole())
-            ->add($container->get(CsrfMiddleware::class))
-            ->add($container->get(AuthMiddleware::class));
-        $app->get('/api/v2/nodes/status', fn ($request, $response) => $nodes->status($request, $response))
-            ->add($container->get(AuthMiddleware::class));
-        $app->post('/api/v2/nodes/console', fn ($request, $response) => $nodes->console($request, $response))
-            ->add($editorRole())
-            ->add($container->get(CsrfMiddleware::class))
+        $app->get('/api/v2/labs/{id}/nodes/{node}/status', fn ($request, $response, array $args) => $labs->nodeStatus($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
 
         $networks = $container->get(NetworkController::class);
@@ -470,7 +462,6 @@ final class App
         $app->get('/api/v2/jobs/{id}', fn ($request, $response, array $args) => $jobs->show($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/jobs/{id}/cancel', fn ($request, $response, array $args) => $jobs->cancel($request, $response, $args))
-            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/maintenance/reconcile', fn ($request, $response) => $engines->reconcile($request, $response))
@@ -478,37 +469,42 @@ final class App
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
-        // Legacy v1 compatibility adapter. These routes keep the old UI and
-        // clients working while the v2 API becomes the supported surface.
-        $v1 = $container->get(V1Controller::class);
-        $v1Auth = $container->get(V1AuthMiddleware::class);
-        $app->post('/api/auth/login', fn ($request, $response) => $v1->login($request, $response));
-        $app->get('/api/auth/logout', fn ($request, $response) => $v1->logout($request, $response));
-        $app->get('/api/auth', fn ($request, $response) => $v1->auth($request, $response));
-        $app->get('/api/status', fn ($request, $response) => $v1->status($request, $response))
-            ->add($v1Auth);
-        $app->delete('/api/status', fn ($request, $response) => $v1->unsupported($request, $response))
-            ->add($v1Auth);
-        $app->get('/api/folders', fn ($request, $response) => $v1->folders($request, $response, ['path' => '']))
-            ->add($v1Auth);
-        $app->get('/api/folders/{path:.*}', fn ($request, $response, array $args) => $v1->folders($request, $response, $args))
-            ->add($v1Auth);
-        $app->get('/api/labs', fn ($request, $response) => $v1->labsIndex($request, $response))
-            ->add($v1Auth);
-        $app->get('/api/labs/{path:.*}/nodes/{node}/start', fn ($request, $response, array $args) => $v1->nodeStart($request, $response, $args))
-            ->add($v1Auth);
-        $app->get('/api/labs/{path:.*}/nodes/{node}/stop', fn ($request, $response, array $args) => $v1->nodeStop($request, $response, $args))
-            ->add($v1Auth);
-        $app->get('/api/labs/{path:.*}/nodes/{node}/wipe', fn ($request, $response, array $args) => $v1->nodeWipe($request, $response, $args))
-            ->add($v1Auth);
-        $app->get('/api/labs/{path:.*}', fn ($request, $response, array $args) => $v1->labShow($request, $response, $args))
-            ->add($v1Auth);
-        $app->post('/api/labs', fn ($request, $response) => $v1->unsupported($request, $response))
-            ->add($v1Auth);
-        $app->put('/api/labs/{path:.*}', fn ($request, $response) => $v1->unsupported($request, $response))
-            ->add($v1Auth);
-        $app->delete('/api/labs/{path:.*}', fn ($request, $response) => $v1->unsupported($request, $response))
-            ->add($v1Auth);
+        // Legacy v1 compatibility adapter. Disabled by default; when enabled it
+        // is read-only, access-filtered, and every state-changing request
+        // answers 405. Authenticated work belongs on the v2 lab-scoped routes.
+        if ($legacyV1) {
+            $v1 = $container->get(V1Controller::class);
+            $v1Auth = $container->get(V1AuthMiddleware::class);
+            $app->post('/api/auth/login', fn ($request, $response) => $v1->login($request, $response));
+            // GET logout is a documented CSRF exception: it only removes the
+            // caller's own session and changes no lab state.
+            $app->get('/api/auth/logout', fn ($request, $response) => $v1->logout($request, $response));
+            $app->get('/api/auth', fn ($request, $response) => $v1->auth($request, $response));
+            $app->get('/api/status', fn ($request, $response) => $v1->status($request, $response))
+                ->add($v1Auth);
+            $app->delete('/api/status', fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                ->add($v1Auth);
+            $app->get('/api/folders', fn ($request, $response) => $v1->folders($request, $response, ['path' => '']))
+                ->add($v1Auth);
+            $app->get('/api/folders/{path:.*}', fn ($request, $response, array $args) => $v1->folders($request, $response, $args))
+                ->add($v1Auth);
+            $app->get('/api/labs', fn ($request, $response) => $v1->labsIndex($request, $response))
+                ->add($v1Auth);
+            foreach (['start', 'stop', 'wipe'] as $action) {
+                $app->get('/api/labs/{path:.*}/nodes/{node}/' . $action, fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                    ->add($v1Auth);
+                $app->post('/api/labs/{path:.*}/nodes/{node}/' . $action, fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                    ->add($v1Auth);
+            }
+            $app->get('/api/labs/{path:.*}', fn ($request, $response, array $args) => $v1->labShow($request, $response, $args))
+                ->add($v1Auth);
+            $app->post('/api/labs', fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                ->add($v1Auth);
+            $app->put('/api/labs/{path:.*}', fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                ->add($v1Auth);
+            $app->delete('/api/labs/{path:.*}', fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                ->add($v1Auth);
+        }
 
         $app->add($container->get(SecurityHeadersMiddleware::class));
         $app->add($container->get(JsonErrorMiddleware::class));

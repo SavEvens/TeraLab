@@ -61,7 +61,7 @@
               <button class="ghost" @click="duplicate(lab)">Duplicate</button>
               <button class="ghost" @click="move(lab)">Move</button>
               <button class="ghost" @click="exportLab(lab)">Export</button>
-              <button class="danger" @click="remove(lab)">Delete</button>
+              <button v-if="canDeleteLab(lab)" class="danger" @click="remove(lab)">Delete</button>
             </div>
           </td>
         </tr>
@@ -236,6 +236,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
+import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
 
 const router = useRouter()
@@ -273,6 +274,17 @@ const filteredLabs = computed(() => {
   if (!needle) return labs.value
   return labs.value.filter((lab) => `${lab.name} ${lab.path} ${lab.owner || ''}`.toLowerCase().includes(needle))
 })
+
+// The list does not expose the caller's effective per-lab role, so only offer
+// Delete where the API is guaranteed to allow it: global admins and the lab
+// owner. Local admins keep the API ability even though this shortcut is hidden.
+function canDeleteLab(lab) {
+  const user = session.user
+  if (!user) return false
+  if (user.role === 'admin') return true
+  // Lab owner is stored and returned as a user id, not a username.
+  return typeof user.id === 'string' && lab.owner === user.id
+}
 
 async function load() {
   error.value = ''

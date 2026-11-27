@@ -527,7 +527,9 @@ const sweeping = ref(false)
 const canAdmin = computed(() => session.user?.role === 'admin')
 const passwordOpen = ref(false)
 const tabs = computed(() => {
-  const list = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
+  const list = []
+  if (canAdmin.value) list.push('Host')
+  list.push('Settings', 'Logs', 'Backup', 'Tokens')
   if (canAdmin.value) {
     list.push('Users')
     list.push('Demo')
@@ -536,9 +538,11 @@ const tabs = computed(() => {
   return list
 })
 
+const defaultTab = computed(() => (canAdmin.value ? 'Host' : 'Settings'))
+
 function matchTab(value) {
   const wanted = typeof value === 'string' ? value.trim().toLowerCase() : ''
-  return tabs.value.find((tab) => tab.toLowerCase() === wanted) || 'Host'
+  return tabs.value.find((tab) => tab.toLowerCase() === wanted) || defaultTab.value
 }
 
 const active = ref(matchTab(route.query.tab))
@@ -702,6 +706,12 @@ function toastError(exception) {
 }
 
 async function loadHost() {
+  // Host status is administrator-only. A viewer or editor must never request
+  // it, even when the URL points at the Host tab.
+  if (!canAdmin.value) {
+    host.value = null
+    return
+  }
   host.value = (await api.host()).data
 }
 

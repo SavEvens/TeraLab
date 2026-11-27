@@ -9,7 +9,6 @@ namespace TeraLab\Api\Http\Controllers;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Auth\AccessService;
-use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Auth\AuthService;
 use TeraLab\Api\Auth\RateLimiter;
 use TeraLab\Api\Auth\TurnstileVerifier;
@@ -20,8 +19,6 @@ use TeraLab\Api\Http\LegacyJson;
 use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Http\V1Session;
 use TeraLab\Api\Labs\LabRepository;
-use TeraLab\Api\Labs\LabService;
-use TeraLab\Api\System\DemoSweeper;
 use TeraLab\Api\System\SettingsService;
 
 final class V1Controller
@@ -30,13 +27,10 @@ final class V1Controller
         private readonly AuthService $auth,
         private readonly Config $config,
         private readonly LabRepository $labs,
-        private readonly LabService $labService,
         private readonly AccessService $access,
-        private readonly AuditLogger $audit,
         private readonly SettingsService $settings,
         private readonly TurnstileVerifier $turnstile,
         private readonly RateLimiter $rateLimiter,
-        private readonly DemoSweeper $sweeper,
     ) {
     }
 
@@ -139,7 +133,9 @@ final class V1Controller
         }
 
         try {
-            $listing = $this->listFolder($path);
+            $user = $this->access->user($request);
+            $allowed = $this->allowedLabPaths($user);
+            $listing = $this->listFolder($path, $allowed);
         } catch (HttpException $exception) {
             return LegacyJson::error($response, $exception->status, 'fail', $exception->getMessage());
         }
@@ -149,7 +145,13 @@ final class V1Controller
 
     public function labsIndex(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
-        return LegacyJson::success($response, $this->labs->all(), 'Labs.');
+        $user = $this->access->user($request);
+
+        return LegacyJson::success(
+            $response,
+            $this->access->filterLabs($user, $this->labs->all()),
+            'Labs.',
+        );
     }
 
     /**
@@ -175,6 +177,13 @@ final class V1Controller
             return LegacyJson::error($response, 404, 'fail', 'Lab not found.');
         }
 
+        try {
+            $user = $this->access->user($request);
+            $this->access->assertLabAccessWithRole($user, (string) ($lab['id'] ?? ''), 'user');
+        } catch (HttpException $exception) {
+            return LegacyJson::error($response, $exception->status, 'fail', $exception->getMessage());
+        }
+
         return LegacyJson::success($response, [
             'author' => (string) ($lab['author'] ?? ''),
             'description' => (string) ($lab['description'] ?? ''),
@@ -188,76 +197,16 @@ final class V1Controller
     }
 
     /**
-     * @param array<string, string> $args
+     * The v1 adapter is read-only. Every state-changing legacy request answers
+     * 405; clients must use the CSRF-protected v2 lab-scoped routes.
      */
-    public function nodeStart(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
-    {
-        return $this->nodeAction($request, $response, $args, 'start');
-    }
-
-    /**
-     * @param array<string, string> $args
-     */
-    public function nodeStop(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
-    {
-        return $this->nodeAction($request, $response, $args, 'stop');
-    }
-
-    /**
-     * @param array<string, string> $args
-     */
-    public function nodeWipe(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
-    {
-        return $this->nodeAction($request, $response, $args, 'wipe');
-    }
-
-    /**
-     * @param array<string, string> $args
-     */
-    private function nodeAction(ServerRequestInterface $request, ResponseInterface $response, array $args, string $action): ResponseInterface
-    {
-        $lab = $this->labs->findByPath((string) ($args['path'] ?? ''));
-        if ($lab === null) {
-            $lab = $this->labs->find((string) ($args['path'] ?? ''));
-        }
-        if ($lab === null) {
-            return LegacyJson::error($response, 404, 'fail', 'Lab not found.');
-        }
-        try {
-            $user = $this->access->user($request);
-            $this->access->requireRole($user, 'editor');
-            $this->access->assertLabAccess($user, (string) $lab['id']);
-        } catch (HttpException $exception) {
-            return LegacyJson::error($response, $exception->status, 'fail', $exception->getMessage());
-        }
-        $nodeID = (string) ($args['node'] ?? '');
-        $isAdmin = $this->access->isAdmin($user);
-
-        if ($action === 'start') {
-            $this->sweeper->sweepIfDue();
-        }
-        try {
-            $data = match ($action) {
-                'start' => $this->labService->startNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
-                'stop' => $this->labService->stopNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
-                'wipe' => $this->labService->wipeNode((string) $lab['id'], $nodeID, (string) $user['id'], $isAdmin),
-                default => [],
-            };
-        } catch (HttpException $exception) {
-            return LegacyJson::error($response, $exception->status, 'fail', $exception->getMessage());
-        }
-        $this->audit->log((string) $user['id'], $this->ip($request), 'v1.node.' . $action, (string) $lab['id'], 'success', ['node' => $nodeID]);
-
-        return LegacyJson::success($response, $data, 'Node ' . $action . ' accepted.');
-    }
-
-    public function unsupported(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    public function methodNotAllowed(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         return LegacyJson::error(
             $response,
-            501,
+            405,
             'fail',
-            'This legacy operation is not available in the v1 compatibility adapter yet.',
+            'The v1 compatibility adapter is read-only. Use the v2 lab-scoped API.',
         );
     }
 
@@ -279,9 +228,27 @@ final class V1Controller
     }
 
     /**
+     * @param array<string, mixed> $user
+     * @return array<string, true> Allowed lab paths keyed by '/folder/file.unl'.
+     */
+    private function allowedLabPaths(array $user): array
+    {
+        $paths = [];
+        foreach ($this->access->filterLabs($user, $this->labs->all()) as $lab) {
+            $relative = ltrim((string) ($lab['path'] ?? ''), '/');
+            if ($relative !== '') {
+                $paths['/' . $relative] = true;
+            }
+        }
+
+        return $paths;
+    }
+
+    /**
+     * @param array<string, true> $allowedPaths
      * @return array{folders: list<array{name: string, path: string}>, labs: list<array{file: string, path: string}>}
      */
-    private function listFolder(string $path): array
+    private function listFolder(string $path, array $allowedPaths): array
     {
         foreach (explode('/', trim($path, '/')) as $segment) {
             if ($segment === '..' || $segment === '.') {
@@ -320,8 +287,15 @@ final class V1Controller
             }
             $childPath = $path === '/' ? '/' . $entry : $path . '/' . $entry;
             if (is_dir($target . '/' . $entry)) {
-                $folders[] = ['name' => $entry, 'path' => $childPath];
-            } elseif (is_file($target . '/' . $entry) && str_ends_with(strtolower($entry), '.unl')) {
+                if ($this->containsAllowedLab($childPath, $allowedPaths)) {
+                    $folders[] = ['name' => $entry, 'path' => $childPath];
+                }
+                continue;
+            }
+            if (is_file($target . '/' . $entry)
+                && str_ends_with(strtolower($entry), '.unl')
+                && isset($allowedPaths[$childPath])
+            ) {
                 $labs[] = ['file' => $entry, 'path' => $childPath];
             }
         }
@@ -330,6 +304,21 @@ final class V1Controller
         usort($labs, static fn (array $a, array $b): int => strnatcasecmp($a['file'], $b['file']));
 
         return ['folders' => $folders, 'labs' => $labs];
+    }
+
+    /**
+     * @param array<string, true> $allowedPaths
+     */
+    private function containsAllowedLab(string $folder, array $allowedPaths): bool
+    {
+        $prefix = $folder . '/';
+        foreach (array_keys($allowedPaths) as $path) {
+            if (str_starts_with($path, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
