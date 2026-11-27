@@ -17,9 +17,12 @@ use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\System\SettingsService;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class DemoGuardApiTest extends TestCase
 {
+    use StaticAssets;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private const GUEST_PASSWORD = 'Teralab-Guest-2026!';
@@ -39,6 +42,7 @@ final class DemoGuardApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-demo-guard-api-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installStaticAssets($this->root);
         $config = Config::forTests($this->root, $this->root . '/data');
         $this->pdo = (new Database($config))->pdo();
         $this->app = (new App($config))->create();

@@ -865,6 +865,8 @@ export function startMockServer(port = 8099) {
     }
     if (path === '/api/v2/images' && request.method === 'GET') return send(response, 200, { data: images })
     if (path === '/api/v2/images' && request.method === 'POST') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       const image = {
         id: 'img1',
         kind: 'qemu',
@@ -904,6 +906,8 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { ok: true })
     }
     if (path.startsWith('/api/v2/images/') && request.method === 'PATCH') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       const input = await body(request)
       const id = decodeURIComponent(path.split('/').pop())
       const current = images.find((image) => image.id === id)
@@ -925,11 +929,15 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { status: 'success', data: images.find((image) => image.id === id) })
     }
     if (path.startsWith('/api/v2/images/') && path.endsWith('/template') && request.method === 'PUT') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       const input = await body(request)
       images = images.map((image) => ({ ...image, template: input.template }))
       return send(response, 200, { status: 'success', data: images[0] })
     }
     if (path.startsWith('/api/v2/images/') && request.method === 'DELETE') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       images = []
       return send(response, 200, { status: 'success' })
     }

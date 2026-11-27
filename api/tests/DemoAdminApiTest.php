@@ -18,9 +18,12 @@ use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\System\DemoSweeper;
 use TeraLab\Api\System\HostMemory;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class DemoAdminApiTest extends TestCase
 {
+    use StaticAssets;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private const GUEST_PASSWORD = 'Teralab-Guest-2026!';
@@ -42,6 +45,7 @@ final class DemoAdminApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-demo-admin-api-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installStaticAssets($this->root);
         $config = $this->config();
         $this->writeTemplate($config);
         $this->pdo = (new Database($config))->pdo();

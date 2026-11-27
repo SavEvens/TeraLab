@@ -127,7 +127,7 @@ final class ImageController
     public function upload(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $this->assertNotGuest($request);
-        $this->access->requireRole($this->access->user($request), 'editor');
+        $this->access->requireRole($this->access->user($request), 'admin');
         $files = $request->getUploadedFiles();
         $file = $files['file'] ?? null;
         if (!$file instanceof \Psr\Http\Message\UploadedFileInterface) {
@@ -150,7 +150,12 @@ final class ImageController
         $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
 
         $image = $this->store->store($file, $kind, $name, $userId);
-        $this->audit->log($userId, $this->ip($request), 'image.upload', (string) $image['id'], 'success', ['sha256' => $image['sha256']]);
+        $this->audit->log($userId, $this->ip($request), 'image.upload', (string) $image['id'], 'success', [
+            'sha256' => $image['sha256'],
+            'kind' => $image['kind'],
+            'size' => $image['size'],
+            'name' => $image['name'],
+        ]);
 
         return Json::response($response, ['status' => 'success', 'data' => $image], 201);
     }
@@ -161,7 +166,7 @@ final class ImageController
     public function delete(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $this->assertNotGuest($request);
-        $this->access->requireRole($this->access->user($request), 'editor');
+        $this->access->requireRole($this->access->user($request), 'admin');
         $nodeImages = [];
         try {
             $status = $this->agent->status();
@@ -210,7 +215,10 @@ final class ImageController
         $user = $request->getAttribute('user');
         $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
         $this->store->delete($args['id'] ?? '', $nodeImages);
-        $this->audit->log($userId, $this->ip($request), 'image.delete', (string) ($args['id'] ?? ''), 'success');
+        $this->audit->log($userId, $this->ip($request), 'image.delete', (string) ($args['id'] ?? ''), 'success', [
+            'reference' => $image['reference'] ?? null,
+            'sha256' => $image['sha256'] ?? null,
+        ]);
 
         return Json::response($response, ['status' => 'success']);
     }
@@ -221,7 +229,7 @@ final class ImageController
     public function rename(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $this->assertNotGuest($request);
-        $this->access->requireRole($this->access->user($request), 'editor');
+        $this->access->requireRole($this->access->user($request), 'admin');
         $body = Json::body($request);
         $name = $body['name'] ?? null;
         $reference = $body['reference'] ?? null;
@@ -235,7 +243,10 @@ final class ImageController
         $image = $this->store->rename($args['id'] ?? '', $name, is_string($reference) ? $reference : null);
         $user = $request->getAttribute('user');
         $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
-        $this->audit->log($userId, $this->ip($request), 'image.rename', (string) $image['id'], 'success', ['name' => $name]);
+        $this->audit->log($userId, $this->ip($request), 'image.rename', (string) $image['id'], 'success', [
+            'name' => $name,
+            'reference' => $image['reference'] ?? null,
+        ]);
 
         return Json::response($response, ['status' => 'success', 'data' => $image]);
     }
@@ -251,7 +262,7 @@ final class ImageController
     public function mapTemplate(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $this->assertNotGuest($request);
-        $this->access->requireRole($this->access->user($request), 'editor');
+        $this->access->requireRole($this->access->user($request), 'admin');
         $body = Json::body($request);
         $template = $body['template'] ?? null;
         if (!is_string($template) || $template === '') {

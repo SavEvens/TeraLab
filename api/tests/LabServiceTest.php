@@ -23,9 +23,12 @@ use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\SettingsService;
 use TeraLab\Api\Templates\TemplateRepository;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class LabServiceTest extends TestCase
 {
+    use StaticAssets;
+
     private string $root;
     private Config $config;
     private UnlParser $parser;
@@ -60,6 +63,7 @@ final class LabServiceTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-labsvc-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installStaticAssets($this->root);
         $this->config = Config::forTests($this->root, $this->root . '/data');
         $this->parser = new UnlParser();
         $this->writer = new UnlWriter();
@@ -1303,6 +1307,77 @@ final class LabServiceTest extends TestCase
             self::fail('cannot create the image directory');
         }
         file_put_contents($path, "QFI\xfb" . str_repeat("\0", 32));
+    }
+
+    /**
+     * Picture policy: unsafe writes are rejected; legacy external URLs remain
+     * readable with a warning and are rejected only on save.
+     */
+    public function testPictureNodesUseThePicturePolicyAndLegacyValuesStayReadable(): void
+    {
+        $service = $this->service();
+        $picture = static fn (string $image): array => [
+            'id' => '1',
+            'name' => 'Diagram',
+            'type' => 'picture',
+            'image' => $image,
+            'interfaces' => [],
+        ];
+
+        foreach ([
+            'javascript:alert(1)',
+            '//evil.example/topology.png',
+            '/api/v2/labs',
+            'http://example.test/topology.png',
+            'https://example.test/topology.png',
+            'file:///etc/passwd',
+            '/images/does-not-exist.png',
+        ] as $image) {
+            try {
+                $service->create(['name' => 'Bad picture', 'nodes' => [$picture($image)]]);
+                self::fail('expected rejection: ' . $image);
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status, $image);
+            }
+        }
+
+        $static = $service->create([
+            'name' => 'Static picture',
+            'nodes' => [$picture('/images/lan-segment.png')],
+        ]);
+        self::assertSame('Static picture', $static['name']);
+
+        $dataUri = 'data:image/png;base64,' . base64_encode("\x89PNG\r\n\x1a\n");
+        $service->create(['name' => 'Data picture', 'nodes' => [$picture($dataUri)]]);
+
+        // A legacy lab with an external picture remains readable, is preserved,
+        // and is reported as blocked until it is edited.
+        $legacy = [
+            'id' => 'legacy-picture',
+            'name' => 'Legacy picture',
+            'revision' => 1,
+            'node_list' => [[
+                'id' => '1',
+                'name' => 'Diagram',
+                'type' => 'picture',
+                'image' => 'https://example.test/topology.png',
+                'interfaces' => [],
+            ]],
+            'network_list' => [],
+        ];
+        $path = $this->config->labsDir . '/legacy-picture.unl';
+        file_put_contents($path, $this->writer->write($legacy));
+        $presented = $service->present($this->parser->parse($path));
+        self::assertSame('https://example.test/topology.png', $presented['node_list'][0]['image']);
+        self::assertContains('picture_blocked', array_column($presented['warnings'], 'type'));
+
+        try {
+            $service->save('legacy-picture', ['nodes' => [$picture('https://example.test/topology.png')]], null);
+            self::fail('saving an unsafe picture must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+        }
+        self::assertSame('https://example.test/topology.png', $this->parser->parse($path)['node_list'][0]['image']);
     }
 
     /**

@@ -6,10 +6,13 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import AddLinkDialog from '../src/components/AddLinkDialog.vue'
 import Inspector from '../src/components/Inspector.vue'
+import LabNode from '../src/components/LabNode.vue'
+import PictureNode from '../src/components/PictureNode.vue'
 import TemplatePicker from '../src/components/TemplatePicker.vue'
 import ToastHost from '../src/components/ToastHost.vue'
 import ImagesView from '../src/views/ImagesView.vue'
 import SystemView from '../src/views/SystemView.vue'
+import TemplatesView from '../src/views/TemplatesView.vue'
 import PasswordChangeDialog from '../src/components/PasswordChangeDialog.vue'
 import { api, uploadImageWithProgress } from '../src/api'
 import { session } from '../src/stores/session'
@@ -19,6 +22,12 @@ vi.mock('../src/api', () => ({
   api: {
     images: vi.fn(),
     templates: vi.fn(),
+    template: vi.fn(),
+    saveTemplate: vi.fn(),
+    deleteTemplate: vi.fn(),
+    exportTemplate: vi.fn(),
+    importTemplate: vi.fn(),
+    duplicateTemplate: vi.fn(),
     importLegacyImages: vi.fn(),
     deleteImage: vi.fn(),
     renameImage: vi.fn(),
@@ -166,6 +175,63 @@ describe('TemplatePicker', () => {
     expect(wrapper.findAll('.template-grid li')).toHaveLength(1)
     expect(wrapper.find('[data-group="needs-image"]').text()).toContain('VPCS')
     expect(wrapper.find('[data-group="ready"]').exists()).toBe(false)
+  })
+
+  it('renders only plain basename icons and falls back for traversal or URLs', () => {
+    const iconTemplates = [
+      { id: 'traversal', name: 'Traversal', kind: 'qemu', icon: '../../about.php' },
+      { id: 'backslash', name: 'Backslash', kind: 'qemu', icon: '..\\..\\about.php' },
+      { id: 'external', name: 'External', kind: 'qemu', icon: 'https://evil.test/track.png' },
+      { id: 'plain', name: 'Plain', kind: 'qemu', icon: 'Router.png' }
+    ]
+    const wrapper = mount(TemplatePicker, { props: { templates: iconTemplates, images: [] } })
+    const tile = (name) => wrapper.findAll('.template-grid li').find((item) => item.text().includes(name))
+
+    for (const name of ['Traversal', 'Backslash', 'External']) {
+      expect(tile(name).find('img').exists()).toBe(false)
+      expect(tile(name).find('.template-dot').exists()).toBe(true)
+    }
+    expect(tile('Plain').find('img').attributes('src')).toBe('/images/icons/Router.png')
+    expect(wrapper.html()).not.toContain('about.php')
+    expect(wrapper.html()).not.toContain('evil.test')
+  })
+})
+
+describe('LabNode and PictureNode media', () => {
+  const mountNode = (icon) => mount(LabNode, {
+    props: { data: { id: '1', name: 'R1', kind: 'qemu', state: 'stopped', icon, interfaces: [{ id: 0 }] } },
+    global: { stubs: { Handle: true } }
+  })
+  const mountPicture = (image) => mount(PictureNode, { props: { data: { name: 'Picture', image } } })
+
+  it('renders a plain lab-node icon and falls back for traversal or a URL', () => {
+    expect(mountNode('Router.png').find('.node-icon img').attributes('src')).toBe('/images/icons/Router.png')
+
+    for (const icon of ['../../about.php', 'https://evil.test/track.png', '..\\..\\about.php']) {
+      const wrapper = mountNode(icon)
+      expect(wrapper.find('.node-icon img').exists()).toBe(false)
+      expect(wrapper.find('.node-icon svg').exists()).toBe(true)
+      expect(wrapper.html()).not.toContain('about.php')
+      expect(wrapper.html()).not.toContain('evil.test')
+    }
+  })
+
+  it('never sets an unsafe picture value as an image source', () => {
+    for (const image of ['javascript:alert(1)', 'https://evil.test/track.png', '//evil.test/x.png', '/api/v2/users', '/images/../api/v2/users', '/images/evil.phtml', '/images/EVIL.PHAR']) {
+      const wrapper = mountPicture(image)
+      expect(wrapper.find('img').exists()).toBe(false)
+      expect(wrapper.text()).toBe('Picture')
+      expect(wrapper.html()).not.toContain('evil.test')
+    }
+  })
+
+  it('renders a same-origin static picture and a small base64 data URI', () => {
+    const staticPicture = mountPicture('/images/logo.png')
+    expect(staticPicture.find('img').attributes('src')).toBe('/images/logo.png')
+
+    const dataUri = 'data:image/png;base64,iVBORw0KGgo='
+    expect(mountPicture(dataUri).find('img').attributes('src')).toBe(dataUri)
+    expect(mountPicture('').find('img').exists()).toBe(false)
   })
 })
 
@@ -450,6 +516,49 @@ describe('ImagesView', () => {
     wrapper.unmount()
   })
 
+  it('keeps the catalogue readable but hides every mutation from editors', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', template: 'csr1000v', path: '/var/lib/teralab/images/qemu/base.qcow2', created_at: 0 }]
+    })
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    expect(wrapper.find('form.upload').exists()).toBe(false)
+    expect(wrapper.text()).toContain('read-only for your account')
+    expect(wrapper.text()).not.toContain('Adopt images')
+    const buttons = wrapper.findAll('tbody button').map((button) => button.text())
+    expect(buttons).not.toContain('Rename')
+    expect(buttons).not.toContain('Delete')
+    expect(buttons).not.toContain('Unlink')
+    expect(wrapper.find('tbody tr select').exists()).toBe(false)
+    expect(wrapper.find('tbody tr').text()).toContain('base')
+    expect(wrapper.find('tbody tr').text()).toContain('csr1000v')
+    expect(api.images).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('shows the API 403 message when an editor forces a rename', async () => {
+    session.user = { username: 'admin', role: 'admin' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', path: '/var/lib/teralab/images/qemu/base.qcow2', created_at: 0 }]
+    })
+    api.renameImage.mockRejectedValue(new Error('Administrator role required.'))
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Rename').trigger('click')
+    session.user = { username: 'editor', role: 'editor' }
+    await wrapper.vm.$nextTick()
+    await wrapper.find('input[aria-label="Display name"]').setValue('forced')
+    await wrapper.find('.rename-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.renameImage).toHaveBeenCalledWith('img1', 'forced')
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('Administrator role required.'))).toBe(true)
+    wrapper.unmount()
+  })
+
   it('marks linked images and labels their delete action Unlink', async () => {
     session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
@@ -525,7 +634,7 @@ describe('ImagesView', () => {
   })
 
   it('renames an image from one dialog with name and reference', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', path: '/var/lib/teralab/images/qemu/base.qcow2', created_at: 0 }]
     })
@@ -554,7 +663,7 @@ describe('ImagesView', () => {
   })
 
   it('only sends the fields that changed', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
     })
@@ -573,7 +682,7 @@ describe('ImagesView', () => {
   })
 
   it('closes without calling the API when nothing changed', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
     })
@@ -592,7 +701,7 @@ describe('ImagesView', () => {
   })
 
   it('validates both rename fields inline', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
     })
@@ -629,7 +738,7 @@ describe('ImagesView', () => {
   })
 
   it('keeps the dialog open and refreshes when the reference fails after the name', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
     })
@@ -662,7 +771,7 @@ describe('ImagesView', () => {
   }
 
   it('maps an uploaded image to the chosen template', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.templates.mockResolvedValue({
       data: [
         { id: 'csr1000v', name: 'CSR1000V', kind: 'qemu' },
@@ -692,7 +801,7 @@ describe('ImagesView', () => {
   })
 
   it('keeps the uploaded image when the template mapping fails', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     uploadImageWithProgress.mockResolvedValue({ data: { id: 'img-new', name: 'base' } })
     api.mapImageTemplate.mockRejectedValue(new Error('template not found'))
 
@@ -712,6 +821,98 @@ describe('ImagesView', () => {
   })
 })
 
+describe('TemplatesView', () => {
+  const templateFixture = (overrides = {}) => ({
+    id: 'linux',
+    name: 'Linux',
+    kind: 'qemu',
+    source: 'builtin',
+    icon: 'Router.png',
+    defaults: {},
+    options: {},
+    yaml: 'id: linux\nkind: qemu\n',
+    ...overrides
+  })
+
+  const openTemplate = async (wrapper) => {
+    await wrapper.find('.palette li').trigger('click')
+    await flushPromises()
+  }
+
+  it('hides template mutations and keeps the YAML readable for editors', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    const template = templateFixture()
+    api.templates.mockResolvedValue({ data: [template] })
+    api.template.mockResolvedValue({ data: template })
+    const wrapper = mount(TemplatesView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('read-only for your account')
+    expect(wrapper.find('input[type="file"]').exists()).toBe(false)
+    await openTemplate(wrapper)
+
+    const buttons = wrapper.findAll('.template-editor button').map((button) => button.text())
+    expect(buttons).toContain('Export')
+    expect(buttons).not.toContain('Duplicate')
+    expect(buttons).not.toContain('Save')
+    expect(buttons).not.toContain('Delete')
+    expect(wrapper.find('textarea').attributes('readonly')).toBeDefined()
+    expect(wrapper.find('.template-icon img').attributes('src')).toBe('/images/icons/Router.png')
+    wrapper.unmount()
+  })
+
+  it('offers import, duplicate, delete and save to admins', async () => {
+    session.user = { username: 'admin', role: 'admin' }
+    const template = templateFixture({ id: 'custom-x', source: 'custom' })
+    api.templates.mockResolvedValue({ data: [template] })
+    api.template.mockResolvedValue({ data: template })
+    const wrapper = mount(TemplatesView)
+    await flushPromises()
+
+    expect(wrapper.find('input[type="file"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('read-only')
+    await openTemplate(wrapper)
+
+    const buttons = wrapper.findAll('.template-editor button').map((button) => button.text())
+    expect(buttons).toContain('Duplicate')
+    expect(buttons).toContain('Delete')
+    expect(buttons).toContain('Save')
+    expect(wrapper.find('textarea').attributes('readonly')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('does not build an icon URL from an unsafe template value', async () => {
+    session.user = { username: 'admin', role: 'admin' }
+    const template = templateFixture({ icon: '../../about.php' })
+    api.templates.mockResolvedValue({ data: [template] })
+    api.template.mockResolvedValue({ data: template })
+    const wrapper = mount(TemplatesView)
+    await flushPromises()
+    await openTemplate(wrapper)
+
+    expect(wrapper.find('.template-icon img').exists()).toBe(false)
+    expect(wrapper.find('.template-icon span').text()).toBe('../../about.php')
+    wrapper.unmount()
+  })
+
+  it('surfaces the API 403 when an editor forces a template save', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    const template = templateFixture()
+    api.templates.mockResolvedValue({ data: [template] })
+    api.template.mockResolvedValue({ data: template })
+    api.saveTemplate.mockRejectedValue(new Error('Administrator role required.'))
+    const wrapper = mount(TemplatesView)
+    await flushPromises()
+    await openTemplate(wrapper)
+
+    await wrapper.vm.saveTemplate()
+    await flushPromises()
+
+    expect(api.saveTemplate).toHaveBeenCalledWith('linux', 'id: linux\nkind: qemu\n')
+    expect(wrapper.find('p.error[role="alert"]').text()).toContain('Administrator role required.')
+    wrapper.unmount()
+  })
+})
 
 const settingsFixture = () => ({
   timezone: 'UTC',

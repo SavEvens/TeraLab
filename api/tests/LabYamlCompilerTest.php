@@ -7,6 +7,7 @@ declare(strict_types=1);
 namespace TeraLab\Api\Tests;
 
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Yaml\Yaml;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
@@ -19,9 +20,12 @@ use TeraLab\Api\Labs\LabYamlCompiler;
 use TeraLab\Api\Labs\UnlParser;
 use TeraLab\Api\Labs\UnlWriter;
 use TeraLab\Api\Templates\TemplateRepository;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class LabYamlCompilerTest extends TestCase
 {
+    use StaticAssets;
+
     private string $root;
     private Config $config;
     private LabYamlCompiler $compiler;
@@ -32,6 +36,7 @@ final class LabYamlCompilerTest extends TestCase
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
         mkdir($this->root . '/data/templates', 0770, true);
+        $this->installStaticAssets($this->root);
         $this->config = Config::forTests($this->root, $this->root . '/data');
         foreach (['iol', 'vpcs', 'docker', 'linux'] as $id) {
             $this->template($id, (string) file_get_contents(dirname(__DIR__) . '/templates/builtin/' . $id . '.yaml'));
@@ -178,6 +183,27 @@ final class LabYamlCompilerTest extends TestCase
         self::assertSame(8, $nodes[1]['serial']);
         self::assertSame(4096, $nodes[1]['nvram']);
         self::assertSame(0, $nodes[1]['delay']);
+    }
+
+    public function testIconsMustBeStaticBasenames(): void
+    {
+        foreach ([
+            '../../about.php',
+            '../../../api/v2/x',
+            '//evil',
+            'https://x/y',
+            'Router.png/..',
+            'missing.png',
+        ] as $icon) {
+            $yaml = "schema: 1\nname: Icon\nnodes:\n  A:\n    template: vpcs\n    icon: "
+                . Yaml::dump($icon) . "\n";
+            self::assertStringContainsString('icon', $this->compileError($yaml), $icon);
+        }
+
+        $yaml = "schema: 1\nname: Icon\nnodes:\n  A:\n    template: vpcs\n    icon: "
+            . Yaml::dump('Cisco ACS.png') . "\n";
+        $nodes = $this->nodes($this->compiler->compile($yaml)['payload']);
+        self::assertSame('Cisco ACS.png', $nodes[0]['icon']);
     }
 
     public function testInterfaceGrammarExtendsTheInterfaceList(): void

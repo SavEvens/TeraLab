@@ -109,6 +109,7 @@ final class ImageStore
         }
 
         $clientName = $this->safeName($file->getClientFilename() ?? '');
+        $displayName = $this->displayName($name);
         $extension = self::EXTENSIONS[$kind];
         if (!str_ends_with(strtolower($clientName), '.' . $extension)) {
             throw new HttpException(422, 'The file extension does not match the image kind.');
@@ -162,7 +163,7 @@ final class ImageStore
             $row = [
                 'id' => $id,
                 'kind' => $kind,
-                'name' => $name !== null && $name !== '' ? $name : $clientName,
+                'name' => $displayName ?? $clientName,
                 'reference' => $this->uniqueReference(ImageReference::portable($clientName)),
                 'path' => $path,
                 'sha256' => $sha256,
@@ -234,8 +235,8 @@ final class ImageStore
      */
     public function rename(string $id, string $name, ?string $reference = null): array
     {
-        $name = trim($name);
-        if ($name === '' || strlen($name) > 128 || preg_match('/[\x00-\x1f]/', $name) === 1) {
+        $name = $this->displayName($name);
+        if ($name === null) {
             throw new HttpException(422, 'Invalid image name.');
         }
         $current = $this->find($id);
@@ -485,6 +486,19 @@ final class ImageStore
         }
 
         return substr($base, 0, 128);
+    }
+
+    private function displayName(?string $name): ?string
+    {
+        if ($name === null) {
+            return null;
+        }
+        $name = trim($name);
+        if ($name === '' || strlen($name) > 128 || preg_match('/[\x00-\x1f\x7f]/', $name) === 1) {
+            throw new HttpException(422, 'Invalid image name.');
+        }
+
+        return $name;
     }
 
     private function removeDirectory(string $directory): void

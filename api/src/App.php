@@ -346,23 +346,24 @@ final class App
         $images = $container->get(ImageController::class);
         $app->get('/api/v2/images', fn ($request, $response) => $images->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
-        // Admin is enforced in the controller, after the demo guest check, so
-        // a guest receives the demo policy message rather than a role error.
+        // Catalogue mutations are admin-only: images are shared by every lab
+        // and a guest/editor must not change what other users can start.
         $app->post('/api/v2/images/import', fn ($request, $response) => $images->importLegacy($request, $response))
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->show($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/images', fn ($request, $response) => $images->upload($request, $response))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->delete($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->patch('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->rename($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $templates = $container->get(TemplateController::class);
@@ -373,23 +374,23 @@ final class App
         $app->get('/api/v2/templates/{id}/export', fn ($request, $response, array $args) => $templates->export($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/templates/import', fn ($request, $response) => $templates->import($request, $response))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/templates/{id}/duplicate', fn ($request, $response, array $args) => $templates->duplicate($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->put('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->save($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->delete($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->put('/api/v2/images/{id}/template', fn ($request, $response, array $args) => $images->mapTemplate($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
