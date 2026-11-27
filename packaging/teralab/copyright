@@ -1,0 +1,52 @@
+SPDX-License-Identifier: AGPL-3.0-or-later
+Copyright (C) 2026 TeraLab contributors
+
+TeraLab - copyright and licence information for the Debian package
+==================================================================
+
+TeraLab code
+------------
+
+TeraLab is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+TeraLab is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+The complete licence text is in /opt/teralab/LICENSE (GNU AGPLv3) and
+/opt/teralab/LICENSES/. The corresponding source for the installed version is
+available at https://github.com/SavEvens/TeraLab; the installed version is
+recorded in /opt/teralab/TERALAB_VERSION. An operator who offers TeraLab as a
+network service must offer the corresponding source of the running version.
+
+UNetLab-derived files
+---------------------
+
+Files derived from UNetLab remain under the BSD 3-Clause licence. Their
+original copyright notices, conditions and disclaimers are retained; they are
+not relicensed. Modifications made by the TeraLab project carry a modification
+notice and are offered under AGPL-3.0-or-later. See /opt/teralab/PROVENANCE.md
+for the file-level provenance.
+
+Separate GPLv2 components
+-------------------------
+
+QEMU, Dynamips, IOUtools and the Linux kernel are separate programs under
+GPL-2.0. They are not part of this package and are not linked into TeraLab.
+Install them from the Debian archives or from the separate teralab-dynamips
+package, with their own licence texts and source.
+
+Build tooling
+-------------
+
+This package is built with nfpm, MIT-licensed build tooling that is not
+distributed in the package.
+
+Notices
+-------
+
+Full notices and licence texts: /opt/teralab/LICENSE, /opt/teralab/LICENSES/,
+/opt/teralab/NOTICE and /opt/teralab/PROVENANCE.md.

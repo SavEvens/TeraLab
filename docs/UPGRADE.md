@@ -24,6 +24,53 @@ Changes you will notice in the editor and the Images page:
   two prompt-based flows are gone. Existing node image values are not rewritten
   by the upgrade.
 
+## Upgrading a .deb install
+
+If TeraLab was installed from the Debian package, upgrade with the new
+artifact:
+
+```sh
+sudo apt-get install ./teralab_<new-version>_amd64.deb
+# or, after installing any new dependencies:
+sudo dpkg -i teralab_<new-version>_amd64.deb
+```
+
+The package upgrades in place:
+
+- `/etc/teralab/agent.secret`, `/etc/teralab/config.php` and
+  `/var/lib/teralab` (database, labs, images, run directories and logs) are
+  not replaced or deleted.
+- The agent is restarted so it runs the new binary; the agent is version-locked
+  to the API, so the restart is required. On startup the agent reconciles its
+  state: **running labs are stopped** (non-docker engines are killed and their
+  run directories removed), open consoles end, and node control resumes when
+  the agent is back. Stop your labs before upgrading.
+- The lab bridge firewall unit is started only when it is inactive; it is not
+  restarted. PHP-FPM is restarted and Apache reloaded only when they are
+  active.
+- Database migrations are forward-only and run on the first API request after
+  the upgrade. No manual step is needed and `/api/v2/setup` does not run
+  again.
+
+### Conffile prompts
+
+The Apache configuration, the three PHP upload-limit drop-ins, both systemd
+units, the logrotate configuration and `/usr/share/doc/teralab/copyright` are
+dpkg conffiles. dpkg asks only when you edited one of them:
+
+- **Keep the local version** if the edit is intentional (custom Apache
+  aliases, unit hardening). Re-check it afterwards against the packaged
+  template under `/opt/teralab/packaging/teralab/`; the upgrade does not apply
+  the package version over your file.
+- **Take the package version** if you did not edit the file, so fixes are
+  delivered.
+
+The Apache configuration and both unit files must keep pointing at the install
+root (`/opt/teralab`). Do not accept a packaged conffile that changes that root
+unless you deliberately moved the install tree.
+
+For source installs, continue with the steps below.
+
 ## Before upgrading
 
 1. Stop the agent: `sudo systemctl stop teralab-agent`.

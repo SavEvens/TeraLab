@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# nfpm specification for the TeraLab Debian package.
+#
+# packaging/teralab/build-deb.sh stages the payload under dist/stage and runs
+# nfpm with the repository root as the working directory, so every src path is
+# relative to it. nfpm is build tooling only (MIT) and is not distributed;
+# TERALAB_DEB_VERSION is exported by build-deb.sh.
+name: teralab
+arch: amd64
+platform: linux
+version: ${TERALAB_DEB_VERSION}
+section: net
+priority: optional
+maintainer: SavEvens <sevens@sevensprojects.net>
+vendor: TeraLab
+homepage: https://github.com/SavEvens/TeraLab
+license: AGPL-3.0-or-later
+description: >-
+  TeraLab is an open-source network lab platform derived from UNetLab. It runs
+  QEMU, IOL, Dynamips and VPCS nodes through an unprivileged agent, with a
+  SQLite-backed PHP API and a Vue user interface served by Apache and PHP-FPM.
+depends:
+  - apache2
+  - php8.4-fpm
+  - php8.4-cli
+  - php8.4-sqlite3
+  - php8.4-mbstring
+  - php8.4-xml
+  - qemu-system-x86
+  - qemu-utils
+  - logrotate
+recommends:
+  - vpcs
+suggests:
+  - teralab-dynamips
+contents:
+  - src: dist/stage/opt/teralab
+    dst: /opt/teralab
+    type: tree
+  - src: dist/stage/etc/apache2/conf-available/teralab.conf
+    dst: /etc/apache2/conf-available/teralab.conf
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: dist/stage/etc/php/8.4/apache2/conf.d/99-teralab-uploads.ini
+    dst: /etc/php/8.4/apache2/conf.d/99-teralab-uploads.ini
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: dist/stage/etc/php/8.4/fpm/conf.d/99-teralab-uploads.ini
+    dst: /etc/php/8.4/fpm/conf.d/99-teralab-uploads.ini
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: dist/stage/etc/php/8.4/cli/conf.d/99-teralab-uploads.ini
+    dst: /etc/php/8.4/cli/conf.d/99-teralab-uploads.ini
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: dist/stage/etc/systemd/system/teralab-agent.service
+    dst: /etc/systemd/system/teralab-agent.service
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: dist/stage/etc/systemd/system/teralab-firewall.service
+    dst: /etc/systemd/system/teralab-firewall.service
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: dist/stage/etc/logrotate.d/teralab
+    dst: /etc/logrotate.d/teralab
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: dist/stage/usr/share/doc/teralab/copyright
+    dst: /usr/share/doc/teralab/copyright
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: dist/stage/usr/share/doc/teralab/changelog.gz
+    dst: /usr/share/doc/teralab/changelog.gz
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+scripts:
+  postinstall: packaging/teralab/postinst.sh
+  preremove: packaging/teralab/prerm.sh
+  postremove: packaging/teralab/postrm.sh
