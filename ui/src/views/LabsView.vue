@@ -50,17 +50,19 @@
             <span v-if="lab.lock" class="lock">locked by {{ lab.lock.username }}</span>
             <span v-else>—</span>
           </td>
-          <td class="actions">
-            <button
-              v-if="lab.running"
-              class="ghost stop-lab"
-              :disabled="stopping.has(lab.id)"
-              @click="stop(lab)"
-            >{{ stopping.has(lab.id) ? 'Stopping…' : '■ Stop' }}</button>
-            <button class="ghost" @click="duplicate(lab)">Duplicate</button>
-            <button class="ghost" @click="move(lab)">Move</button>
-            <button class="ghost" @click="exportLab(lab)">Export</button>
-            <button class="danger" @click="remove(lab)">Delete</button>
+          <td>
+            <div class="row-actions">
+              <button
+                v-if="lab.running"
+                class="ghost stop-lab"
+                :disabled="stopping.has(lab.id)"
+                @click="stop(lab)"
+              >{{ stopping.has(lab.id) ? 'Stopping…' : '■ Stop' }}</button>
+              <button class="ghost" @click="duplicate(lab)">Duplicate</button>
+              <button class="ghost" @click="move(lab)">Move</button>
+              <button class="ghost" @click="exportLab(lab)">Export</button>
+              <button class="danger" @click="remove(lab)">Delete</button>
+            </div>
           </td>
         </tr>
       </tbody>
@@ -216,9 +218,11 @@
             <td>{{ entry.original_path || '—' }}</td>
             <td>{{ new Date(entry.deleted_at * 1000).toLocaleString() }}</td>
             <td>{{ new Date(entry.expires_at * 1000).toLocaleDateString() }}</td>
-            <td class="actions">
-              <button class="ghost" @click="restore(entry)">Restore</button>
-              <button class="danger" @click="purge(entry)">Delete forever</button>
+            <td>
+              <div class="row-actions">
+                <button class="ghost" @click="restore(entry)">Restore</button>
+                <button class="danger" @click="purge(entry)">Delete forever</button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -230,9 +234,11 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { notify } from '../stores/toasts'
 
+const router = useRouter()
 const labs = ref([])
 const trash = ref([])
 const showTrash = ref(false)
@@ -393,7 +399,8 @@ async function createFromYaml() {
     notify('success', warnings.length
       ? `Lab created from YAML with ${warnings.length} warning(s)`
       : 'Lab created from YAML')
-    await load()
+    if (lab?.id) await router.push({ name: 'editor', params: { id: lab.id } })
+    else await load()
   } catch (exception) {
     creating.value = false
     yamlError.value = exception.message
@@ -419,7 +426,8 @@ async function create() {
     notify('success', 'Lab created')
     creating.value = false
     closeCreate()
-    await load()
+    if (lab?.id) await router.push({ name: 'editor', params: { id: lab.id } })
+    else await load()
   } catch (exception) {
     creating.value = false
     createError.value = exception.message

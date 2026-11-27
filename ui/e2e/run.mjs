@@ -209,11 +209,17 @@ try {
   await page.locator('.create-project input[aria-label="Project folder"]').fill('e2e-folder')
   await page.locator('.create-project').getByRole('button', { name: 'Create', exact: true }).click()
   await page.waitForFunction(() => !document.querySelector('.create-project'), null, { timeout: 10000 })
-  await page.waitForFunction(() => document.querySelector('.lab-table tbody')?.textContent.includes('Dialog Lab'), null, { timeout: 10000 })
+  await page.waitForURL((url) => /\/ui\/labs\/[^/]+$/.test(url.pathname), { timeout: 10000 })
+  const createdEditorURL = page.url()
+  await page.waitForFunction(() => document.querySelector('input[aria-label="Lab name"]')?.value === 'Dialog Lab', null, { timeout: 10000 })
+  await page.waitForFunction(() => !document.querySelector('.editor .error.banner'), null, { timeout: 10000 })
   const createdState = await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()
   const createdLab = (createdState.createdLabs || []).find((candidate) => candidate.name === 'Dialog Lab')
   const createdLabPath = createdLab?.path
   const createdLabFolder = createdState.lastMove?.folder
+  await page.locator('.ed-back').click()
+  await page.waitForURL('**/ui/labs')
+  await page.waitForFunction(() => document.querySelector('.lab-table tbody')?.textContent.includes('Dialog Lab'), null, { timeout: 10000 })
   const createDialogClosed = await page.locator('.create-project').count()
 
   const labsStatusBefore = await page.locator('[data-lab-status="lab1"]').innerText()
@@ -253,13 +259,19 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll('.toast')].length === 0, null, { timeout: 10000 }).catch(() => {})
   await page.locator('.create-project').getByRole('button', { name: 'Create from YAML' }).click()
   await page.waitForFunction(() => !document.querySelector('.create-project'), null, { timeout: 10000 })
-  await page.waitForFunction(() => document.querySelector('.lab-table tbody')?.textContent.includes('Paste YAML Lab'), null, { timeout: 10000 })
+  await page.waitForURL((url) => /\/ui\/labs\/[^/]+$/.test(url.pathname), { timeout: 10000 })
+  const pasteEditorURL = page.url()
+  await page.waitForFunction(() => document.querySelector('input[aria-label="Lab name"]')?.value === 'Paste YAML Lab', null, { timeout: 10000 })
+  await page.waitForFunction(() => !document.querySelector('.editor .error.banner'), null, { timeout: 10000 })
   await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((toast) => /created from YAML with 1 warning/i.test(toast.textContent || '')), null, { timeout: 10000 })
   const pasteToast = (await page.locator('.toasts').innerText()).replace(/\s+/g, ' ').trim()
   const pasteState = await (await fetch(`http://127.0.0.1:${mockPort}/__state`)).json()
   const pasteLab = (pasteState.createdLabs || []).find((candidate) => candidate.name === 'Paste YAML Lab')
   const pasteFolder = pasteState.lastMove?.folder
   const pasteDialogClosed = await page.locator('.create-project').count()
+  await page.locator('.ed-back').click()
+  await page.waitForURL('**/ui/labs')
+  await page.waitForFunction(() => document.querySelector('.lab-table tbody')?.textContent.includes('Paste YAML Lab'), null, { timeout: 10000 })
 
   // Images: upload, rename, map a template.
   await page.getByRole('link', { name: 'Appliances' }).click()
@@ -737,6 +749,8 @@ try {
   const selfDeleteDialogOpen = await page.locator('.delete-user-modal').count()
   await page.locator('.delete-user-modal').getByRole('button', { name: 'Cancel' }).click()
 
+  await page.getByRole('tab', { name: 'Settings' }).click()
+  await page.waitForURL(/\/ui\/system\?tab=Settings$/)
   await page.getByRole('button', { name: 'Change password' }).click()
   await page.waitForSelector('.password-modal')
   await page.locator('.password-modal input[aria-label="Current password"]').fill('Teralab-Admin-2026!')
@@ -882,12 +896,14 @@ try {
     aboutDots,
     createdLabPath,
     createdLabFolder,
+    createdEditorURL,
     createDialogClosed,
     yamlImportReport,
     yamlNameFieldHidden,
     pasteValidationText,
     pasteWarningCount,
     pasteToast,
+    pasteEditorURL,
     pasteLabPath: pasteLab?.path,
     pasteFolder,
     pasteDialogClosed,
@@ -1022,6 +1038,9 @@ try {
     throw new Error(`/about redirect did not select the embedded About tab: ${aboutTabSelected}/${aboutTabAfterTokens}/${aboutOwnHead}`)
   }
   if (createDialogClosed !== 0) throw new Error('create project dialog stayed open after success')
+  if (!createdLab || !createdEditorURL.endsWith(`/ui/labs/${createdLab.id}`)) {
+    throw new Error(`create project did not open the editor: ${createdEditorURL}`)
+  }
   if (!createdLab || !createdLabPath?.includes('e2e-folder/')) throw new Error(`created project landed in the wrong folder: ${createdLabPath}`)
   if (createdLabFolder !== 'e2e-folder') throw new Error(`move request used the wrong folder: ${createdLabFolder}`)
   if (!/image_unmapped/i.test(yamlImportReport)) {
@@ -1037,6 +1056,9 @@ try {
   if (!pasteLab?.path?.includes('yaml-folder/')) throw new Error(`paste-YAML project landed in the wrong folder: ${pasteLab?.path}`)
   if (pasteFolder !== 'yaml-folder') throw new Error(`paste-YAML move used the wrong folder: ${pasteFolder}`)
   if (pasteDialogClosed !== 0) throw new Error('paste-YAML dialog stayed open after success')
+  if (!pasteLab || !pasteEditorURL.endsWith(`/ui/labs/${pasteLab.id}`)) {
+    throw new Error(`paste-YAML did not open the editor: ${pasteEditorURL}`)
+  }
   if (!/created from YAML with 1 warning/i.test(pasteToast)) throw new Error(`paste-YAML warning toast missing: ${pasteToast}`)
   if (yamlButtonWithoutMarker !== 0) throw new Error('YAML button is shown for a lab without a source marker')
   if (yamlButtonWithMarker !== 1) throw new Error('YAML button is missing for a lab with a source marker')

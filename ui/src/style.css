@@ -215,8 +215,8 @@ label { display: grid; gap: 5px; color: var(--muted); font: 600 10px/1.2 var(--m
 .import-report ul { margin: 12px 0 0; padding-left: 18px; display: grid; gap: 6px; max-height: 46vh; overflow: auto; }
 .import-report li strong { color: var(--amber); font: 600 10px/1.4 var(--mono); text-transform: uppercase; margin-right: 6px; }
 .import-report li span { color: var(--muted); font-size: 12px; }
-.actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.actions button { padding: 5px 8px; font-size: 9px; }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.row-actions button { padding: 5px 8px; font-size: 9px; white-space: nowrap; }
 .lock { color: var(--amber); font: 500 10px/1.3 var(--mono); }
 
 /* ---------- labs ---------- */
@@ -541,6 +541,7 @@ label { display: grid; gap: 5px; color: var(--muted); font: 600 10px/1.2 var(--m
 .toast { background: rgba(10, 14, 32, 0.97); border: 1px solid var(--line-strong); border-left: 3px solid var(--cyan); border-radius: 7px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; font: 500 11px/1.4 var(--mono); box-shadow: var(--shadow); }
 .toast.success { border-left-color: var(--green); }
 .toast.warn { border-left-color: var(--amber); }
+.toast.warning { border-left-color: var(--amber); }
 .toast.error { border-left-color: var(--red); }
 .toast .bar { width: 80px; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
 .toast .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--magenta)); }
@@ -624,6 +625,7 @@ label { display: grid; gap: 5px; color: var(--muted); font: 600 10px/1.2 var(--m
 .stat-card.cpu-usage strong { color: var(--cyan); }
 .settings-panel { padding: 16px; max-width: 760px; }
 .settings-panel form { display: grid; gap: 14px; }
+.account-block { display: grid; gap: 10px; margin-bottom: 22px; }
 .log-view { background: #04060e; border: 1px solid var(--line); border-radius: 6px; padding: 10px; max-height: 360px; overflow: auto; font: 500 10px/1.6 var(--mono); color: var(--muted); white-space: pre-wrap; }
 .token-form { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 14px; }
 .token-once { background: rgba(61,255,176,.06); border: 1px solid rgba(61,255,176,.35); padding: 10px; border-radius: 6px; font: 500 11px/1.5 var(--mono); }

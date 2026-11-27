@@ -52,6 +52,13 @@
     </section>
 
     <section v-show="active === 'Settings'" class="panel settings-panel">
+      <div class="account-block">
+        <h2>Account</h2>
+        <p class="hint">Change the password for your own account.</p>
+        <div class="row">
+          <button type="button" @click="passwordOpen = true">Change password</button>
+        </div>
+      </div>
       <form @submit.prevent="saveSettings">
         <div class="field-grid">
           <label>Timezone
@@ -298,11 +305,13 @@
             <td>{{ user.session_count ?? 0 }}</td>
             <td>{{ user.last_seen_at ? date(user.last_seen_at) : 'never' }}</td>
             <td>{{ user.lab_count ?? 0 }}</td>
-            <td class="actions">
-              <button class="ghost" @click="openEditUser(user)">Edit</button>
-              <button class="ghost" @click="openResetPassword(user)">Reset password</button>
-              <button class="ghost" @click="forceLogout(user)">Force logout</button>
-              <button class="danger" @click="openDeleteUser(user)">Delete</button>
+            <td>
+              <div class="row-actions">
+                <button class="ghost" @click="openEditUser(user)">Edit</button>
+                <button class="ghost" @click="openResetPassword(user)">Reset password</button>
+                <button class="ghost" @click="forceLogout(user)">Force logout</button>
+                <button class="danger" @click="openDeleteUser(user)">Delete</button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -449,6 +458,8 @@
     <section v-show="active === 'About'" class="system-about">
       <AboutView embedded />
     </section>
+
+    <PasswordChangeDialog :open="passwordOpen" @close="passwordOpen = false" />
   </section>
 </template>
 
@@ -458,6 +469,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
+import PasswordChangeDialog from '../components/PasswordChangeDialog.vue'
 import AboutView from './AboutView.vue'
 
 const DEMO_INT_KEYS = [
@@ -513,6 +525,7 @@ const demoStatus = ref(null)
 const demoStatusError = ref('')
 const sweeping = ref(false)
 const canAdmin = computed(() => session.user?.role === 'admin')
+const passwordOpen = ref(false)
 const tabs = computed(() => {
   const list = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
   if (canAdmin.value) {

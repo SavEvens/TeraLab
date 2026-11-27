@@ -128,9 +128,11 @@
               <td>{{ snapshot.name }}</td>
               <td>{{ snapshot.revision }}</td>
               <td>{{ new Date(snapshot.created_at * 1000).toLocaleString() }}</td>
-              <td class="actions">
-                <button class="ghost" @click="restoreSnapshot(snapshot)">Restore</button>
-                <button class="danger" @click="deleteSnapshot(snapshot)">Delete</button>
+              <td>
+                <div class="row-actions">
+                  <button class="ghost" @click="restoreSnapshot(snapshot)">Restore</button>
+                  <button class="danger" @click="deleteSnapshot(snapshot)">Delete</button>
+                </div>
               </td>
             </tr>
           </tbody>

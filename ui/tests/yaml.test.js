@@ -101,12 +101,24 @@ beforeEach(() => {
 })
 
 async function mountLabs() {
+  const localRouter = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/labs', name: 'labs', component: { template: '<div />' } },
+      { path: '/labs/:id', name: 'editor', component: { template: '<div />' } }
+    ]
+  })
+  await localRouter.push('/labs')
+  await localRouter.isReady()
   const wrapper = mount(LabsView, {
-    global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
+    global: {
+      plugins: [localRouter],
+      stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } }
+    }
   })
   await flushPromises()
 
-  return wrapper
+  return { wrapper, router: localRouter }
 }
 
 async function openYamlMode(wrapper) {
@@ -134,7 +146,7 @@ describe('LabsView create-from-YAML mode', () => {
         counts: { nodes: 3, networks: 1, links: 2 }
       }
     })
-    const wrapper = await mountLabs()
+    const { wrapper } = await mountLabs()
     await wrapper.findAll('button').find((button) => button.text() === 'Create project').trigger('click')
     await openYamlMode(wrapper)
 
@@ -161,7 +173,7 @@ describe('LabsView create-from-YAML mode', () => {
         counts: { nodes: 1, networks: 0, links: 0 }
       }
     })
-    const wrapper = await mountLabs()
+    const { wrapper } = await mountLabs()
     await wrapper.findAll('button').find((button) => button.text() === 'Create project').trigger('click')
     await openYamlMode(wrapper)
 
@@ -187,7 +199,7 @@ describe('LabsView create-from-YAML mode', () => {
       meta: { warnings: [{ type: 'image_unmapped', node: 'R1', message: 'not mapped' }] }
     })
     api.labs.mockResolvedValue({ data: [{ id: 'yamllab1', name: 'Pasted YAML Lab' }] })
-    const wrapper = await mountLabs()
+    const { wrapper, router: localRouter } = await mountLabs()
     await wrapper.findAll('button').find((button) => button.text() === 'Create project').trigger('click')
     await openYamlMode(wrapper)
 
@@ -204,7 +216,8 @@ describe('LabsView create-from-YAML mode', () => {
     expect(api.moveLab).toHaveBeenCalledWith('yamllab1', 'yaml-folder')
     expect(wrapper.find('.create-project').exists()).toBe(false)
     expect(toasts.some((toast) => toast.kind === 'success' && /created from YAML with 1 warning/.test(toast.message))).toBe(true)
-    expect(api.labs).toHaveBeenCalledTimes(2)
+    expect(localRouter.currentRoute.value.name).toBe('editor')
+    expect(localRouter.currentRoute.value.params.id).toBe('yamllab1')
 
     await wrapper.findAll('button').find((button) => button.text() === 'Create project').trigger('click')
     expect(wrapper.find('#create-mode-blank').attributes('aria-selected')).toBe('true')
@@ -213,7 +226,7 @@ describe('LabsView create-from-YAML mode', () => {
   })
 
   it('resets the mode and text when the dialog closes', async () => {
-    const wrapper = await mountLabs()
+    const { wrapper } = await mountLabs()
     await wrapper.findAll('button').find((button) => button.text() === 'Create project').trigger('click')
     await openYamlMode(wrapper)
     await wrapper.find('textarea[aria-label="Lab YAML"]').setValue(SOURCE)

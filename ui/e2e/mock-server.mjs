@@ -708,6 +708,16 @@ export function startMockServer(port = 8099) {
     if (path === '/api/v2/labs/lab1' && request.method === 'GET') {
       return send(response, 200, { data: lab })
     }
+    const createdLabMatch = /^\/api\/v2\/labs\/([^/]+)$/.exec(path)
+    if (request.method === 'GET' && createdLabMatch) {
+      const createdId = decodeURIComponent(createdLabMatch[1])
+      const created = createdLabs.find((candidate) => candidate.id === createdId)
+      if (created) {
+        return send(response, 200, {
+          data: { ...created, node_list: created.node_list || [], network_list: created.network_list || [] }
+        })
+      }
+    }
     const nodesMatch = /^\/api\/v2\/labs\/([^/]+)\/nodes$/.exec(path)
     if (request.method === 'GET' && nodesMatch) {
       const labId = decodeURIComponent(nodesMatch[1])
