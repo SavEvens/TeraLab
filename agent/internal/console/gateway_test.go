@@ -4,6 +4,7 @@
 package console
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -229,6 +230,54 @@ func TestBridgeForwardsFramesWithoutInterceptor(t *testing.T) {
 	})
 	if got := stream.writtenBytes(); string(got) != string(want) {
 		t.Fatalf("raw bridge altered frames: got %q, want %q", got, want)
+	}
+}
+
+// TestBridgeRoundTripsMessages pins both directions of a live WebSocket
+// bridge: an engine frame reaches the client as a binary message, a client
+// frame reaches the engine stream, and closing the client ends the bridge.
+func TestBridgeRoundTripsMessages(t *testing.T) {
+	gateway := New("127.0.0.1:0", nil, nil)
+	stream := newFakeStream()
+	defer stream.Close()
+
+	bridged := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		defer close(bridged)
+		gateway.bridge(writer, request, stream, nil)
+	}))
+	defer server.Close()
+
+	connection := dialTestWebSocket(t, server)
+
+	toClient := []byte("engine output\r\n")
+	if _, err := stream.writer.Write(toClient); err != nil {
+		t.Fatalf("write engine frame: %v", err)
+	}
+	messageType, received, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatalf("read bridged frame: %v", err)
+	}
+	if messageType != websocket.BinaryMessage || !bytes.Equal(received, toClient) {
+		t.Fatalf("bridged frame = %d %q, want %d %q", messageType, received, websocket.BinaryMessage, toClient)
+	}
+
+	toEngine := []byte("show version\r")
+	writeTestFrame(t, connection, websocket.BinaryMessage, toEngine)
+	waitFor(t, func() bool {
+		return bytes.Equal(stream.writtenBytes(), toEngine)
+	})
+	if got := stream.writtenBytes(); !bytes.Equal(got, toEngine) {
+		t.Fatalf("engine received %q, want %q", got, toEngine)
+	}
+
+	if err := connection.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+	select {
+	case <-bridged:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bridge did not return after the client closed")
 	}
 }
 
