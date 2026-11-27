@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# TeraLab runtime logs. Rotation cannot reopen the file because the agent and
+# the API keep their log files open, so copytruncate is used instead.
+/var/lib/teralab/logs/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

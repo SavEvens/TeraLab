@@ -3,6 +3,25 @@
 
 # TeraLab release notes
 
+## Debian package
+
+The v1.6 release line adds a Debian 13 amd64 package, published as a single
+artifact: `teralab_<version>_amd64.deb`. It contains the API, the built UI, the
+agent, the built-in templates and the documentation. Install or upgrade it with
+`sudo apt-get install ./teralab_<version>_amd64.deb`; see `INSTALL.md` and
+`UPGRADE.md`.
+
+- The package's `postinst` applies the same host state as the source
+  installer. `install.sh` (copy/build) and `apply-state.sh` (state) are the one
+  implementation for both paths.
+- PHP-FPM is the packaged SAPI. The package enables it in Apache and disables
+  mod_php if the host had it enabled, reporting the result.
+- The package is built with nfpm, MIT-licensed build tooling. nfpm is pinned
+  and checksum-verified at build time; it is not distributed and adds no
+  runtime dependency.
+- Source installs are unchanged: `packaging/teralab/install.sh` still produces
+  the same layout and remains the upgrade path for existing checkouts.
+
 # TeraLab v1.5.8 release notes
 
 - Release date: 2026-11-21

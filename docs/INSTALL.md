@@ -14,7 +14,8 @@ the kernel remain separate components with their own licences.
 - `composer` (only when `api/vendor` is absent)
 - Go 1.27+ (only when no prebuilt agent is supplied)
 - Node 20+ and npm (to build the Vue UI; prebuilt `ui/dist` is used when present)
-- Apache 2.4 with `mod_proxy`, `mod_proxy_wstunnel`, and `mod_rewrite`
+- Apache 2.4 with `mod_proxy`, `mod_proxy_fcgi`, `mod_proxy_wstunnel`,
+  `mod_setenvif`, and `mod_rewrite`
 - Optional: `openvswitch-switch` for LACP forwarding
 - Optional: Docker Engine (`docker` CLI and daemon) for `kind: docker` nodes
 - Optional: KSM for memory deduplication (`--ksm`); needs kernel 6.4+ and
@@ -30,11 +31,75 @@ PHP upload limits must exceed your largest image. The installer writes
 drops the multipart body and the API reports that no file was received.
 - Optional: `teralab-dynamips` for the Dynamips engine
 
-## Install
+## Install from the .deb
+
+Release builds ship one Debian package for Debian 13 amd64. It contains the
+API, the built UI, the agent, the built-in templates and the user
+documentation. PHP-FPM is the packaged SAPI; the package disables mod_php if
+the host had it enabled and reports it. Composer, Go and Node are not
+needed on the target host.
 
 ```sh
-sudo apt-get install apache2 php8.4-cli php8.4-sqlite3 php8.4-mbstring \
-    php8.4-xml qemu-system-x86 qemu-utils composer rsync
+sudo apt-get install ./teralab_<version>_amd64.deb
+```
+
+`apt-get install ./file.deb` resolves the dependencies: `apache2`,
+`php8.4-fpm`, `php8.4-cli`, `php8.4-sqlite3`, `php8.4-mbstring`,
+`php8.4-xml`, `qemu-system-x86`, `qemu-utils` and `logrotate`; `vpcs` is
+recommended and `teralab-dynamips` is suggested. `php8.4-cli` provides the
+`php` binary used by the postinst checks and by `import-legacy.php`. With
+`dpkg -i` instead, install those packages first:
+
+```sh
+sudo apt-get install apache2 php8.4-fpm php8.4-cli php8.4-sqlite3 \
+    php8.4-mbstring php8.4-xml qemu-system-x86 qemu-utils logrotate
+sudo dpkg -i teralab_<version>_amd64.deb
+sudo apt-get -f install
+```
+
+The package's `postinst` then:
+
+1. checks PHP, QEMU and the `www-data` group;
+2. creates the `teralab-vm` user, the `/etc/teralab` layout and
+   `/var/lib/teralab/{labs,images,run,logs}`, and generates
+   `/etc/teralab/agent.secret` once (it is never overwritten);
+3. enables the Apache modules (`proxy`, `proxy_wstunnel`, `rewrite`,
+   `proxy_fcgi`, `setenvif`) and both the TeraLab and `php8.4-fpm`
+   configurations, and starts the agent and the lab bridge firewall units;
+4. disables mod_php (`php8.4`) if the host had it enabled and reports it;
+5. restarts `php8.4-fpm` and reloads Apache when they are active.
+
+The Apache configuration, the three PHP upload-limit drop-ins, both systemd
+units, the logrotate configuration and `/usr/share/doc/teralab/copyright` are
+dpkg conffiles, so local edits survive upgrades. The package does **not** ship
+`/etc/teralab/config.php`; create that file yourself only when you need
+overrides. `/etc/teralab/agent.secret` and `/var/lib/teralab` are operator
+state and are never shipped, replaced or deleted.
+
+Complete the first-run setup once at `/api/v2/setup`. Open `/ui/`; while no
+administrator exists, unauthenticated visitors see the login page, which links
+to the setup form. Log in afterwards.
+
+Log rotation is installed at `/etc/logrotate.d/teralab`: weekly, eight
+rotations, compressed, with `copytruncate` because the agent and the API keep
+their log files open.
+
+KSM is opt-in for package installs as well:
+
+```sh
+sudo /opt/teralab/packaging/teralab/apply-state.sh --ksm --package
+```
+
+`--package` keeps the dpkg-owned conffiles untouched; every other state step
+still runs.
+
+## Install
+
+The source installer is still supported and is the upgrade path from v1.1:
+
+```sh
+sudo apt-get install apache2 php8.4-fpm php8.4-cli php8.4-sqlite3 \
+    php8.4-mbstring php8.4-xml qemu-system-x86 qemu-utils composer rsync
 sudo packaging/teralab/install.sh
 ```
 
@@ -58,10 +123,18 @@ Options: `--root`, `--data`, `--source`, `--agent-binary`, `--no-systemd`,
 ## Apache
 
 ```sh
-sudo a2enmod proxy proxy_wstunnel rewrite
-sudo a2enconf teralab
+sudo a2enmod proxy proxy_fcgi setenvif proxy_wstunnel rewrite
+sudo a2enconf php8.4-fpm teralab
+sudo systemctl restart php8.4-fpm
 sudo systemctl reload apache2
 ```
+
+`apply-state.sh` (called by the installer and by the package's `postinst`)
+enables these and reloads Apache and PHP-FPM; the explicit `restart` above is
+only needed when you enabled FPM after it was last started. Without a PHP
+handler Apache would serve `api/public/index.php` as a file, so the script
+refuses to enable the site when neither PHP-FPM nor mod_php is available.
+`curl -i http://127.0.0.1/api/v2/health` must return JSON, not PHP source.
 
 `/ws/console`, `/ws/vnc`, and `/ws/tcp` proxy to the loopback agent gateway.
 The agent is the only privileged process; the web tier never starts QEMU.
@@ -580,8 +653,11 @@ the drop-in by hand.
 
 ```sh
 sudo packaging/teralab/install.sh --ksm                     # from a checkout
-sudo /opt/teralab/packaging/teralab/install.sh --ksm        # from the installed tree
+sudo /opt/teralab/packaging/teralab/apply-state.sh --ksm --package   # .deb install
 ```
+
+For a source install, `/opt/teralab/packaging/teralab/install.sh --ksm` also
+works from the installed tree.
 
 `--ksm` is additive and idempotent: it changes nothing for the other options,
 re-running it rewrites the same content, and a re-run without `--ksm` does not
@@ -709,13 +785,28 @@ See `docs/API.md` for the lab lifecycle endpoints.
 
 ## Uninstall
 
-Stop the unit and remove TeraLab-owned paths:
+For a `.deb` install, purge the package:
+
+```sh
+sudo apt-get purge teralab
+```
+
+Purge removes the package files, conffiles, units, the Apache configuration,
+the runtime directory and the generated KSM unit and drop-ins. It keeps
+`/var/lib/teralab` (labs, images, database) and `/etc/teralab` (including
+`agent.secret`) so a reinstall continues where you left off. Delete those two
+directories by hand only if you intend to lose the labs and the database.
+
+For a source install, stop the units and remove the TeraLab-owned paths. This
+deletes `/var/lib/teralab` (labs, images, database) and `/etc/teralab`
+(config and agent secret); back them up first if you may want them later:
 
 ```sh
 sudo systemctl disable --now teralab-agent teralab-firewall
 sudo systemctl disable --now teralab-ksm 2>/dev/null || true   # only with --ksm
 sudo rm -rf /opt/teralab /etc/teralab /var/lib/teralab
 sudo rm -f /etc/apache2/conf-available/teralab.conf \
+    /etc/apache2/conf-enabled/teralab.conf \
     /etc/systemd/system/teralab-agent.service \
     /etc/systemd/system/teralab-firewall.service \
     /etc/systemd/system/teralab-ksm.service \
