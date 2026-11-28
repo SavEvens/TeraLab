@@ -21,6 +21,7 @@ go test ./...
 |---|---|---|
 | `TERALAB_AGENT_SOCKET` | `/run/teralab/agent.sock` | Unix socket |
 | `TERALAB_AGENT_CONSOLE` | `127.0.0.1:8091` | Console WebSocket listener |
+| `TERALAB_CONSOLE_ALLOWED_ORIGINS` | — (same-origin) | Browser origins allowed on the console handshake, comma-separated `scheme://host[:port]` |
 | `TERALAB_AGENT_SECRET_FILE` | `/etc/teralab/agent.secret` | Bearer secret file |
 | `TERALAB_AGENT_SECRET` | — | Secret override (tests) |
 | `TERALAB_AGENT_ALLOWED_UIDS` | `33` (only when unset) | Allowed peer UIDs, comma-separated; present-but-empty is a configuration error |
@@ -113,7 +114,27 @@ All endpoints require the bearer secret and an allowed peer UID.
 
 The console gateway listens on loopback and bridges WebSocket binary frames to
 the QEMU serial pty (`/ws`), the loopback VNC server (`/vnc`), or an engine's
-loopback TCP console (`/tcp`). Tokens are short-lived and bound to a node.
+loopback TCP console (`/tcp`). Tokens are short-lived (60 s), bound to a node
+and, when the API supplies one, a user, and capped at 1000 pending entries
+(5 per node). Stop and wipe revoke the node's tokens.
+
+The capability travels in the WebSocket subprotocol header:
+
+```
+Sec-WebSocket-Protocol: teralab.console.<token>
+```
+
+The gateway validates the token, echoes the selected subprotocol, and rejects
+any query string on the console endpoint with 401 (including `?token=`).
+Query strings end up in proxy access logs and browser history, so they are no
+longer accepted.
+
+`Origin` is checked against `TERALAB_CONSOLE_ALLOWED_ORIGINS`. When the variable
+is unset only same-origin handshakes (Origin host equals the request `Host`)
+are accepted; a missing or unknown Origin is rejected with 403. Behind a
+reverse proxy, configure the public origin(s) explicitly, for example
+`TERALAB_CONSOLE_ALLOWED_ORIGINS=https://lab.example`. The list replaces the
+same-origin default and never accepts `*`.
 
 Node status carries `ready` next to `state`: it is true once the engine console
 can be driven (a prompt was seen on the IOL or VPCS pty, or a QEMU guest wrote

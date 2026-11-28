@@ -115,7 +115,7 @@ final class SettingsService
 
     private const MAX_DEMO_TEMPLATES = 32;
 
-    private const TEMPLATE_ID_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/';
+    private const TEMPLATE_ID_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/';
 
     private const MAX_TURNSTILE_KEY_LENGTH = 128;
 
@@ -321,7 +321,7 @@ final class SettingsService
         // An empty value means "not configured" and is how the UI clears a
         // key; it overrides the shipped default until the key is set again.
         if (!is_string($value)
-            || preg_match('/^[\x20-\x7E]{0,' . self::MAX_TURNSTILE_KEY_LENGTH . '}$/', $value) !== 1
+            || preg_match('/^[\x20-\x7E]{0,' . self::MAX_TURNSTILE_KEY_LENGTH . '}\z/', $value) !== 1
         ) {
             throw new HttpException(
                 422,

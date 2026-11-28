@@ -24,9 +24,9 @@ final class LabController
 {
     /**
      * Validate/apply carry a full YAML document in JSON; allow the 10 MB YAML
-     * cap plus JSON escaping overhead.
+     * cap plus JSON escaping overhead, but not an unbounded body.
      */
-    private const YAML_BODY_BYTES = 26214400;
+    private const YAML_BODY_BYTES = 12582912;
 
     public function __construct(
         private readonly LabRepository $labs,

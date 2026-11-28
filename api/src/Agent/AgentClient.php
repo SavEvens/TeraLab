@@ -90,9 +90,16 @@ final class AgentClient
     /**
      * @return array<string, mixed>
      */
-    public function openConsole(string $id): array
+    public function openConsole(string $id, ?string $userId = null): array
     {
-        return $this->request('POST', '/v1/console.open', ['node_id' => $id]);
+        $payload = ['node_id' => $id];
+        if ($userId !== null && $userId !== '') {
+            // The agent records the authenticated owner with the token. It is
+            // never accepted from the browser; the API supplies it here.
+            $payload['user_id'] = $userId;
+        }
+
+        return $this->request('POST', '/v1/console.open', $payload);
     }
 
     /**

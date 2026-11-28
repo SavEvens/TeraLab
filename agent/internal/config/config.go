@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/SavEvens/TeraLab/agent/internal/network"
+	"github.com/SavEvens/TeraLab/agent/internal/origin"
 )
 
 const Version = "0.1.0"
@@ -58,9 +59,13 @@ type Config struct {
 	SocketGID   int
 	SocketMode  os.FileMode
 	ConsoleAddr string
-	Secret      string
-	AllowedUIDs map[uint32]bool
-	RunDir      string
+	// ConsoleAllowedOrigins is the explicit browser-origin allowlist for the
+	// console WebSocket handshake, in scheme://host[:port] form. When empty
+	// the gateway accepts same-origin handshakes only.
+	ConsoleAllowedOrigins []string
+	Secret                string
+	AllowedUIDs           map[uint32]bool
+	RunDir                string
 	// StateDir holds the root-owned, agent-only node records used by
 	// reconciliation. It must never be writable by the engine user.
 	StateDir        string
@@ -173,6 +178,11 @@ func Load() (Config, error) {
 	}
 	cfg.Secret = secret
 
+	cfg.ConsoleAllowedOrigins, err = consoleAllowedOrigins()
+	if err != nil {
+		return cfg, err
+	}
+
 	cfg.AllowedUIDs, err = allowedAgentUIDs()
 	if err != nil {
 		return cfg, err
@@ -271,6 +281,46 @@ func allowedAgentUIDs() (map[uint32]bool, error) {
 	}
 
 	return uids, nil
+}
+
+// consoleAllowedOrigins parses TERALAB_CONSOLE_ALLOWED_ORIGINS. Each entry is
+// a browser origin (scheme://host[:port]); paths, wildcards, and userinfo are
+// rejected so a typo cannot widen the allowlist. An absent or empty variable
+// keeps the same-origin default.
+func consoleAllowedOrigins() ([]string, error) {
+	raw, present := os.LookupEnv("TERALAB_CONSOLE_ALLOWED_ORIGINS")
+	if !present || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	origins := make([]string, 0)
+	seen := map[string]bool{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		canonical, err := origin.Parse(entry)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"invalid TERALAB_CONSOLE_ALLOWED_ORIGINS entry %q: %w (want scheme://host[:port])",
+				entry,
+				err,
+			)
+		}
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		origins = append(origins, canonical)
+	}
+	if len(origins) == 0 {
+		return nil, fmt.Errorf(
+			"TERALAB_CONSOLE_ALLOWED_ORIGINS is set but lists no origins (%q)",
+			raw,
+		)
+	}
+
+	return origins, nil
 }
 
 func setVMUser(cfg *Config) {

@@ -83,8 +83,11 @@ characters, and `filter_var(..., FILTER_VALIDATE_EMAIL)` must accept it.
   Try again later.` The initial user-count 409 check runs before the budgets
   and is not charged; the transactional re-check also covers the completed
   marker.
-- Invalid username, password, or email: 422. Failed validation leaves the
-  token in place so the operator can retry.
+- Invalid username, password, or email: 422. The username is 3-32
+  characters (`[A-Za-z0-9][A-Za-z0-9_.-]{2,31}`), the password is 12-256
+  characters and must meet the password policy, and the optional email uses
+  the shared validator (at most 254 bytes). Failed validation leaves the token
+  in place so the operator can retry.
 - On success the API returns the same session shape as login (201, cookie,
   `csrf_token`, `expires_in`) and writes the `auth.setup` audit entry. It makes
   a best-effort attempt to remove the token file; setup stays disabled by the
@@ -721,6 +724,31 @@ dangling `network_id` references are cleared). The `.unl` format is unchanged.
 A demo guest additionally passes the per-lab caps described in
 [Per-lab demo limits](#per-lab-demo-limits); a violation answers `422`.
 
+### Input bounds
+
+Authored topology and metadata are bounded before any file is written or any
+input is echoed. The same caps apply to JSON create/save, YAML import/apply and
+`.unl` import; `.unl` files already on disk remain readable.
+
+| Field | Cap |
+|---|---|
+| Nodes per lab | 64 |
+| Networks per lab | 64 |
+| Interfaces per node | 16 |
+| Lab, node and network label | 128 bytes |
+| Description / body | 64 KiB each |
+| Node startup `config` | 64 KiB |
+| Tags | 20 tags × 32 bytes (longer tags are truncated, extra tags dropped) |
+| Lab, node, template and image ids | `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` |
+| Node route reference | 128 bytes, no control characters |
+| Snapshot and API-token ids | 32 lowercase hex characters |
+
+Labels, names, descriptions, bodies and configs reject C0 control characters
+(descriptions/bodies/configs allow tab, newline and carriage return) and DEL.
+A request that exceeds a byte cap answers `422`; a JSON/upload body above the
+transport limit answers `413`. A malformed route id (`{id}`, `{node}`,
+`{snapshot}`, template/image/token id) answers `422` before any lookup.
+
 `.unl` remains the only stored format. YAML is an authoring layer compiled into
 the same lab model on import and apply; see [`LAB-YAML.md`](LAB-YAML.md).
 
@@ -738,7 +766,8 @@ and the YAML `author` when present. The audit entry is `lab.import` with
 The YAML input cap and the compiled `.unl` cap are separate. The input cap is
 10 MB of YAML; the compiled lab is XML with base64 configs and the embedded
 source. A YAML under 10 MB that would serialize to a `.unl` over 10 MB is
-rejected with `422` before a lab is created.
+rejected with `422` before a lab is created. YAML nesting is capped at 32
+levels and collection aliases at 128, so anchors cannot expand without bound.
 
 `POST /api/v2/labs/validate` (editor role, CSRF) is a dry run. It compiles and
 resolves templates but writes nothing:
@@ -844,11 +873,30 @@ Every route resolves the canonical lab, requires the effective `edit` role
 (`read` for status and the lab node list), and derives the agent node id from
 the authorized lab+node pair. The client never sends an agent node id.
 
-Console responses return `kind`, `token`, `ws_path` (`/ws/console`,
-`/ws/vnc`, `/ws/tcp`), and for VNC the generated password. Node start re-checks
-the demo caps and the memory floor; stop and wipe require the same lab role but
-are never blocked by an authoring cap, so a guest can always tear down its own
-lab.
+Console responses return:
+
+```json
+{
+  "kind": "telnet",
+  "token": "<capability>",
+  "expires_in": 300,
+  "ws_path": "/ws/console",
+  "subprotocol": "teralab.console.<capability>"
+}
+```
+
+`ws_path` is never given a query string: the token must not land in access
+logs, browser history or proxy logs. Open the socket with
+`new WebSocket(ws_path, [subprotocol])`; the agent reads the token from
+`Sec-WebSocket-Protocol`. VNC responses also carry `password`; a TCP console
+response carries `port` and uses `/ws/tcp`. The token is a short-lived
+capability and is never logged by the API.
+
+Query-token transport is **deprecated** and will be removed after the client
+migration window. The API no longer emits `?token=…` in `ws_path`; do not
+construct one. Node start re-checks the demo caps and the memory floor; stop and
+wipe require the same lab role but are never blocked by an authoring cap, so a
+guest can always tear down its own lab.
 
 The former raw `/api/v2/nodes/start|stop|wipe|status|console` routes were
 removed. Clients that built `<lab-id>-<node-id>` themselves must switch to the
@@ -888,7 +936,9 @@ lab-scoped routes above; the server derives that id.
   an allowlisted built-in template or replacing a shared image.
 - Uploads larger than the PHP `post_max_size` return 413 with an actionable
   message; the installer raises the PHP limits to 4G.
-- `GET /api/v2/templates` lists built-in and custom YAML templates.
+- `GET /api/v2/templates` lists built-in and custom YAML templates. Template
+ids, like lab and image ids, must match
+`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`; other shapes answer `422`.
 - `GET /api/v2/templates/{id}` returns a template and its YAML.
 - `GET /api/v2/templates/{id}/export` downloads a template YAML.
 - `POST /api/v2/templates/import` imports YAML (multipart `file`).
@@ -916,7 +966,10 @@ lab-scoped routes above; the server derives that id.
   `config_path`); unknown keys are rejected, and `kind: docker` requires
   `options.docker.image`. `daemons` is a list of at most 12 unique names from
   a fixed FRR allowlist; `config_path` is an absolute container path
-  (`^/[A-Za-z0-9_./-]{1,200}$`) with no `..` segment.
+  (`^/[A-Za-z0-9_./-]{1,200}$`) with no `..` segment, and it may not target
+  `/proc`, `/sys` or `/dev`. Template YAML is capped at 256 KiB, with at most
+  64 `options` keys and 16 `defaults` keys, 16 nesting levels and 8 collection
+  aliases.
 - The same endpoints validate `options.qemu_disks` for every template kind: a
   list of at most three `{slot, …}` entries with unique slots `virtiob`,
   `virtioc`, `virtiod` (the primary disk stays the node image, `virtioa`), each

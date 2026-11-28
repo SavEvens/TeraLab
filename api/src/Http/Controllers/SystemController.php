@@ -17,6 +17,7 @@ use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
 use TeraLab\Api\Http\RequestIp;
+use TeraLab\Api\Http\RouteId;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\System\BackupService;
 use TeraLab\Api\System\DemoPolicy;
@@ -248,7 +249,7 @@ final class SystemController
     public function revokeToken(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->tokens->revoke((string) $user['id'], $args['id'] ?? '');
+        $this->tokens->revoke((string) $user['id'], RouteId::token($args['id'] ?? ''));
         $this->audit->log((string) $user['id'], $this->address($request), 'auth.token.revoke', (string) ($args['id'] ?? ''), 'success');
 
         return Json::response($response, ['status' => 'success']);

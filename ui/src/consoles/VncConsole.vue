@@ -14,11 +14,12 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { wsUrl } from '../api'
+import { wsUrl, consoleSubprotocol } from '../api'
 import { notify } from '../stores/toasts'
 
 const props = defineProps({
   wsPath: { type: String, required: true },
+  token: { type: String, default: '' },
   password: { type: String, default: '' }
 })
 const host = ref(null)
@@ -46,28 +47,47 @@ async function connect() {
   clearTimeout(reconnectTimer)
   rfb?.disconnect()
   error.value = ''
+  const protocol = consoleSubprotocol(props.token)
+  if (!protocol) {
+    status.value = 'token unavailable'
+    error.value = 'Console token unavailable. Close and reopen the console.'
+    notify('error', 'Console token unavailable. Close and reopen the console.')
+    return
+  }
   status.value = 'connecting'
+  let opened = false
   try {
     const { default: RFB } = await import('@novnc/novnc')
+    if (disposed) return
+    // noVNC opens the socket itself; wsProtocols is forwarded to the
+    // WebSocket constructor so the capability never enters the URL.
     rfb = new RFB(host.value, wsUrl(props.wsPath), {
-      credentials: { password: props.password }
+      credentials: { password: props.password },
+      wsProtocols: [protocol]
     })
     rfb.scaleViewport = true
     rfb.background = '#050810'
     rfb.addEventListener('connect', () => {
+      opened = true
       attempts = 0
       status.value = 'connected'
       notify('info', 'VNC connected')
     })
     rfb.addEventListener('disconnect', (event) => {
       if (disposed) return
+      if (!opened) {
+        status.value = 'handshake rejected'
+        error.value = 'VNC handshake rejected: the token expired or the origin is not allowed. Close and reopen the console.'
+        notify('error', 'VNC handshake rejected; close and reopen the console.')
+        return
+      }
       status.value = 'disconnected'
       if (!event.detail.clean) error.value = 'VNC disconnected'
       scheduleReconnect()
     })
     rfb.addEventListener('credentialsrequired', () => rfb.sendCredentials({ password: props.password }))
-  } catch (exception) {
-    error.value = exception.message
+  } catch {
+    error.value = 'VNC failed to start'
     status.value = 'error'
     notify('error', 'VNC failed to start')
     scheduleReconnect()

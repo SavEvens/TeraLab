@@ -27,6 +27,8 @@ final class NodeControllerTest extends TestCase
 
     private string $root;
 
+    private string $adminId = '';
+
     /** @var list<array{method: string, path: string, payload: array<string, mixed>}> */
     private array $calls = [];
 
@@ -70,11 +72,17 @@ final class NodeControllerTest extends TestCase
         $body = $this->json($response)['data'];
         self::assertSame('telnet', $body['kind']);
         self::assertSame('token1', $body['token']);
-        self::assertStringStartsWith('/ws/console?token=', $body['ws_path']);
+        self::assertSame('/ws/console', $body['ws_path']);
+        self::assertSame('teralab.console.token1', $body['subprotocol']);
+        self::assertStringNotContainsString('token', $body['ws_path']);
+        self::assertStringNotContainsString('?', $body['ws_path']);
 
         self::assertCount(1, $this->calls);
         self::assertSame('/v1/console.open', $this->calls[0]['path']);
-        self::assertSame(['node_id' => $lab['id'] . '-1'], $this->calls[0]['payload']);
+        self::assertSame(
+            ['node_id' => $lab['id'] . '-1', 'user_id' => $this->adminId],
+            $this->calls[0]['payload'],
+        );
     }
 
     public function testConsoleDeniesAnotherUsersLabAndNeverCallsTheAgent(): void
@@ -133,7 +141,9 @@ final class NodeControllerTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         $body = $this->json($response)['data'];
         self::assertSame('vnc', $body['kind']);
-        self::assertSame('/ws/vnc?token=token1', $body['ws_path']);
+        self::assertSame('/ws/vnc', $body['ws_path']);
+        self::assertSame('teralab.console.token1', $body['subprotocol']);
+        self::assertStringNotContainsString('token', $body['ws_path']);
         self::assertSame('vncpass', $body['password']);
         self::assertSame('token1', $body['token']);
     }
@@ -155,7 +165,9 @@ final class NodeControllerTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         $body = $this->json($response)['data'];
-        self::assertSame('/ws/tcp?token=token1', $body['ws_path']);
+        self::assertSame('/ws/tcp', $body['ws_path']);
+        self::assertSame('teralab.console.token1', $body['subprotocol']);
+        self::assertStringNotContainsString('token', $body['ws_path']);
         self::assertSame(39083, $body['port']);
     }
 
@@ -331,8 +343,10 @@ PHP;
             'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
+        $setupBody = $this->json($setup);
+        $this->adminId = (string) $setupBody['user']['id'];
         $cookie = $this->cookie($setup);
-        $csrf = (string) $this->json($setup)['csrf_token'];
+        $csrf = (string) $setupBody['csrf_token'];
 
         $created = $this->request($app, 'POST', '/api/v2/labs', [
             'name' => 'Console Lab',

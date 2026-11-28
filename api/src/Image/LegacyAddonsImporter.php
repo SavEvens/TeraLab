@@ -673,7 +673,7 @@ final class LegacyAddonsImporter
     private function templateExists(string $id): bool
     {
         if ($this->templates === null) {
-            return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) === 1;
+            return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/', $id) === 1;
         }
         try {
             return $this->templates->find($id) !== null;

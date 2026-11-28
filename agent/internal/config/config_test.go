@@ -311,6 +311,61 @@ func TestLoadRejectsInvalidImageGID(t *testing.T) {
 	}
 }
 
+func TestLoadParsesConsoleAllowedOrigins(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	t.Setenv("TERALAB_CONSOLE_ALLOWED_ORIGINS", " https://lab.example , HTTPS://Alt.Example:8443/,https://lab.example:443 ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	want := []string{"https://lab.example", "https://alt.example:8443"}
+	if len(cfg.ConsoleAllowedOrigins) != len(want) {
+		t.Fatalf("unexpected origins: %#v", cfg.ConsoleAllowedOrigins)
+	}
+	for index, entry := range want {
+		if cfg.ConsoleAllowedOrigins[index] != entry {
+			t.Fatalf("origin %d: want %q, got %q", index, entry, cfg.ConsoleAllowedOrigins[index])
+		}
+	}
+}
+
+func TestLoadDefaultsConsoleOriginsToSameOrigin(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	unsetEnv(t, "TERALAB_CONSOLE_ALLOWED_ORIGINS")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if len(cfg.ConsoleAllowedOrigins) != 0 {
+		t.Fatalf("unset origins must keep the same-origin default, got %#v", cfg.ConsoleAllowedOrigins)
+	}
+}
+
+func TestLoadRejectsUnsafeConsoleOrigins(t *testing.T) {
+	cases := []string{
+		"*",
+		"lab.example",
+		"ftp://lab.example",
+		"https://user@lab.example",
+		"https://lab.example/path",
+		"https://lab.example?query=1",
+		" , ",
+		"https://lab.example,*",
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+			t.Setenv("TERALAB_CONSOLE_ALLOWED_ORIGINS", raw)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), "TERALAB_CONSOLE_ALLOWED_ORIGINS") {
+				t.Fatalf("expected %q to be rejected, got %v", raw, err)
+			}
+		})
+	}
+}
+
 func TestLoadDockerPullAndQEMUSandboxFlags(t *testing.T) {
 	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
 	cfg, err := Load()

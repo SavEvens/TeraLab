@@ -230,10 +230,15 @@ try {
   const vncError = await page.locator('.vnc-wrap .error').count()
   await page.screenshot({ path: `${outDir}/apache-vnc.png`, fullPage: true })
 
-  // Telnet WebSocket through Apache /ws/console on a real VPCS node.
+  // Telnet WebSocket through Apache /ws/console on a real VPCS node. The
+  // capability travels in Sec-WebSocket-Protocol, never in the URL.
   await call('POST', `/labs/${consoleLab.id}/start`)
   const consoleInfo = (await call('POST', `/labs/${consoleLab.id}/nodes/1/console`)).data
-  const ws = new WebSocket(`${base.replace(/^http/, 'ws')}${consoleInfo.ws_path}`)
+  if (!consoleInfo.token) throw new Error('console response is missing the capability token')
+  const consoleWs = new URL(consoleInfo.ws_path, base)
+  consoleWs.searchParams.delete('token')
+  consoleWs.protocol = consoleWs.protocol === 'https:' ? 'wss:' : 'ws:'
+  const ws = new WebSocket(consoleWs, [`teralab.console.${consoleInfo.token}`])
   let consoleText = ''
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('telnet console timeout')), 15000)

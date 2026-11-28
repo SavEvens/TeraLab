@@ -6,6 +6,7 @@ package console
 import (
 	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SavEvens/TeraLab/agent/internal/token"
 	"github.com/gorilla/websocket"
 )
 
@@ -175,7 +177,7 @@ func TestConsumeResizeFrameOnlySwallowsControlFrames(t *testing.T) {
 }
 
 func TestSerialBridgeConsumesResizeFrames(t *testing.T) {
-	gateway := New("127.0.0.1:0", nil, nil)
+	gateway := New("127.0.0.1:0", nil, nil, Options{})
 	stream := newFakeStream()
 	defer stream.Close()
 	target := &recordingResizeTarget{}
@@ -207,7 +209,7 @@ func TestSerialBridgeConsumesResizeFrames(t *testing.T) {
 }
 
 func TestBridgeForwardsFramesWithoutInterceptor(t *testing.T) {
-	gateway := New("127.0.0.1:0", nil, nil)
+	gateway := New("127.0.0.1:0", nil, nil, Options{})
 	stream := newFakeStream()
 	defer stream.Close()
 
@@ -237,7 +239,7 @@ func TestBridgeForwardsFramesWithoutInterceptor(t *testing.T) {
 // bridge: an engine frame reaches the client as a binary message, a client
 // frame reaches the engine stream, and closing the client ends the bridge.
 func TestBridgeRoundTripsMessages(t *testing.T) {
-	gateway := New("127.0.0.1:0", nil, nil)
+	gateway := New("127.0.0.1:0", nil, nil, Options{})
 	stream := newFakeStream()
 	defer stream.Close()
 
@@ -278,6 +280,267 @@ func TestBridgeRoundTripsMessages(t *testing.T) {
 	case <-bridged:
 	case <-time.After(5 * time.Second):
 		t.Fatal("bridge did not return after the client closed")
+	}
+}
+
+func TestConsoleAcceptsSubprotocolToken(t *testing.T) {
+	store := token.New()
+	value, err := store.Issue("node-1", "user-1", time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	gateway := New("127.0.0.1:0", nil, store, Options{})
+	stream := newFakeStream()
+	defer stream.Close()
+	server := newConsoleTestServer(t, gateway, stream)
+
+	protocol := token.SubprotocolPrefix + value
+	connection, _, err := tryDial(server, "/ws", nil, []string{protocol})
+	if err != nil {
+		t.Fatalf("dial with subprotocol token: %v", err)
+	}
+	defer connection.Close()
+
+	if got := connection.Subprotocol(); got != protocol {
+		t.Fatalf("negotiated subprotocol = %q, want %q", got, protocol)
+	}
+	entry, ok := store.Resolve(value)
+	if !ok || entry.NodeID != "node-1" || entry.UserID != "user-1" {
+		t.Fatalf("token was not bound to the node/user: %#v %v", entry, ok)
+	}
+}
+
+// A console tab reconnects with the same capability while it is still valid.
+// Tokens are intentionally not consumed on resolve; pinning that keeps the
+// existing reconnect behaviour working within the TTL.
+func TestConsoleTokenAllowsReconnectWithinTTL(t *testing.T) {
+	store := token.New()
+	value, err := store.Issue("node-1", "", time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	gateway := New("127.0.0.1:0", nil, store, Options{})
+	stream := newFakeStream()
+	defer stream.Close()
+	server := newConsoleTestServer(t, gateway, stream)
+	protocol := token.SubprotocolPrefix + value
+
+	for attempt := 0; attempt < 2; attempt++ {
+		connection, _, dialErr := tryDial(server, "/ws", nil, []string{protocol})
+		if dialErr != nil {
+			t.Fatalf("reconnect %d: %v", attempt, dialErr)
+		}
+		_ = connection.Close()
+	}
+}
+
+func TestConsoleRejectsTokenInQuery(t *testing.T) {
+	store := token.New()
+	value, err := store.Issue("node-1", "", time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	var logs bytes.Buffer
+	gateway := New("127.0.0.1:0", nil, store, Options{
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	stream := newFakeStream()
+	defer stream.Close()
+	server := newConsoleTestServer(t, gateway, stream)
+
+	_, response, dialErr := tryDial(server, "/ws?token="+value, nil, nil)
+	if status := handshakeStatus(t, response, dialErr); status != http.StatusUnauthorized {
+		t.Fatalf("query-token handshake status = %d, want %d", status, http.StatusUnauthorized)
+	}
+
+	recorded := logs.String()
+	if strings.Contains(recorded, value) {
+		t.Fatalf("console token leaked into the agent log:\n%s", recorded)
+	}
+	if strings.Contains(recorded, "?") || strings.Contains(recorded, "token=") {
+		t.Fatalf("request query leaked into the agent log:\n%s", recorded)
+	}
+	if !strings.Contains(recorded, "reason=query") {
+		t.Fatalf("expected the rejection reason in the log:\n%s", recorded)
+	}
+	if !strings.Contains(recorded, "path=/ws") {
+		t.Fatalf("expected the request path (and no query) in the log:\n%s", recorded)
+	}
+}
+
+func TestConsoleSubprotocolTokenNotLogged(t *testing.T) {
+	store := token.New()
+	value, err := store.Issue("node-1", "user-1", time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	var logs bytes.Buffer
+	gateway := New("127.0.0.1:0", nil, store, Options{
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	stream := newFakeStream()
+	defer stream.Close()
+	server := newConsoleTestServer(t, gateway, stream)
+
+	connection, _, err := tryDial(server, "/ws", nil, []string{token.SubprotocolPrefix + value})
+	if err != nil {
+		t.Fatalf("dial with subprotocol token: %v", err)
+	}
+	defer connection.Close()
+
+	recorded := logs.String()
+	if strings.Contains(recorded, value) {
+		t.Fatalf("console token leaked into the agent log:\n%s", recorded)
+	}
+	if !strings.Contains(recorded, "console token accepted") {
+		t.Fatalf("expected an acceptance log line:\n%s", recorded)
+	}
+	if !strings.Contains(recorded, "node=node-1") || !strings.Contains(recorded, "user=user-1") {
+		t.Fatalf("acceptance log should identify node and user:\n%s", recorded)
+	}
+}
+
+func TestConsoleRejectsMissingOrUnknownOrigin(t *testing.T) {
+	store := token.New()
+	value, err := store.Issue("node-1", "", time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	gateway := New("127.0.0.1:0", nil, store, Options{})
+	stream := newFakeStream()
+	defer stream.Close()
+	server := newConsoleTestServer(t, gateway, stream)
+	protocol := token.SubprotocolPrefix + value
+
+	tests := []struct {
+		name   string
+		origin string
+		want   int
+	}{
+		{name: "missing origin", origin: "", want: http.StatusForbidden},
+		{name: "unknown origin", origin: "https://evil.example", want: http.StatusForbidden},
+		{name: "origin with path", origin: "https://evil.example/path", want: http.StatusForbidden},
+		{name: "same origin", origin: server.URL, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			headers := http.Header{}
+			if test.origin != "" {
+				headers.Set("Origin", test.origin)
+			} else {
+				// An explicit empty Origin value is what a non-browser
+				// client sends when it omits the header; tryDial only
+				// defaults when the key is absent.
+				headers["Origin"] = []string{""}
+			}
+			connection, response, dialErr := tryDial(server, "/ws", headers, []string{protocol})
+			if test.want == 0 {
+				if dialErr != nil {
+					t.Fatalf("expected same-origin handshake to succeed: %v", dialErr)
+				}
+				defer connection.Close()
+				return
+			}
+			if status := handshakeStatus(t, response, dialErr); status != test.want {
+				t.Fatalf("handshake status = %d, want %d", status, test.want)
+			}
+		})
+	}
+}
+
+func TestConsoleAcceptsConfiguredAllowlist(t *testing.T) {
+	store := token.New()
+	value, err := store.Issue("node-1", "", time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	gateway := New("127.0.0.1:0", nil, store, Options{
+		AllowedOrigins: []string{"https://lab.example", "https://alt.example:8443"},
+	})
+	stream := newFakeStream()
+	defer stream.Close()
+	server := newConsoleTestServer(t, gateway, stream)
+	protocol := token.SubprotocolPrefix + value
+
+	tests := []struct {
+		name   string
+		origin string
+		want   int
+	}{
+		{name: "first allowlist entry", origin: "https://lab.example", want: 0},
+		{name: "second allowlist entry", origin: "https://alt.example:8443", want: 0},
+		{name: "default port canonical", origin: "https://lab.example:443", want: 0},
+		{name: "unknown origin", origin: "https://evil.example", want: http.StatusForbidden},
+		{name: "same-origin is replaced by the list", origin: server.URL, want: http.StatusForbidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			headers := http.Header{"Origin": []string{test.origin}}
+			connection, response, dialErr := tryDial(server, "/ws", headers, []string{protocol})
+			if test.want == 0 {
+				if dialErr != nil {
+					t.Fatalf("expected allowlisted handshake to succeed: %v", dialErr)
+				}
+				defer connection.Close()
+				return
+			}
+			if status := handshakeStatus(t, response, dialErr); status != test.want {
+				t.Fatalf("handshake status = %d, want %d", status, test.want)
+			}
+		})
+	}
+}
+
+func TestConsoleRejectsExpiredToken(t *testing.T) {
+	store := token.New()
+	value, err := store.Issue("node-1", "", time.Millisecond)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	gateway := New("127.0.0.1:0", nil, store, Options{})
+	stream := newFakeStream()
+	defer stream.Close()
+	server := newConsoleTestServer(t, gateway, stream)
+
+	_, response, dialErr := tryDial(server, "/ws", nil, []string{token.SubprotocolPrefix + value})
+	if status := handshakeStatus(t, response, dialErr); status != http.StatusUnauthorized {
+		t.Fatalf("expired-token handshake status = %d, want %d", status, http.StatusUnauthorized)
+	}
+}
+
+func TestConsoleRejectsMalformedOrAmbiguousSubprotocol(t *testing.T) {
+	store := token.New()
+	value, err := store.Issue("node-1", "", time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	gateway := New("127.0.0.1:0", nil, store, Options{})
+	stream := newFakeStream()
+	defer stream.Close()
+	server := newConsoleTestServer(t, gateway, stream)
+
+	tests := []struct {
+		name      string
+		protocols []string
+	}{
+		{name: "missing", protocols: nil},
+		{name: "unrelated", protocols: []string{"chat"}},
+		{name: "empty token", protocols: []string{token.SubprotocolPrefix}},
+		{name: "short token", protocols: []string{token.SubprotocolPrefix + "abc"}},
+		{name: "non-hex token", protocols: []string{token.SubprotocolPrefix + strings.Repeat("z", token.EncodedLength)}},
+		{name: "two tokens", protocols: []string{
+			token.SubprotocolPrefix + value,
+			token.SubprotocolPrefix + strings.Repeat("a", token.EncodedLength),
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, response, dialErr := tryDial(server, "/ws", nil, test.protocols)
+			if status := handshakeStatus(t, response, dialErr); status != http.StatusUnauthorized {
+				t.Fatalf("handshake status = %d, want %d", status, http.StatusUnauthorized)
+			}
+		})
 	}
 }
 
@@ -323,13 +586,62 @@ func (s *fakeStream) writtenBytes() []byte {
 func dialTestWebSocket(t *testing.T, server *httptest.Server) *websocket.Conn {
 	t.Helper()
 
-	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	connection, _, err := websocket.DefaultDialer.Dial(url, nil)
+	connection, _, err := tryDial(server, "/", nil, nil)
 	if err != nil {
 		t.Fatalf("dial test websocket: %v", err)
 	}
 
 	return connection
+}
+
+// tryDial opens a WebSocket to server with a same-origin Origin header by
+// default. Tests that exercise the origin policy pass an explicit header.
+func tryDial(
+	server *httptest.Server,
+	path string,
+	headers http.Header,
+	protocols []string,
+) (*websocket.Conn, *http.Response, error) {
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + path
+	requestHeaders := http.Header{}
+	for key, values := range headers {
+		requestHeaders[key] = values
+	}
+	if _, present := requestHeaders["Origin"]; !present {
+		requestHeaders.Set("Origin", server.URL)
+	}
+	dialer := *websocket.DefaultDialer
+	dialer.Subprotocols = protocols
+
+	return dialer.Dial(url, requestHeaders)
+}
+
+func newConsoleTestServer(t *testing.T, gateway *Gateway, stream io.ReadWriteCloser) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, protocol, ok := gateway.authorizeConsole(writer, request)
+		if !ok {
+			return
+		}
+		gateway.bridgeProtocol(writer, request, stream, nil, protocol)
+	}))
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+func handshakeStatus(t *testing.T, response *http.Response, err error) int {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected the handshake to fail")
+	}
+	if response == nil {
+		t.Fatalf("handshake failed without an HTTP response: %v", err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+
+	return response.StatusCode
 }
 
 func writeTestFrame(t *testing.T, connection *websocket.Conn, messageType int, payload []byte) {

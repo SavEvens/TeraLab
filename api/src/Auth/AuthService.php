@@ -53,7 +53,7 @@ final class AuthService
     {
         $email = EmailValidator::validate($email);
 
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$/', $username) !== 1) {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}\z/', $username) !== 1) {
             throw new HttpException(422, 'Invalid username.');
         }
 
