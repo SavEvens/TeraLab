@@ -94,7 +94,7 @@ func TestIOLPortByteMatchesKeepaliveEncoding(t *testing.T) {
 
 func TestIOLL1ResponderEchoesLinkedInterface(t *testing.T) {
 	directory := t.TempDir()
-	responder, err := startIOLL1WithInterval(directory, testL1AppID, testL1PeerID, []bool{true, false}, 0, time.Hour)
+	responder, err := startIOLL1WithInterval(directory, testL1AppID, testL1PeerID, []bool{true, false}, labIdentity{}, time.Hour)
 	if err != nil {
 		t.Fatalf("start responder: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestIOLL1ResponderEchoesLinkedInterface(t *testing.T) {
 
 func TestIOLL1ResponderIgnoresUnlinkedInterface(t *testing.T) {
 	directory := t.TempDir()
-	responder, err := startIOLL1WithInterval(directory, testL1AppID, testL1PeerID, []bool{false, true}, 0, time.Hour)
+	responder, err := startIOLL1WithInterval(directory, testL1AppID, testL1PeerID, []bool{false, true}, labIdentity{}, time.Hour)
 	if err != nil {
 		t.Fatalf("start responder: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestIOLL1ResponderIgnoresUnlinkedInterface(t *testing.T) {
 
 func TestIOLL1ResponderIgnoresInvalidMessages(t *testing.T) {
 	directory := t.TempDir()
-	responder, err := startIOLL1WithInterval(directory, testL1AppID, testL1PeerID, []bool{true, true}, 0, time.Hour)
+	responder, err := startIOLL1WithInterval(directory, testL1AppID, testL1PeerID, []bool{true, true}, labIdentity{}, time.Hour)
 	if err != nil {
 		t.Fatalf("start responder: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestIOLL1ResponderIgnoresInvalidMessages(t *testing.T) {
 func TestIOLL1ResponderSendsKeepalivesForLinkedPorts(t *testing.T) {
 	directory := t.TempDir()
 	linked := []bool{true, false, true}
-	responder, err := startIOLL1WithInterval(directory, testL1AppID, testL1PeerID, linked, 0, 20*time.Millisecond)
+	responder, err := startIOLL1WithInterval(directory, testL1AppID, testL1PeerID, linked, labIdentity{}, 20*time.Millisecond)
 	if err != nil {
 		t.Fatalf("start responder: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestIOLL1ResponderRemovesStaleSocketsAndCloses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	responder, err := startIOLL1In(directory, testL1AppID, testL1PeerID, []bool{true}, 0)
+	responder, err := startIOLL1In(directory, testL1AppID, testL1PeerID, []bool{true}, labIdentity{})
 	if err != nil {
 		t.Fatalf("start responder: %v", err)
 	}

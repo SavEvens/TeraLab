@@ -18,12 +18,23 @@ Environment=TERALAB_AGENT_SECRET_FILE=/etc/teralab/agent.secret
 Environment=TERALAB_AGENT_ALLOWED_UIDS=33
 Environment=TERALAB_AGENT_SOCKET_GROUP=www-data
 Environment=TERALAB_RUN_DIR=/var/lib/teralab/run
+Environment=TERALAB_STATE_DIR=/var/lib/teralab/state
 Environment=TERALAB_IMAGES_DIR=/var/lib/teralab/images
 Environment=TERALAB_IMAGE_EXTRA_ROOTS=/opt/unetlab/addons
 Environment=TERALAB_QEMU=/usr/bin/qemu-system-x86_64
 Environment=TERALAB_QEMU_IMG=/usr/bin/qemu-img
 Environment=TERALAB_VM_USER=teralab-vm
+# Per-lab numeric identities. The agent allocates uid=gid=LAB_UID_FIRST+slot
+# per lab and persists the map in StateDir/uidmap.json (0600, flock). Set
+# TERALAB_PER_LAB_UID=0 to fall back to TERALAB_VM_USER for rollback.
+Environment=TERALAB_PER_LAB_UID=1
+Environment=TERALAB_LAB_UID_FIRST=200000
+Environment=TERALAB_LAB_UID_SLOTS=64
+# Optional numeric gid of the shared image store (0 = no supplementary gid).
+Environment=TERALAB_IMAGE_GID=0
 Environment=TERALAB_NETWORK_BACKEND=auto
+Environment=TERALAB_QEMU_SANDBOX=1
+Environment=TERALAB_DISABLE_DOCKER_PULL=0
 StandardOutput=append:/var/lib/teralab/logs/agent.log
 StandardError=append:/var/lib/teralab/logs/agent.log
 RuntimeDirectory=teralab

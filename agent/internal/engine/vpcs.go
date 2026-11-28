@@ -42,7 +42,7 @@ func startUDPTapRelay(tap string, listenPort, targetPort int) (*udpTapRelay, err
 	if err != nil {
 		return nil, fmt.Errorf("bind vpcs relay: %w", err)
 	}
-	tapFile, err := openTap(tap)
+	tapFile, err := openTapFile(tap)
 	if err != nil {
 		_ = udp.Close()
 		return nil, err
@@ -102,6 +102,10 @@ func openTap(name string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 
+// openTapFile is replaceable in tests so tap relays can be exercised without
+// /dev/net/tun or root.
+var openTapFile = openTap
+
 func freeUDPPortPair() (int, int, error) {
 	first, err := freeUDPPort()
 	if err != nil {
@@ -141,10 +145,14 @@ func (m *Manager) startVPCS(spec Spec, runDir string) (NodeInfo, error) {
 	if _, err := os.Stat(m.cfg.VPCSBinary); err != nil {
 		return NodeInfo{}, fmt.Errorf("%w: vpcs binary not found at %s", ErrEngineUnavailable, m.cfg.VPCSBinary)
 	}
+	identity, err := m.labIdentityFor(spec)
+	if err != nil {
+		return NodeInfo{}, err
+	}
 
 	tap := spec.TapName(0)
 	bridge := spec.Networks[0]
-	if err := m.net.CreateTap(tap, bridge); err != nil {
+	if err := m.createLabTap(spec, identity, tap, bridge); err != nil {
 		return NodeInfo{}, err
 	}
 
@@ -183,17 +191,25 @@ func (m *Manager) startVPCS(spec Spec, runDir string) (NodeInfo, error) {
 		"-m", fmt.Sprint(vpcsMACOffset(spec)),
 	)
 	command.Dir = runDir
-	command.Env = []string{
+	command.Env = engineEnvironment([]string{
 		"PATH=/usr/local/bin:/usr/bin:/bin",
-		"HOME=" + runDir,
+		"HOME=" + m.engineHome(spec, runDir),
 		"TERM=vt100",
-	}
+	}, m.privateTmpDir(spec))
 	command.Stdin = tty
 	command.Stdout = tty
 	command.Stderr = logFile
-	m.limitProcess(command)
+	identity.apply(command)
+	if err := m.ownLabRunTree(spec, identity); err != nil {
+		_ = logFile.Close()
+		_ = ptmx.Close()
+		_ = tty.Close()
+		_ = relay.Close()
+		m.cleanupTaps([]string{tap})
+		return NodeInfo{}, err
+	}
 
-	if err := command.Start(); err != nil {
+	if err := engineSpawn(command); err != nil {
 		_ = logFile.Close()
 		_ = ptmx.Close()
 		_ = tty.Close()
@@ -222,6 +238,8 @@ func (m *Manager) startVPCS(spec Spec, runDir string) (NodeInfo, error) {
 		RunDir:      runDir,
 		Taps:        []string{tap},
 		CgroupPath:  cgroupPath,
+		LabUID:      identity.UID,
+		LabGID:      identity.GID,
 		State:       "running",
 		Started:     time.Now(),
 		Done:        make(chan struct{}),

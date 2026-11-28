@@ -34,7 +34,7 @@ const (
 
 // iolL1Directory is the directory IOL uses for layer-1 keepalive sockets.
 func iolL1Directory(uid int) string {
-	return filepath.Join("/tmp", fmt.Sprintf("netl1%d", uid))
+	return filepath.Join(iolSocketRoot, fmt.Sprintf("netl1%d", uid))
 }
 
 // iolL1Path is one instance endpoint on the layer-1 channel. The file name is
@@ -105,27 +105,26 @@ type iolL1Responder struct {
 // startIOLL1 prepares the per-node endpoints. It removes a stale endpoint for
 // both sides: a crashed run (or an internal IOS restart) can leave the
 // instance's socket behind, which would make IOL's bind fail silently.
-func startIOLL1(appID, peerID, uid int, linked []bool) (*iolL1Responder, error) {
+func startIOLL1(appID, peerID int, identity labIdentity, linked []bool) (*iolL1Responder, error) {
+	uid := int(identity.UID)
 	directory := iolL1Directory(uid)
-	if err := os.MkdirAll(directory, 0o770); err != nil {
-		return nil, fmt.Errorf("create iol l1 keepalive directory: %w", err)
-	}
-	if uid > 0 {
-		_ = os.Chown(directory, uid, uid)
+	if err := prepareIOSocketDir(directory, iolL1Directory(uid), identity); err != nil {
+		return nil, err
 	}
 
-	return startIOLL1In(directory, appID, peerID, linked, uid)
+	return startIOLL1In(directory, appID, peerID, linked, identity)
 }
 
 func iolL1PathIn(directory string, instance int) string {
 	return filepath.Join(directory, fmt.Sprintf("L1%d", instance))
 }
 
-func startIOLL1In(directory string, appID, peerID int, linked []bool, uid int) (*iolL1Responder, error) {
-	return startIOLL1WithInterval(directory, appID, peerID, linked, uid, iouL1Interval)
+func startIOLL1In(directory string, appID, peerID int, linked []bool, identity labIdentity) (*iolL1Responder, error) {
+	return startIOLL1WithInterval(directory, appID, peerID, linked, identity, iouL1Interval)
 }
 
-func startIOLL1WithInterval(directory string, appID, peerID int, linked []bool, uid int, interval time.Duration) (*iolL1Responder, error) {
+func startIOLL1WithInterval(directory string, appID, peerID int, linked []bool, identity labIdentity, interval time.Duration) (*iolL1Responder, error) {
+	uid := int(identity.UID)
 	// IOL binds L<appID>; a stale file from a crashed run (or an internal IOS
 	// restart) would make that bind fail silently.
 	_ = os.Remove(iolL1PathIn(directory, appID))
@@ -137,9 +136,11 @@ func startIOLL1WithInterval(directory string, appID, peerID int, linked []bool, 
 	if err != nil {
 		return nil, fmt.Errorf("bind iol l1 keepalive socket: %w", err)
 	}
-	_ = os.Chmod(local, 0o660)
-	if uid > 0 {
-		_ = os.Chown(local, uid, uid)
+	if err := secureIOLSocketFile(local, uid, int(identity.GID)); err != nil {
+		_ = conn.Close()
+		_ = os.Remove(local)
+
+		return nil, err
 	}
 
 	responder := &iolL1Responder{
@@ -240,7 +241,7 @@ func (r *iolL1Responder) Close() error {
 // IOL prints the usage before loading a licence, so this is cheap. The probe
 // runs with the engine user's privileges: the image is user-supplied and must
 // never execute as root.
-func (m *Manager) iolImageSupportsL1(image string) bool {
+func (m *Manager) iolImageSupportsL1(identity labIdentity, image string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), iouL1ProbeTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, image, "-h")
@@ -249,7 +250,7 @@ func (m *Manager) iolImageSupportsL1(image string) bool {
 		"LD_LIBRARY_PATH=" + filepath.Dir(image),
 		"TERM=dumb",
 	}
-	m.limitProcess(command)
+	identity.apply(command)
 	output, _ := command.CombinedOutput()
 
 	return iolL1Advertised(string(output))

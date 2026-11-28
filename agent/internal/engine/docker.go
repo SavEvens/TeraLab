@@ -390,7 +390,10 @@ func (m *Manager) ensureDockerImage(spec Spec) error {
 	if inspectErr == nil {
 		return nil
 	}
-	if !spec.Docker.PullEnabled() {
+	// The template's own pull flag and the host profile must both allow a
+	// pull. The demo profile disables it so a guest-triggered start can never
+	// reach a registry; operators pre-pull the allowlisted images.
+	if m.cfg.DisableDockerPull || !spec.Docker.PullEnabled() {
 		return fmt.Errorf(
 			"docker image %s is not available locally; pull it with docker pull %s",
 			spec.Image,
@@ -540,6 +543,13 @@ func (m *Manager) startDocker(spec Spec, runDir string) (NodeInfo, error) {
 	if m.docker == nil || m.docker.binary == "" {
 		return NodeInfo{}, fmt.Errorf("%w: docker binary is not configured", ErrEngineUnavailable)
 	}
+	// Docker containers are daemon-owned, so SysProcAttr does not apply and the
+	// CLI/console stay root (documented exception). The lab identity is still
+	// recorded and the node run directory is lab-owned.
+	identity, err := m.labIdentityFor(spec)
+	if err != nil {
+		return NodeInfo{}, err
+	}
 	if !dockerBinaryAvailable(m.docker.binary) {
 		return NodeInfo{}, fmt.Errorf(
 			"%w: docker is not installed; install the docker engine and start its daemon",
@@ -623,6 +633,17 @@ func (m *Manager) startDocker(spec Spec, runDir string) (NodeInfo, error) {
 
 		return NodeInfo{}, fmt.Errorf("inject docker node files: %w", err)
 	}
+	// Docker itself runs containers as the daemon; the host-side run tree is
+	// still lab-owned so no other lab can read the injected configuration.
+	if err := m.ownLabRunTree(spec, identity); err != nil {
+		if createdFresh {
+			_ = m.removeDockerContainer(containerID)
+		} else {
+			m.stopDockerContainer(containerID)
+		}
+
+		return NodeInfo{}, err
+	}
 
 	if output, err := m.docker.execute(ctx, "start", containerID); err != nil {
 		if createdFresh {
@@ -674,6 +695,8 @@ func (m *Manager) startDocker(spec Spec, runDir string) (NodeInfo, error) {
 		Taps:         taps,
 		ContainerID:  containerID,
 		ContainerPID: inspect.State.Pid,
+		LabUID:       identity.UID,
+		LabGID:       identity.GID,
 		State:        "running",
 		Started:      time.Now(),
 		Done:         make(chan struct{}),
@@ -837,10 +860,13 @@ func dockerSandboxKey(inspect *dockerInspect) string {
 	return ""
 }
 
+// dockerPeerName names the temporary host end of a veth pair. The name stays
+// TeraLab-owned (tl*) so DeleteLink refuses to remove it from a stale state
+// record while still allowing the engine to clean up its own leftovers.
 func dockerPeerName(labID, nodeID string, index int) string {
 	sum := sha256.Sum256([]byte("veth:" + labID + ":" + nodeID + ":" + strconv.Itoa(index)))
 
-	return "tp" + hex.EncodeToString(sum[:6])
+	return "tlp" + hex.EncodeToString(sum[:6])
 }
 
 // startDockerConsole runs the bounded console command through docker exec. A
@@ -886,7 +912,7 @@ func (m *Manager) stopDockerConsole(node *Node) {
 	m.mu.Unlock()
 	if command != nil && command.Process != nil {
 		pid := command.Process.Pid
-		if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+		if err := signalEngine(pid, syscall.SIGTERM); err != nil {
 			_ = syscall.Kill(pid, syscall.SIGTERM)
 		}
 		deadline := time.Now().Add(2 * time.Second)
@@ -897,7 +923,7 @@ func (m *Manager) stopDockerConsole(node *Node) {
 			time.Sleep(20 * time.Millisecond)
 		}
 		if err := syscall.Kill(pid, 0); err == nil {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = signalEngine(pid, syscall.SIGKILL)
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	}
@@ -983,13 +1009,14 @@ func (m *Manager) wipeDocker(id string, node *Node) error {
 	delete(m.nodes, id)
 	m.mu.Unlock()
 
-	if statePath != "" {
-		_ = os.Remove(statePath)
+	m.removeStatePath(statePath)
+	if !pathWithinRoot(m.runRoot(), filepath.Clean(runDir)) {
+		return fmt.Errorf("refusing to remove run directory outside %s", m.runRoot())
 	}
 	if err := os.RemoveAll(runDir); err != nil {
 		return fmt.Errorf("remove run directory: %w", err)
 	}
-	_ = os.Remove(filepath.Dir(runDir))
+	m.releaseNodeRunRoot(node.Spec)
 	m.logger.Info("node wiped", "id", id, "engine", "docker")
 
 	return nil
@@ -1213,7 +1240,11 @@ func (m *Manager) removeDockerNodeState(record stateFileRecord) ([]string, []str
 		links = append(links, tap)
 	}
 
-	dir := filepath.Dir(record.path)
+	m.removeStatePath(record.path)
+	dir := filepath.Clean(record.state.RunDir)
+	if !pathWithinRoot(m.runRoot(), dir) {
+		return links, nil, firstErr
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		if firstErr == nil {
 			firstErr = err
@@ -1221,7 +1252,9 @@ func (m *Manager) removeDockerNodeState(record stateFileRecord) ([]string, []str
 
 		return links, nil, firstErr
 	}
-	_ = os.Remove(filepath.Dir(dir))
+	if parent := filepath.Dir(dir); parent != m.runRoot() && parent != m.stateRoot() {
+		_ = os.Remove(parent)
+	}
 
 	return links, []string{dir}, firstErr
 }
@@ -1275,7 +1308,7 @@ func (m *Manager) registerDockerRecord(record stateFileRecord) error {
 	}
 	node := &Node{
 		Spec:         spec,
-		RunDir:       filepath.Dir(record.path),
+		RunDir:       record.state.RunDir,
 		Taps:         append([]string(nil), record.state.Taps...),
 		ContainerID:  inspect.ID,
 		ContainerPID: inspect.State.Pid,

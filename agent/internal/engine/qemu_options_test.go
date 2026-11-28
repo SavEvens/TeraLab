@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/SavEvens/TeraLab/agent/internal/network"
 )
 
 func mergeRaw(t *testing.T, spec Spec, raw string) (Spec, []string, error) {
@@ -364,7 +366,7 @@ func TestSpecAcceptsEmptyQEMUParameters(t *testing.T) {
 }
 
 func TestNonQEMUEnginesRejectQEMUOptions(t *testing.T) {
-	spec := Spec{ID: "pc-1", Name: "PC1", Engine: "vpcs", Ethernet: 1, Networks: []string{"br0"}}
+	spec := Spec{ID: "pc-1", Name: "PC1", Engine: "vpcs", Ethernet: 1, Networks: []string{network.BridgeName("", "0")}}
 	spec.Normalize()
 	spec.ExtraOptions = "-no-acpi"
 	if err := spec.Validate(nil); err == nil || !strings.Contains(err.Error(), "only supported for qemu") {

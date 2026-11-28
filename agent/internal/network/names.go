@@ -6,6 +6,7 @@ package network
 import (
 	"errors"
 	"regexp"
+	"strings"
 )
 
 const maxLinkName = 15
@@ -19,6 +20,28 @@ func ValidateLinkName(name string) error {
 	}
 	if !linkNamePattern.MatchString(name) {
 		return errors.New("invalid network link name")
+	}
+
+	return nil
+}
+
+// ownedLinkPrefix is the mandatory prefix of every link TeraLab creates and may
+// delete. It keeps DeleteLink/getlink and the cleanup sweeps away from host
+// interfaces such as eth0, br0 or docker0.
+const ownedLinkPrefix = "tl"
+
+// OwnsLinkName reports whether name is a valid TeraLab-managed link name.
+func OwnsLinkName(name string) bool {
+	return strings.HasPrefix(name, ownedLinkPrefix) && ValidateLinkName(name) == nil
+}
+
+// validateOwnedLinkName rejects a name that TeraLab did not create.
+func validateOwnedLinkName(name string) error {
+	if err := ValidateLinkName(name); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(name, ownedLinkPrefix) {
+		return errors.New("refusing to touch a link that is not TeraLab-owned")
 	}
 
 	return nil

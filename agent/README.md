@@ -25,7 +25,8 @@ go test ./...
 | `TERALAB_AGENT_SECRET` | — | Secret override (tests) |
 | `TERALAB_AGENT_ALLOWED_UIDS` | `33` | Allowed peer UIDs, comma-separated |
 | `TERALAB_AGENT_SOCKET_GROUP` | `www-data` | Socket group |
-| `TERALAB_RUN_DIR` | `/var/lib/teralab/run` | Per-node run directories |
+| `TERALAB_RUN_DIR` | `/var/lib/teralab/run` | Per-node run directories (engine-writable) |
+| `TERALAB_STATE_DIR` | `/var/lib/teralab/state` | Root-owned node records for reconcile (0700/0600) |
 | `TERALAB_IMAGES_DIR` | `/var/lib/teralab/images` | Primary image/ISO/kernel root |
 | `TERALAB_IMAGE_EXTRA_ROOTS` | — | Additional allowed image roots, colon-separated absolute paths (e.g. `/opt/unetlab/addons`) |
 | `TERALAB_CGROUP_ROOT` | `/sys/fs/cgroup/teralab.slice` | Per-node cgroup parent |
@@ -38,8 +39,58 @@ go test ./...
 | `TERALAB_NETWORK_BACKEND` | `auto` | `linux`, `ovs`, or `auto` |
 | `TERALAB_BRIDGE_GROUP_FWD_MASK` | `0x5` | Per-port `group_fwd_mask` (STP + LACP); `0` disables |
 | `TERALAB_IOL_IOURC` | `/etc/teralab/iourc` | Default IOL licence file |
-| `TERALAB_VM_USER` | `teralab-vm` | Unprivileged QEMU user |
+| `TERALAB_VM_USER` | `teralab-vm` | Shared engine/qemu-img user for rollback mode (`TERALAB_PER_LAB_UID=0`) |
+| `TERALAB_PER_LAB_UID` | `1` | Run each lab under its own numeric uid/gid |
+| `TERALAB_LAB_UID_FIRST` | `200000` | First uid/gid of the per-lab slot pool (must be >= 200000) |
+| `TERALAB_LAB_UID_SLOTS` | `64` | Number of per-lab slots; exhaustion fails closed |
+| `TERALAB_IMAGE_GID` | `0` | Supplementary gid for image-store reads (`0` = none; `/dev/kvm` group is added automatically) |
 | `TERALAB_ALLOW_ROOT_VM` | `0` | Explicitly allow root QEMU (dev only) |
+| `TERALAB_QEMU_SANDBOX` | `1` | Add QEMU's seccomp sandbox; only an explicit operator decision disables it |
+| `TERALAB_DISABLE_DOCKER_PULL` | `0` | Refuse `docker pull`; the demo profile sets `1` |
+
+## Per-lab UIDs
+
+With `TERALAB_PER_LAB_UID=1` (default) every lab runs under its own numeric
+uid/gid. No named accounts or passwd entries are required: the agent allocates
+`uid = gid = TERALAB_LAB_UID_FIRST + slot` (default `200000..200063`) and keeps
+the mapping in `TERALAB_STATE_DIR/uidmap.json` (root 0600, `flock`, version 1,
+atomic rename). The registry is validated at startup; a corrupt file or a full
+pool fails closed with `engine_unavailable` and never falls back to the shared
+`TERALAB_VM_USER`.
+
+- Every engine child (QEMU, VPCS, Dynamips, IOL) and `qemu-img` is spawned with
+  a `syscall.Credential` for the lab. Supplementary groups are
+  `TERALAB_IMAGE_GID` (when non-zero) and the `/dev/kvm` inode group (when the
+  device exists), deduplicated.
+- The lab's own run subtree (`RUN_DIR/<lab>/`), its `tmp/` (0700), files (0640)
+  and sockets (0660) are lab-owned. `StateDir`, the image store and other labs
+  are never chowned. Engine `HOME`/`TMPDIR` point at the per-lab private tmp.
+- Taps are created by root with `user <numeric lab uid>`; Docker container
+  processes stay daemon-owned, so the Docker CLI and `docker exec` console
+  remain root (documented exception).
+- Trusted state records carry `uid`/`gid`; the orphan sweep also verifies
+  `/proc/<pid>/status` `Uid:` and never signals a process on a mismatch. Node
+  cgroups live at `CGROUP_ROOT/lab-<short>/node-<id>`.
+- IOL's hard-coded `/tmp/netio<uid>` and `/tmp/netl1<uid>` directories stay
+  outside the run tree, but the per-lab uid makes them private to one lab.
+- `TERALAB_PER_LAB_UID=0` restores the stage-1 shared-user path (engines and
+  qemu-img as `TERALAB_VM_USER`); per-lab state records are quarantined so no
+  stale uid can drive a kill. Leave `uidmap.json` in place for a later retry.
+
+### Residual risks
+
+- Ownership and mode changes on lab-writable paths are path-based, except for
+  the IOL `/tmp/netio<uid>` and `/tmp/netl1<uid>` directories and the socket
+  files inside them, which are changed through an open descriptor. They are
+  therefore not atomic against a racing engine uid: the lab can still rename an
+  entry or swap it for a symlink between the check and the change. The run-tree
+  walk skips symlinks and uses `Lchown`, so the final component is never
+  followed, and the descriptor-pinned socket handling bounds the `/tmp`
+  boundary; this residual is accepted.
+- A slot whose uid is still used by a live process is deliberately leaked
+  rather than reused by another lab. Recovery: stop every engine of that lab,
+  confirm no process holds the uid (`Uid:` in `/proc/<pid>/status`), delete that
+  key from `StateDir/uidmap.json`, and let the agent re-allocate the slot.
 
 ## API
 
@@ -97,7 +148,7 @@ best-effort and never delays a start; a guest that never shows a prompt is left
 - **Dynamips:** direct-mode argv with tap slots and a loopback TCP console.
   Requires the separate `teralab-dynamips` package and a user-supplied IOS
   image; TeraLab never bundles one.
-- **IOL:** user-supplied x86-64 `.bin` plus `iourc`, run as `teralab-vm` with
+- **IOL:** user-supplied x86-64 `.bin` plus `iourc`, run as the lab uid with
   a deterministic application id, `LD_LIBRARY_PATH`, and per-node `iourc` /
   `NETMAP` files. Every IOL Ethernet interface gets a tap on the lab bridge and a
   Unix-datagram netio relay; `NETMAP` pairs each IOL port with the relay, and
@@ -128,9 +179,15 @@ best-effort and never delays a start; a guest that never shows a prompt is left
   `other_config:forward-bpdu=true` and forwards LLDP/LACP.
 - OVS taps are attached with `ovs-vsctl add-port`; the Linux backend uses the
   bridge master.
-- `cleanup.stale` reconciles after a crash: it kills orphan engine processes
-  from run-directory state, removes their taps/bridges and cgroups, and deletes
-  stale `tl*` links. The agent runs the same reconciliation at startup.
+- `cleanup.stale` reconciles after a crash from the root-owned `STATE_DIR`,
+  never from the engine-writable run directory. Records must match their path,
+  carry a known engine, a positive PID, an allowlisted executable and a kernel
+  start time; taps must be `tl*` links of the same lab and the cgroup must be
+  the node's child of `TERALAB_CGROUP_ROOT`. Reconcile kills only a verified
+  PID (its process group only when it is TeraLab-owned), removes its
+  taps/bridges and cgroups, and deletes stale `tl*` links. A legacy
+  `run/**/node.json` is discarded unread; labs running across the upgrade must
+  be stopped and restarted. The agent runs the same reconciliation at startup.
 - The optional `lab_ids` body is the keep-set of labs that still exist: every
   directory directly under `TERALAB_RUN_DIR` that is not in the keep-set and
   holds no live node is removed, which reclaims run directories left behind by
@@ -165,6 +222,20 @@ web tier exposes `/ws/vnc` as a same-origin WebSocket proxy.
   resolved), and the resolved target must land under the primary store or an
   allowed extra root. A symlink inside the store that aims anywhere else is
   rejected; uploads continue to target the primary store only.
-- QEMU runs as `teralab-vm`, not root.
+- QEMU, qemu-img, IOL and Dynamips run as the per-lab uid (or `teralab-vm` in
+  rollback mode), not root. qemu-img receives a minimal environment and a
+  timeout; a 0600 upload is staged as a temporary 0644 copy for inspection, and
+  the live image store is never made writable. Image and overlay files must stay
+  readable by the engine identity (the installer grants that read access, or
+  `TERALAB_IMAGE_GID` supplies a shared group).
+- QEMU runs with `-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny`.
+  If an operator disables it, the agent logs the compensating controls: the VM
+  credential, the minimal environment and the engine allowlist.
+- Dynamips uses `-T` and `--console-binding-addr 127.0.0.1`; its console is
+  loopback-only.
+- Docker nodes may join only lab-owned `tl*` bridges; the container template
+  `config_path` is allowlisted to `/etc/frr/frr.conf` and `/etc/frr/daemons`.
+  `SYS_ADMIN` remains opt-in for the admin-only FRR templates (owner-signed
+  residual; the catalogue is admin-controlled).
 - Tap names are generated from the node ID and are always `tl`-prefixed.
 - QEMU is launched with an argv array; there is no shell.

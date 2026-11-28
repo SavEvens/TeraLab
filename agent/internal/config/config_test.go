@@ -155,3 +155,115 @@ func TestLoadDockerBinaryDefaultsToUsrBinDocker(t *testing.T) {
 		t.Fatalf("unexpected docker binary default: %s", cfg.DockerBinary)
 	}
 }
+
+func TestLoadStateDirDefaultAndOverride(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if cfg.StateDir != "/var/lib/teralab/state" {
+		t.Fatalf("unexpected default StateDir: %q", cfg.StateDir)
+	}
+
+	t.Setenv("TERALAB_STATE_DIR", "/srv/teralab/state")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if cfg.StateDir != "/srv/teralab/state" {
+		t.Fatalf("unexpected StateDir override: %q", cfg.StateDir)
+	}
+}
+
+func TestLoadPerLabUIDDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if !cfg.PerLabUID {
+		t.Fatal("per-lab uids must be enabled by default")
+	}
+	if cfg.LabUIDFirst != 200000 || cfg.LabUIDSlots != 64 || cfg.ImageGID != 0 {
+		t.Fatalf("unexpected per-lab uid defaults: first=%d slots=%d image_gid=%d",
+			cfg.LabUIDFirst, cfg.LabUIDSlots, cfg.ImageGID)
+	}
+
+	t.Setenv("TERALAB_PER_LAB_UID", "0")
+	t.Setenv("TERALAB_LAB_UID_FIRST", "210000")
+	t.Setenv("TERALAB_LAB_UID_SLOTS", "8")
+	t.Setenv("TERALAB_IMAGE_GID", "4242")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if cfg.PerLabUID {
+		t.Fatal("TERALAB_PER_LAB_UID=0 must disable per-lab uids")
+	}
+	if cfg.LabUIDFirst != 210000 || cfg.LabUIDSlots != 8 || cfg.ImageGID != 4242 {
+		t.Fatalf("override not applied: first=%d slots=%d image_gid=%d",
+			cfg.LabUIDFirst, cfg.LabUIDSlots, cfg.ImageGID)
+	}
+}
+
+func TestLoadRejectsInvalidLabUIDPool(t *testing.T) {
+	cases := []struct {
+		name  string
+		first string
+		slots string
+		want  string
+	}{
+		{name: "below reserved range", first: "1000", slots: "4", want: "TERALAB_LAB_UID_FIRST"},
+		{name: "zero slots", first: "200000", slots: "0", want: "TERALAB_LAB_UID_SLOTS"},
+		{name: "u32 overflow", first: "4294967290", slots: "16", want: "uid range"},
+		{name: "not a number", first: "abc", slots: "4", want: "TERALAB_LAB_UID_FIRST"},
+		{name: "negative slots", first: "200000", slots: "-1", want: "TERALAB_LAB_UID_SLOTS"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+			t.Setenv("TERALAB_LAB_UID_FIRST", testCase.first)
+			t.Setenv("TERALAB_LAB_UID_SLOTS", testCase.slots)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected %q to be rejected, got %v", testCase.name, err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidImageGID(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	t.Setenv("TERALAB_IMAGE_GID", "not-a-gid")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TERALAB_IMAGE_GID") {
+		t.Fatalf("expected an invalid image gid to be rejected, got %v", err)
+	}
+}
+
+func TestLoadDockerPullAndQEMUSandboxFlags(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if cfg.DisableDockerPull {
+		t.Fatal("docker pull must stay enabled by default for admin deployments")
+	}
+	if !cfg.QEMUSandbox {
+		t.Fatal("the QEMU sandbox must be enabled by default")
+	}
+
+	t.Setenv("TERALAB_DISABLE_DOCKER_PULL", "true")
+	t.Setenv("TERALAB_QEMU_SANDBOX", "false")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if !cfg.DisableDockerPull {
+		t.Fatal("TERALAB_DISABLE_DOCKER_PULL was not applied")
+	}
+	if cfg.QEMUSandbox {
+		t.Fatal("TERALAB_QEMU_SANDBOX was not applied")
+	}
+}

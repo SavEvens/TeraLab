@@ -110,6 +110,21 @@ func TestCreateTapUsesVMUserAndBridge(t *testing.T) {
 	}
 }
 
+// TestCreateTapAsPassesNumericUID pins that a per-lab numeric uid reaches
+// `ip tuntap add ... user <uid>` as a string, which iproute2 accepts without a
+// passwd entry.
+func TestCreateTapAsPassesNumericUID(t *testing.T) {
+	manager, calls := testManager(t)
+	tap := TapName("lab-1", "node-1", 0)
+
+	if err := manager.CreateTapAs(tap, "", "200123"); err != nil {
+		t.Fatalf("create tap: %v", err)
+	}
+	if !hasCall(*calls, "ip", "tuntap", "add", "dev", tap, "mode", "tap", "user", "200123") {
+		t.Fatalf("numeric uid was not passed as the tap user: %+v", *calls)
+	}
+}
+
 func TestCleanupStaleKeepsLiveLinks(t *testing.T) {
 	manager, calls := testManager(t)
 	for _, name := range []string{"tlkeep0000000", "tlstale000000", "eth0"} {

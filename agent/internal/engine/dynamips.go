@@ -25,11 +25,16 @@ func BuildDynamipsArgs(spec Spec, taps []string, consolePort int) ([]string, err
 		return nil, errors.New("dynamips slots must match ethernet count")
 	}
 
+	// -T carries the TCP console port (upstream flag). --console-binding-addr
+	// pins the console to loopback; upstream otherwise listens on every
+	// interface. Both are required: never fall back to -p, which is the Cisco
+	// 7200 port-adapter option.
 	args := []string{
 		"-P", spec.Platform,
 		"-r", strconv.Itoa(spec.RAM),
 		"-n", strconv.Itoa(spec.NVRAM),
-		"-p", strconv.Itoa(consolePort),
+		"-T", strconv.Itoa(consolePort),
+		"--console-binding-addr", "127.0.0.1",
 	}
 	for index, slot := range spec.Slots {
 		args = append(args, "-s", slot+":"+taps[index])
@@ -47,10 +52,15 @@ func (m *Manager) startDynamips(spec Spec, runDir string) (NodeInfo, error) {
 		)
 	}
 
+	identity, err := m.labIdentityFor(spec)
+	if err != nil {
+		return NodeInfo{}, err
+	}
+
 	taps := make([]string, 0, spec.Ethernet)
 	for index := 0; index < spec.Ethernet; index++ {
 		tap := spec.TapName(index)
-		if err := m.net.CreateTap(tap, spec.Networks[index]); err != nil {
+		if err := m.createLabTap(spec, identity, tap, spec.Networks[index]); err != nil {
 			m.cleanupTaps(taps)
 			return NodeInfo{}, err
 		}
@@ -78,10 +88,18 @@ func (m *Manager) startDynamips(spec Spec, runDir string) (NodeInfo, error) {
 	command.Dir = runDir
 	command.Stdout = logFile
 	command.Stderr = logFile
-	command.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + runDir}
-	m.limitProcess(command)
+	command.Env = engineEnvironment([]string{
+		"PATH=/usr/local/bin:/usr/bin:/bin",
+		"HOME=" + m.engineHome(spec, runDir),
+	}, m.privateTmpDir(spec))
+	identity.apply(command)
+	if err := m.ownLabRunTree(spec, identity); err != nil {
+		_ = logFile.Close()
+		m.cleanupTaps(taps)
+		return NodeInfo{}, err
+	}
 
-	if err := command.Start(); err != nil {
+	if err := engineSpawn(command); err != nil {
 		_ = logFile.Close()
 		m.cleanupTaps(taps)
 		return NodeInfo{}, fmt.Errorf("start dynamips: %w", err)
@@ -110,6 +128,8 @@ func (m *Manager) startDynamips(spec Spec, runDir string) (NodeInfo, error) {
 		Taps:        taps,
 		CgroupPath:  cgroupPath,
 		ConsolePort: consolePort,
+		LabUID:      identity.UID,
+		LabGID:      identity.GID,
 		State:       "running",
 		Started:     time.Now(),
 		Done:        make(chan struct{}),

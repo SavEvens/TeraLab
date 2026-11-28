@@ -9,7 +9,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/config"
@@ -253,6 +255,11 @@ func (s *Server) handleImageInspect(writer http.ResponseWriter, request *http.Re
 		writeError(writer, http.StatusBadRequest, "invalid_request", "path is required")
 		return
 	}
+	if s.cfg.VMUID == 0 && !s.cfg.AllowRootVM {
+		writeError(writer, http.StatusServiceUnavailable, "engine_unavailable",
+			"teralab-vm user is missing; refusing to run qemu-img as root")
+		return
+	}
 	resolved, err := images.ResolveUnderAny(payload.Path, s.cfg.ImageRoots())
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid_path", err.Error())
@@ -260,7 +267,14 @@ func (s *Server) handleImageInspect(writer http.ResponseWriter, request *http.Re
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
 	defer cancel()
-	info, err := images.Inspect(ctx, s.cfg.QEMUImg, resolved)
+	info, err := images.InspectAs(ctx, s.cfg.QEMUImg, resolved, images.Command{
+		Credential: vmCredential(s.cfg),
+		Env: []string{
+			"PATH=/usr/local/bin:/usr/bin:/bin",
+			"HOME=" + filepath.Dir(resolved),
+			"LC_ALL=C",
+		},
+	})
 	if err != nil {
 		writeError(writer, http.StatusUnprocessableEntity, "invalid_image", err.Error())
 		return
@@ -317,6 +331,17 @@ func (s *Server) handleConsoleOpen(writer http.ResponseWriter, request *http.Req
 	}
 
 	writeJSON(writer, http.StatusOK, apiResponse{OK: true, Result: result})
+}
+
+// vmCredential is the unprivileged engine identity for qemu-img. A zero UID
+// means the VM user could not be resolved; the agent then refuses at start
+// time rather than silently running image parsers as root.
+func vmCredential(cfg config.Config) *syscall.Credential {
+	if cfg.VMUID == 0 {
+		return nil
+	}
+
+	return &syscall.Credential{Uid: cfg.VMUID, Gid: cfg.VMGID, Groups: cfg.VMGroups}
 }
 
 func readJSON(request *http.Request, destination any) error {
