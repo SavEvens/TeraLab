@@ -8,7 +8,7 @@ set -Eeuo pipefail
 
 ROOT="/opt/teralab"
 DATA="/var/lib/teralab"
-OWNER="${TERALAB_RUNTIME_OWNER:-www-data}"
+OWNER="${TERALAB_RUNTIME_OWNER:-teralab-api}"
 
 usage() {
 	cat <<'EOF'
@@ -17,7 +17,7 @@ Usage: scripts/setup-runtime-paths.sh [options]
 Options:
   --root PATH     Installed TeraLab root (default: /opt/teralab)
   --data PATH     Runtime state directory (default: /var/lib/teralab)
-  --owner USER    Runtime owner (default: www-data or current user)
+  --owner USER    Runtime owner (default: teralab-api)
   -h, --help      Show this help
 EOF
 }

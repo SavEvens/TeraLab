@@ -177,6 +177,26 @@ final class LegacyAddonsImporterTest extends TestCase
         self::assertSame(0755, $mode & 0777);
     }
 
+    public function testImportKeepsStoreDirectoriesTraversableUnderTheServiceUmask(): void
+    {
+        $relative = 'qemu/csr1000vng/hda.qcow2';
+        $previous = umask(0077);
+        try {
+            $result = $this->importer->import($this->addons, [$relative], [], null);
+        } finally {
+            umask($previous);
+        }
+        clearstatcache();
+
+        self::assertSame('imported', $result['results'][0]['status']);
+        $path = (string) $result['results'][0]['image']['path'];
+        self::assertTrue(is_link($path));
+        $directory = dirname($path);
+        self::assertSame(0755, fileperms($directory) & 0777, 'per-image directory must be traversable');
+        self::assertSame(0755, fileperms(dirname($directory)) & 0777, 'kind directory must be traversable');
+        self::assertSame(0755, fileperms($this->config->imagesDir) & 0777, 'image root must be traversable');
+    }
+
     public function testDryRunDetectsDuplicateContentAndExistingAdoptions(): void
     {
         $this->importer->import($this->addons, ['qemu/csr1000vng/hda.qcow2'], [], null);

@@ -130,6 +130,7 @@ jobs:
             scripts/check-artifact-policy.sh \
             scripts/php-lint.sh \
             scripts/check-secrets.sh \
+            scripts/check-install-perms.sh \
             scripts/dev-vm.sh \
             scripts/setup-runtime-paths.sh \
             packaging/dynamips/build.sh \
@@ -140,6 +141,7 @@ jobs:
             packaging/teralab/prerm.sh \
             packaging/teralab/postrm.sh \
             packaging/teralab/teralab-firewall \
+            packaging/teralab/fpm-socket-acl \
             scripts/teralab-project-init.sh
 
   ui:

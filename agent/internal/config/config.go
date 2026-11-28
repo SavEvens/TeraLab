@@ -173,20 +173,9 @@ func Load() (Config, error) {
 	}
 	cfg.Secret = secret
 
-	cfg.AllowedUIDs = map[uint32]bool{}
-	for _, raw := range strings.Split(env("TERALAB_AGENT_ALLOWED_UIDS", "33"), ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		uid, err := strconv.ParseUint(raw, 10, 32)
-		if err != nil {
-			return cfg, fmt.Errorf("invalid allowed UID %q", raw)
-		}
-		cfg.AllowedUIDs[uint32(uid)] = true
-	}
-	if len(cfg.AllowedUIDs) == 0 {
-		return cfg, errors.New("no allowed agent UIDs configured")
+	cfg.AllowedUIDs, err = allowedAgentUIDs()
+	if err != nil {
+		return cfg, err
 	}
 
 	cfg.SocketGID = lookupGroupGID(env("TERALAB_AGENT_SOCKET_GROUP", "www-data"))
@@ -243,6 +232,45 @@ func bridgeGroupFwdMask() (uint16, error) {
 	}
 
 	return uint16(value), nil
+}
+
+// defaultAllowedAgentUIDs is the documented fallback for direct invocations
+// that do not set TERALAB_AGENT_ALLOWED_UIDS at all. The shipped systemd unit
+// always sets the variable (empty until the identity drop-in provides the real
+// UID), so a unit without that drop-in fails closed instead of reaching this
+// default.
+const defaultAllowedAgentUIDs = "33"
+
+// allowedAgentUIDs parses TERALAB_AGENT_ALLOWED_UIDS (comma-separated peer
+// UIDs). An absent variable keeps the documented default; a variable that is
+// present but empty, whitespace-only, or contains no numeric UID is a
+// configuration error. An empty value must never silently fall back to
+// www-data (33), because the systemd unit relies on that being fatal.
+func allowedAgentUIDs() (map[uint32]bool, error) {
+	raw, present := os.LookupEnv("TERALAB_AGENT_ALLOWED_UIDS")
+	if !present {
+		raw = defaultAllowedAgentUIDs
+	}
+	uids := map[uint32]bool{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		uid, err := strconv.ParseUint(entry, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid allowed UID %q", entry)
+		}
+		uids[uint32(uid)] = true
+	}
+	if len(uids) == 0 {
+		return nil, fmt.Errorf(
+			"TERALAB_AGENT_ALLOWED_UIDS is set but lists no UIDs (%q); refusing to fall back to the default",
+			raw,
+		)
+	}
+
+	return uids, nil
 }
 
 func setVMUser(cfg *Config) {

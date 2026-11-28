@@ -23,7 +23,7 @@ go test ./...
 | `TERALAB_AGENT_CONSOLE` | `127.0.0.1:8091` | Console WebSocket listener |
 | `TERALAB_AGENT_SECRET_FILE` | `/etc/teralab/agent.secret` | Bearer secret file |
 | `TERALAB_AGENT_SECRET` | — | Secret override (tests) |
-| `TERALAB_AGENT_ALLOWED_UIDS` | `33` | Allowed peer UIDs, comma-separated |
+| `TERALAB_AGENT_ALLOWED_UIDS` | `33` (only when unset) | Allowed peer UIDs, comma-separated; present-but-empty is a configuration error |
 | `TERALAB_AGENT_SOCKET_GROUP` | `www-data` | Socket group |
 | `TERALAB_RUN_DIR` | `/var/lib/teralab/run` | Per-node run directories (engine-writable) |
 | `TERALAB_STATE_DIR` | `/var/lib/teralab/state` | Root-owned node records for reconcile (0700/0600) |

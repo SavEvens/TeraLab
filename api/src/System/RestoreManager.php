@@ -20,15 +20,23 @@ final class RestoreManager
             return;
         }
 
+        // The staging area holds a full copy of the database: keep it and the
+        // staged artifacts owner-only even if an older install left them loose.
+        @chmod($directory, 0700);
+        @chmod($staged, 0600);
+        @chmod($marker, 0600);
+
         if (is_file($config->dbPath)) {
             $backup = $config->dbPath . '.pre-restore-' . gmdate('YmdHis');
             if (!@copy($config->dbPath, $backup)) {
                 throw new RuntimeException('Cannot back up the current database before restore.');
             }
+            @chmod($backup, 0600);
         }
         if (!@copy($staged, $config->dbPath)) {
             throw new RuntimeException('Cannot install the restored database.');
         }
+        @chmod($config->dbPath, 0600);
         @unlink($config->dbPath . '-wal');
         @unlink($config->dbPath . '-shm');
         @unlink($staged);

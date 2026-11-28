@@ -31,9 +31,10 @@ final class BackupService
             throw new HttpException(500, 'The PHP zip extension is required for backups.');
         }
         $directory = $this->config->dataDir . '/backups';
-        if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
+        if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
             throw new RuntimeException('Cannot create the backup directory.');
         }
+        @chmod($directory, 0700);
         $filename = 'teralab-backup-' . gmdate('Ymd-His') . '.zip';
         $path = $directory . '/' . $filename;
         $zip = new ZipArchive();
@@ -44,6 +45,7 @@ final class BackupService
         $database = $directory . '/database-' . bin2hex(random_bytes(4)) . '.sdb';
         try {
             $this->pdo->exec("VACUUM INTO '" . str_replace("'", "''", $database) . "'");
+            @chmod($database, 0600);
             $zip->addFile($database, 'database.sdb');
         } catch (\Throwable) {
             // Database snapshot is best-effort; labs/templates still back up.
@@ -55,6 +57,7 @@ final class BackupService
         $images = $this->pdo->query('SELECT id, kind, name, path, sha256, size, virtual_size, format, backing_file, template, external, created_at FROM images');
         $zip->addFromString('images.json', json_encode($images !== false ? $images->fetchAll() : [], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
         $zip->close();
+        @chmod($path, 0600);
         @unlink($database);
 
         return ['path' => $path, 'filename' => $filename];
@@ -75,9 +78,11 @@ final class BackupService
         if ($temporary === false) {
             throw new RuntimeException('Cannot create a temporary restore file.');
         }
+        @chmod($temporary, 0600);
         $stream = $file->getStream();
         $stream->rewind();
         file_put_contents($temporary, $stream->getContents());
+        @chmod($temporary, 0600);
         $zip = new ZipArchive();
         if ($zip->open($temporary) !== true) {
             @unlink($temporary);
@@ -113,11 +118,14 @@ final class BackupService
             }
             if ($name === 'database.sdb') {
                 $directory = $this->config->dataDir . '/restore';
-                if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
+                if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
                     throw new RuntimeException('Cannot create the restore staging directory.');
                 }
+                @chmod($directory, 0700);
                 file_put_contents($directory . '/database.sdb', $contents);
+                @chmod($directory . '/database.sdb', 0600);
                 file_put_contents($directory . '/pending', (string) time());
+                @chmod($directory . '/pending', 0600);
                 $restored['database'] = true;
                 continue;
             }
