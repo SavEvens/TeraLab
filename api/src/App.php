@@ -20,6 +20,7 @@ use TeraLab\Api\Auth\PasswordPolicy;
 use TeraLab\Api\Auth\RateLimiter;
 use TeraLab\Api\Auth\SetupToken;
 use TeraLab\Api\Auth\TurnstileVerifier;
+use TeraLab\Api\Database\Bootstrap;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\Controllers\AuthController;
@@ -58,6 +59,7 @@ use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\DemoSweeper;
 use TeraLab\Api\System\HostMemory;
+use TeraLab\Api\System\MaintenanceService;
 use TeraLab\Api\System\SettingsService;
 use TeraLab\Api\Templates\TemplateRepository;
 
@@ -108,7 +110,8 @@ final class App
                 SettingsService $settings,
                 TemplateRepository $templates,
                 HostMemory $memory,
-            ): DemoGuard => new DemoGuard($pdo, $settings, new DemoPolicy(), $templates, $memory)
+                LabRepository $labs,
+            ): DemoGuard => new DemoGuard($pdo, $settings, new DemoPolicy(), $templates, $labs, $memory)
         );
         $container->set(
             DemoSweeper::class,
@@ -120,6 +123,7 @@ final class App
                 AuditLogger $audit,
                 HostMemory $memory,
                 LabRepository $repository,
+                MaintenanceService $maintenance,
             ): DemoSweeper => new DemoSweeper(
                 $pdo,
                 $settings,
@@ -129,7 +133,18 @@ final class App
                 $audit,
                 $memory,
                 $repository,
+                null,
+                $maintenance,
             )
+        );
+        $container->set(
+            MaintenanceService::class,
+            static fn (
+                PDO $pdo,
+                SettingsService $settings,
+                Config $config,
+                LabService $labs,
+            ): MaintenanceService => new MaintenanceService($pdo, $settings, $config, $labs)
         );
         $container->set(
             LabService::class,
@@ -143,6 +158,7 @@ final class App
                 SnapshotRepository $snapshots,
                 TemplateRepository $templates,
                 DemoGuard $demoGuard,
+                SettingsService $settings,
             ): LabService => new LabService(
                 $config,
                 $parser,
@@ -154,6 +170,9 @@ final class App
                 $templates,
                 new LabYamlCompiler($templates),
                 $demoGuard,
+                null,
+                null,
+                $settings,
             )
         );
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
@@ -214,8 +233,13 @@ final class App
             )
         );
 
-        $container->get(Migrator::class)->migrate();
-        $container->get(JobService::class)->reconcile();
+        // Migrations are a bootstrap step, not request work: the marker records
+        // the code version and migration list so a normal request only reads a
+        // small file. Job reconciliation is interval-bounded for the same
+        // reason (one settings row, then a write at most every few minutes).
+        $bootstrap = new Bootstrap($config, $container->get(Migrator::class));
+        $bootstrap->ensureMigrated();
+        $container->get(JobService::class)->reconcileIfDue();
         $settings = $container->get(\TeraLab\Api\System\SettingsService::class);
         $legacyV1 = $settings->int('legacy_v1_enabled', 0) === 1;
         $timezone = $settings->string('timezone', 'UTC');
@@ -426,6 +450,10 @@ final class App
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/system/demo/status', fn ($request, $response) => $system->demoStatus($request, $response))
             ->add($adminRole())
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/system/maintenance', fn ($request, $response) => $system->maintenance($request, $response))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/system/backup', fn ($request, $response) => $system->backup($request, $response))
             ->add($adminRole())

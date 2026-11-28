@@ -39,6 +39,7 @@ vi.mock('../src/api', () => ({
     saveSettings: vi.fn(),
     demoStatus: vi.fn(),
     demoSweep: vi.fn(),
+    maintenance: vi.fn(),
     logs: vi.fn(),
     tokens: vi.fn(),
     createToken: vi.fn(),
@@ -1306,6 +1307,128 @@ describe('SystemView demo', () => {
     wrapper.unmount()
   })
 
+  it('renders the default resource caps with the API bounds and enforcement hints', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    const labs = wrapper.find('input[aria-label="Max labs per guest"]')
+    expect(labs.element.value).toBe('3')
+    expect(labs.attributes('min')).toBe('1')
+    expect(labs.attributes('max')).toBe('20')
+    expect(labs.attributes('step')).toBe('1')
+
+    const labBytes = wrapper.find('input[aria-label="Max lab size per guest (bytes)"]')
+    expect(labBytes.element.value).toBe('20971520')
+    expect(labBytes.attributes('min')).toBe('1048576')
+    expect(labBytes.attributes('max')).toBe('268435456')
+    expect(wrapper.text()).toContain('20.0 MiB')
+
+    const snapshots = wrapper.find('input[aria-label="Max snapshots per lab"]')
+    expect(snapshots.element.value).toBe('3')
+    expect(snapshots.attributes('min')).toBe('1')
+    expect(snapshots.attributes('max')).toBe('20')
+
+    const tokens = wrapper.find('input[aria-label="Max tokens per user"]')
+    expect(tokens.element.value).toBe('5')
+    expect(tokens.attributes('min')).toBe('1')
+    expect(tokens.attributes('max')).toBe('50')
+
+    const hints = wrapper.find('.demo-panel').text()
+    expect(hints).toContain('Guests always get the smallest caps.')
+    expect(hints).toContain('before a lab is written')
+    wrapper.unmount()
+  })
+
+  it('loads the resource caps from api.settings and normalises out-of-range values', async () => {
+    api.settings.mockResolvedValue({
+      data: {
+        ...settingsFixture(),
+        demo_max_labs_per_guest: 7,
+        demo_max_lab_bytes_per_guest: 8388608,
+        demo_max_snapshots_per_lab: 9,
+        demo_max_tokens_per_user: 12
+      }
+    })
+
+    const wrapper = await mountSystemDemoView()
+    expect(wrapper.find('input[aria-label="Max labs per guest"]').element.value).toBe('7')
+    expect(wrapper.find('input[aria-label="Max lab size per guest (bytes)"]').element.value).toBe('8388608')
+    expect(wrapper.find('input[aria-label="Max snapshots per lab"]').element.value).toBe('9')
+    expect(wrapper.find('input[aria-label="Max tokens per user"]').element.value).toBe('12')
+    wrapper.unmount()
+  })
+
+  it('clamps resource caps the API reports outside its bounds', async () => {
+    api.settings.mockResolvedValue({
+      data: {
+        ...settingsFixture(),
+        demo_max_labs_per_guest: 999,
+        demo_max_lab_bytes_per_guest: 0,
+        demo_max_snapshots_per_lab: '8',
+        demo_max_tokens_per_user: null
+      }
+    })
+
+    const wrapper = await mountSystemDemoView()
+    expect(wrapper.find('input[aria-label="Max labs per guest"]').element.value).toBe('20')
+    expect(wrapper.find('input[aria-label="Max lab size per guest (bytes)"]').element.value).toBe('1048576')
+    expect(wrapper.find('input[aria-label="Max snapshots per lab"]').element.value).toBe('8')
+    expect(wrapper.find('input[aria-label="Max tokens per user"]').element.value).toBe('5')
+    wrapper.unmount()
+  })
+
+  it('saves the resource caps as bounded numbers', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    await wrapper.find('input[aria-label="Max labs per guest"]').setValue('10')
+    await wrapper.find('input[aria-label="Max lab size per guest (bytes)"]').setValue('10485760')
+    await wrapper.find('input[aria-label="Max snapshots per lab"]').setValue('6')
+    await wrapper.find('input[aria-label="Max tokens per user"]').setValue('25')
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+    const payload = api.saveSettings.mock.calls[0][0]
+    expect(payload).toMatchObject({
+      demo_max_labs_per_guest: 10,
+      demo_max_lab_bytes_per_guest: 10485760,
+      demo_max_snapshots_per_lab: 6,
+      demo_max_tokens_per_user: 25
+    })
+    for (const key of [
+      'demo_max_labs_per_guest', 'demo_max_lab_bytes_per_guest',
+      'demo_max_snapshots_per_lab', 'demo_max_tokens_per_user'
+    ]) {
+      expect(typeof payload[key]).toBe('number')
+    }
+    wrapper.unmount()
+  })
+
+  it('prevents saving resource caps outside the API bounds', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    const save = wrapper.find('.demo-panel button[type="submit"]')
+    const labs = wrapper.find('input[aria-label="Max labs per guest"]')
+    await labs.setValue('21')
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).not.toHaveBeenCalled()
+    expect(wrapper.find('p.error[role="alert"]').text()).toContain('allowed range')
+    expect(save.element.disabled).toBe(true)
+
+    await labs.setValue('20')
+    await flushPromises()
+    expect(save.element.disabled).toBe(false)
+
+    const labBytes = wrapper.find('input[aria-label="Max lab size per guest (bytes)"]')
+    expect(labBytes.attributes('min')).toBe('1048576')
+    expect(labBytes.attributes('max')).toBe('268435456')
+    await labBytes.setValue('268435457')
+    await flushPromises()
+    expect(save.element.disabled).toBe(true)
+    wrapper.unmount()
+  })
+
   it('warns when health reports the shipped Turnstile test keys', async () => {
     api.health.mockResolvedValue({
       turnstile: { enabled: true, site_key: '1x00000000000000000000AA', test_keys: true }
@@ -1433,10 +1556,16 @@ describe('SystemView demo', () => {
   it('renders the sweep status, including never and unknown values', async () => {
     api.demoStatus
       .mockResolvedValueOnce({
-        data: { last_sweep_at: null, mem_available_mb: null, guests_active: 3, demo_nodes_running: 0 }
+        data: {
+          last_sweep_at: null, mem_available_mb: null, guests_active: 3, demo_nodes_running: 0,
+          guest_labs: 4, guest_lab_bytes: 1572864, guest_snapshots: 2
+        }
       })
       .mockResolvedValueOnce({
-        data: { last_sweep_at: 1800000000, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 1 }
+        data: {
+          last_sweep_at: 1800000000, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 1,
+          guest_labs: 0, guest_lab_bytes: 0, guest_snapshots: 0
+        }
       })
 
     const wrapper = await mountSystemDemoView()
@@ -1446,6 +1575,9 @@ describe('SystemView demo', () => {
     expect(status.find('[data-test="demo-memory"]').text()).toBe('unknown')
     expect(status.find('[data-test="demo-guests"]').text()).toBe('3')
     expect(status.find('[data-test="demo-nodes"]').text()).toBe('0')
+    expect(status.find('[data-test="demo-guest-labs"]').text()).toBe('4')
+    expect(status.find('[data-test="demo-guest-bytes"]').text()).toBe('1.5 MiB')
+    expect(status.find('[data-test="demo-guest-snapshots"]').text()).toBe('2')
 
     await openSystemTab(wrapper, 'Host')
     await openSystemTab(wrapper, 'Demo')
@@ -1455,6 +1587,9 @@ describe('SystemView demo', () => {
     expect(wrapper.find('[data-test="demo-memory"]').text()).toBe('6144 MB')
     expect(wrapper.find('[data-test="demo-guests"]').text()).toBe('0')
     expect(wrapper.find('[data-test="demo-nodes"]').text()).toBe('1')
+    expect(wrapper.find('[data-test="demo-guest-labs"]').text()).toBe('0')
+    expect(wrapper.find('[data-test="demo-guest-bytes"]').text()).toBe('0 B')
+    expect(wrapper.find('[data-test="demo-guest-snapshots"]').text()).toBe('0')
     wrapper.unmount()
   })
 
@@ -1470,7 +1605,10 @@ describe('SystemView demo', () => {
         data: { last_sweep_at: 1800000456, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 0 }
       })
     api.demoSweep.mockResolvedValue({
-      data: { guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, mem_available_mb: 6144 }
+      data: {
+        guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, mem_available_mb: 6144,
+        guest_files_removed: 4, snapshots_removed: 2
+      }
     })
 
     const wrapper = await mountSystemDemoView()
@@ -1482,21 +1620,24 @@ describe('SystemView demo', () => {
 
     expect(api.demoSweep).toHaveBeenCalledTimes(1)
     expect(toasts.some((toast) => toast.kind === 'success'
-      && toast.message === 'Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped.')).toBe(true)
+      && toast.message === 'Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped; 4 guest files and 2 snapshots removed.')).toBe(true)
     expect(api.demoStatus).toHaveBeenCalledTimes(2)
     expect(wrapper.find('[data-test="demo-last-sweep"]').text()).toBe(new Date(1800000123 * 1000).toLocaleString())
     expect(wrapper.find('[data-test="demo-memory"]').text()).toBe('6144 MB')
     expect(wrapper.find('[data-test="demo-sweep"]').element.disabled).toBe(false)
 
     api.demoSweep.mockResolvedValueOnce({
-      data: { guests_purged: 0, labs_wiped: 0, nodes_reaped: 1, labs_failed: 2, mem_available_mb: 6144 }
+      data: {
+        guests_purged: 0, labs_wiped: 0, nodes_reaped: 1, labs_failed: 2, mem_available_mb: 6144,
+        guest_files_removed: 0, snapshots_removed: 0
+      }
     })
     await wrapper.find('[data-test="demo-sweep"]').trigger('click')
     await flushPromises()
 
     expect(api.demoSweep).toHaveBeenCalledTimes(2)
     expect(toasts.some((toast) => toast.kind === 'warn'
-      && toast.message === 'Sweep complete: 0 guests purged, 0 labs wiped, 1 node stopped; 2 labs could not be wiped and will be retried.')).toBe(true)
+      && toast.message === 'Sweep complete: 0 guests purged, 0 labs wiped, 1 node stopped; 0 guest files and 0 snapshots removed; 2 labs could not be wiped and will be retried.')).toBe(true)
     expect(api.demoStatus).toHaveBeenCalledTimes(3)
     expect(wrapper.find('[data-test="demo-last-sweep"]').text()).toBe(new Date(1800000456 * 1000).toLocaleString())
     expect(wrapper.find('[data-test="demo-sweep"]').element.disabled).toBe(false)
@@ -1564,6 +1705,230 @@ describe('SystemView account settings', () => {
     expect(account.exists()).toBe(true)
     expect(account.findAll('button').some((button) => button.text() === 'Change password')).toBe(true)
     expect(wrapper.find('.settings-panel form button[type="submit"]').element.disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('renders default retention and backup limits with the API bounds', async () => {
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const expected = [
+      ['Login attempt retention (days)', '30', '1', '3650'],
+      ['Audit log retention (days)', '90', '1', '3650'],
+      ['Finished job retention (days)', '30', '1', '3650'],
+      ['Max finished jobs kept', '1000', '100', '1000000'],
+      ['Maintenance interval (seconds)', '3600', '60', '86400'],
+      ['Max backup archive (bytes)', '2147483648', '1048576', '10737418240'],
+      ['Max backup entries', '10000', '1', '1000000'],
+      ['Max uncompressed backup (bytes)', '4294967296', '1048576', '42949672960'],
+      ['Max backup database (bytes)', '1073741824', '1048576', '10737418240']
+    ]
+    for (const [label, value, min, max] of expected) {
+      const input = wrapper.find(`input[aria-label="${label}"]`)
+      expect(input.exists()).toBe(true)
+      expect(input.element.value).toBe(value)
+      expect(input.attributes('min')).toBe(min)
+      expect(input.attributes('max')).toBe(max)
+    }
+
+    const settingsText = wrapper.find('.settings-panel:not(.demo-panel)').text()
+    expect(settingsText).toContain('2.0 GiB')
+    expect(settingsText).toContain('4.0 GiB')
+    expect(settingsText).toContain('1.0 GiB')
+    wrapper.unmount()
+  })
+
+  it('loads retention and backup limits from api.settings', async () => {
+    api.settings.mockResolvedValue({
+      data: {
+        ...settingsFixture(),
+        retention_login_attempts_days: 14,
+        retention_audit_log_days: 45,
+        retention_jobs_days: 7,
+        retention_jobs_max_rows: 500,
+        maintenance_interval_seconds: 900,
+        backup_max_archive_bytes: 104857600,
+        backup_max_entries: 5000,
+        backup_max_uncompressed_bytes: 209715200,
+        backup_max_database_bytes: 52428800
+      }
+    })
+
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const values = {
+      'Login attempt retention (days)': '14',
+      'Audit log retention (days)': '45',
+      'Finished job retention (days)': '7',
+      'Max finished jobs kept': '500',
+      'Maintenance interval (seconds)': '900',
+      'Max backup archive (bytes)': '104857600',
+      'Max backup entries': '5000',
+      'Max uncompressed backup (bytes)': '209715200',
+      'Max backup database (bytes)': '52428800'
+    }
+    for (const [label, value] of Object.entries(values)) {
+      expect(wrapper.find(`input[aria-label="${label}"]`).element.value).toBe(value)
+    }
+    wrapper.unmount()
+  })
+
+  it('clamps retention and backup limits the API reports outside its bounds', async () => {
+    api.settings.mockResolvedValue({
+      data: {
+        ...settingsFixture(),
+        retention_login_attempts_days: 0,
+        retention_audit_log_days: 99999,
+        retention_jobs_days: '10',
+        retention_jobs_max_rows: null,
+        maintenance_interval_seconds: 1,
+        backup_max_archive_bytes: 1,
+        backup_max_entries: 2000000,
+        backup_max_uncompressed_bytes: undefined,
+        backup_max_database_bytes: 10737418241
+      }
+    })
+
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    expect(wrapper.find('input[aria-label="Login attempt retention (days)"]').element.value).toBe('1')
+    expect(wrapper.find('input[aria-label="Audit log retention (days)"]').element.value).toBe('3650')
+    expect(wrapper.find('input[aria-label="Finished job retention (days)"]').element.value).toBe('10')
+    expect(wrapper.find('input[aria-label="Max finished jobs kept"]').element.value).toBe('1000')
+    expect(wrapper.find('input[aria-label="Maintenance interval (seconds)"]').element.value).toBe('60')
+    expect(wrapper.find('input[aria-label="Max backup archive (bytes)"]').element.value).toBe('1048576')
+    expect(wrapper.find('input[aria-label="Max backup entries"]').element.value).toBe('1000000')
+    expect(wrapper.find('input[aria-label="Max uncompressed backup (bytes)"]').element.value).toBe('4294967296')
+    expect(wrapper.find('input[aria-label="Max backup database (bytes)"]').element.value).toBe('10737418240')
+    wrapper.unmount()
+  })
+
+  it('saves retention and backup limits as bounded numbers', async () => {
+    api.saveSettings.mockResolvedValue({ data: settingsFixture() })
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    await wrapper.find('input[aria-label="Login attempt retention (days)"]').setValue('21')
+    await wrapper.find('input[aria-label="Audit log retention (days)"]').setValue('120')
+    await wrapper.find('input[aria-label="Finished job retention (days)"]').setValue('14')
+    await wrapper.find('input[aria-label="Max finished jobs kept"]').setValue('2000')
+    await wrapper.find('input[aria-label="Maintenance interval (seconds)"]').setValue('1800')
+    await wrapper.find('input[aria-label="Max backup archive (bytes)"]').setValue('536870912')
+    await wrapper.find('input[aria-label="Max backup entries"]').setValue('20000')
+    await wrapper.find('input[aria-label="Max uncompressed backup (bytes)"]').setValue('1073741824')
+    await wrapper.find('input[aria-label="Max backup database (bytes)"]').setValue('268435456')
+    await wrapper.find('.settings-panel:not(.demo-panel) form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+    const payload = api.saveSettings.mock.calls[0][0]
+    expect(payload).toMatchObject({
+      retention_login_attempts_days: 21,
+      retention_audit_log_days: 120,
+      retention_jobs_days: 14,
+      retention_jobs_max_rows: 2000,
+      maintenance_interval_seconds: 1800,
+      backup_max_archive_bytes: 536870912,
+      backup_max_entries: 20000,
+      backup_max_uncompressed_bytes: 1073741824,
+      backup_max_database_bytes: 268435456
+    })
+    for (const key of [
+      'retention_login_attempts_days', 'retention_audit_log_days', 'retention_jobs_days',
+      'retention_jobs_max_rows', 'maintenance_interval_seconds', 'backup_max_archive_bytes',
+      'backup_max_entries', 'backup_max_uncompressed_bytes', 'backup_max_database_bytes'
+    ]) {
+      expect(typeof payload[key]).toBe('number')
+    }
+    expect(toasts.some((toast) => toast.kind === 'success' && toast.message.includes('Settings saved'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('blocks saving retention limits outside the API bounds', async () => {
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const save = wrapper.find('.settings-panel:not(.demo-panel) form button[type="submit"]')
+    await wrapper.find('input[aria-label="Finished job retention (days)"]').setValue('0')
+    await wrapper.find('.settings-panel:not(.demo-panel) form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).not.toHaveBeenCalled()
+    expect(wrapper.find('p.error[role="alert"]').text()).toContain('allowed range')
+    expect(save.element.disabled).toBe(true)
+
+    await wrapper.find('input[aria-label="Finished job retention (days)"]').setValue('30')
+    await flushPromises()
+    expect(save.element.disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows the backup restore caps from the loaded settings', async () => {
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Backup')
+
+    const limits = wrapper.find('[data-test="backup-limits"]')
+    expect(limits.exists()).toBe(true)
+    expect(limits.text()).toContain('2.0 GiB')
+    expect(limits.text()).toContain('10000 entries')
+    expect(limits.text()).toContain('4.0 GiB')
+    expect(limits.text()).toContain('1.0 GiB')
+    wrapper.unmount()
+  })
+
+  it('runs maintenance, disables the button while running, and summarises the result', async () => {
+    let resolveMaintenance
+    api.maintenance.mockReturnValue(new Promise((resolve) => { resolveMaintenance = resolve }))
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const button = wrapper.find('[data-test="run-maintenance"]')
+    expect(button.text()).toBe('Run maintenance')
+    await button.trigger('click')
+    expect(button.element.disabled).toBe(true)
+    expect(button.text()).toBe('Running…')
+
+    resolveMaintenance({
+      data: {
+        sessions_deleted: 2, login_attempts_deleted: 1, audit_log_deleted: 4,
+        jobs_deleted: 3, snapshots_deleted: 2, trash_deleted: 1
+      }
+    })
+    await flushPromises()
+
+    expect(api.maintenance).toHaveBeenCalledTimes(1)
+    expect(toasts.some((toast) => toast.kind === 'success'
+      && toast.message === 'Maintenance complete: 2 sessions, 1 login attempt, 4 audit rows, 3 jobs, 2 snapshots, and 1 trash lab removed.')).toBe(true)
+    expect(button.element.disabled).toBe(false)
+    expect(button.text()).toBe('Run maintenance')
+    wrapper.unmount()
+  })
+
+  it('toasts a maintenance error and re-enables the button', async () => {
+    api.maintenance.mockRejectedValue(new Error('Maintenance is unavailable.'))
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const button = wrapper.find('[data-test="run-maintenance"]')
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(api.maintenance).toHaveBeenCalledTimes(1)
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('Maintenance is unavailable.'))).toBe(true)
+    expect(button.element.disabled).toBe(false)
+    expect(button.text()).toBe('Run maintenance')
+    wrapper.unmount()
+  })
+
+  it('hides the maintenance action from non-admins', async () => {
+    session.user = { id: 'user3', username: 'viewer', role: 'user' }
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    expect(wrapper.find('[data-test="run-maintenance"]').exists()).toBe(false)
+    expect(wrapper.find('.maintenance-block').exists()).toBe(false)
     wrapper.unmount()
   })
 })

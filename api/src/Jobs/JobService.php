@@ -7,10 +7,16 @@ declare(strict_types=1);
 namespace TeraLab\Api\Jobs;
 
 use PDO;
+use Throwable;
+use TeraLab\Api\Database\BusyRetry;
 use TeraLab\Api\Http\HttpException;
 
 final class JobService
 {
+    public const RECONCILE_INTERVAL_SECONDS = 300;
+
+    public const LAST_RECONCILE_KEY = 'maintenance_last_reconcile_at';
+
     public function __construct(private readonly PDO $pdo)
     {
     }
@@ -129,5 +135,48 @@ final class JobService
         ]);
 
         return $statement->rowCount();
+    }
+
+    /**
+     * Reconcile at most once per interval, using a settings row as the
+     * persisted last-run timestamp. This keeps the startup bookkeeping off the
+     * per-request write path while still recovering interrupted jobs.
+     */
+    public function reconcileIfDue(int $interval = self::RECONCILE_INTERVAL_SECONDS): ?int
+    {
+        $now = time();
+        $lastRun = $this->lastReconcileAt();
+        if ($lastRun !== null && $now - $lastRun < max(60, $interval)) {
+            return null;
+        }
+
+        $reconciled = $this->reconcile();
+        BusyRetry::retry(function () use ($now): void {
+            $statement = $this->pdo->prepare(
+                'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at) '
+                . 'ON CONFLICT(key) DO UPDATE SET value = :value, updated_at = :updated_at'
+            );
+            $statement->execute([
+                ':key' => self::LAST_RECONCILE_KEY,
+                ':value' => (string) $now,
+                ':updated_at' => $now,
+            ]);
+        });
+
+        return $reconciled;
+    }
+
+    public function lastReconcileAt(): ?int
+    {
+        try {
+            $statement = $this->pdo->prepare('SELECT value FROM settings WHERE key = :key');
+            $statement->execute([':key' => self::LAST_RECONCILE_KEY]);
+            $value = $statement->fetchColumn();
+            $statement->closeCursor();
+        } catch (Throwable) {
+            return null;
+        }
+
+        return is_string($value) && ctype_digit($value) ? (int) $value : null;
     }
 }

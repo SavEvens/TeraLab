@@ -12,6 +12,8 @@ use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Labs\LabRepository;
+use TeraLab\Api\Labs\UnlParser;
 use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\HostMemory;
@@ -480,6 +482,81 @@ final class DemoGuardTest extends TestCase
         file_put_contents($directory . '/' . $id . '.yaml', $yaml);
     }
 
+    public function testGuestLabCountAndByteCaps(): void
+    {
+        $this->settings->update(['demo_max_labs_per_guest' => 2]);
+        $guest = $this->insertUser('guest-lab-cap', 'editor', 1, time() + 600);
+        $editor = $this->insertUser('editor-lab-cap', 'editor', 0, -1);
+        $this->writeLab('first', 'lab-one', $guest);
+        $this->writeLab('second', 'lab-two', $guest);
+        $this->writeLab('editor', 'lab-editor', $editor);
+
+        try {
+            $this->guard->assertCanAuthor($guest, [$this->node('1', 'PC1')]);
+            self::fail('a third guest lab must exceed the default count cap');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'The demo allows at most 2 labs per guest; delete a lab before creating another.',
+                $exception->getMessage(),
+            );
+        }
+        // Replacing an existing lab does not count itself.
+        $this->guard->assertCanAuthor($guest, [$this->node('1', 'PC1')], 'lab-one');
+        // Non-guests are exempt.
+        $this->guard->assertCanAuthor($editor, [$this->node('1', 'PC1')]);
+
+        $this->settings->update([
+            'demo_max_labs_per_guest' => 20,
+            'demo_max_lab_bytes_per_guest' => 1048576,
+        ]);
+        try {
+            $this->guard->assertCanWriteLab($guest, 1048577);
+            self::fail('a write above the byte cap must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertSame(
+                'The demo allows at most 1048576 bytes of lab data per guest; this lab would exceed it.',
+                $exception->getMessage(),
+            );
+        }
+        $this->guard->assertCanWriteLab($guest, 1024);
+        // Editors keep an unbounded byte budget.
+        $this->guard->assertCanWriteLab($editor, 10485760);
+    }
+
+    public function testLabRepositoryOwnedStatsExcludesTrashAndOtherOwners(): void
+    {
+        $guest = $this->insertUser('guest-stats', 'editor', 1, time() + 600);
+        $editor = $this->insertUser('editor-stats', 'editor', 0, -1);
+        $this->writeLab('guest-one', 'stats-one', $guest);
+        $this->writeLab('editor-one', 'stats-editor', $editor);
+        mkdir($this->config->labsDir . '/.trash', 0770, true);
+        $this->writeLab('trashed', 'stats-trashed', $guest, '/.trash');
+
+        $repository = new LabRepository($this->config->labsDir, new UnlParser());
+        $stats = $repository->ownedStats($guest);
+
+        self::assertSame(1, $stats['count']);
+        self::assertSame(['stats-one'], $stats['ids']);
+        self::assertGreaterThan(0, $stats['bytes']);
+        self::assertSame(0, $repository->ownedStats($guest, 'stats-one')['count']);
+    }
+
+    private function writeLab(string $name, string $id, string $owner, string $subdirectory = ''): void
+    {
+        $directory = $this->config->labsDir . $subdirectory;
+        if (!is_dir($directory)) {
+            mkdir($directory, 0770, true);
+        }
+        file_put_contents(
+            $directory . '/' . $name . '.unl',
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<lab name="' . $name . '" id="' . $id . '" version="1" owner="' . $owner . '">'
+            . '<topology><nodes/><networks/></topology></lab>'
+        );
+    }
+
     private function guard(): DemoGuard
     {
         return new DemoGuard(
@@ -487,6 +564,7 @@ final class DemoGuardTest extends TestCase
             $this->settings,
             new DemoPolicy(),
             new TemplateRepository($this->config),
+            new LabRepository($this->config->labsDir, new UnlParser()),
         );
     }
 
@@ -502,6 +580,7 @@ final class DemoGuardTest extends TestCase
             $this->settings,
             new DemoPolicy(),
             new TemplateRepository($this->config),
+            new LabRepository($this->config->labsDir, new UnlParser()),
             new HostMemory($path),
         );
     }

@@ -400,6 +400,28 @@ components:
             cleared: { type: integer, minimum: 0 }
             sessions_revoked: { type: integer, minimum: 0 }
             api_tokens_revoked: { type: integer, minimum: 0 }
+    MaintenanceResponse:
+      type: object
+      description: |
+        Admin-triggered retention cleanup summary. Counts are the rows removed
+        by this run; `trash_deleted` counts expired lab-trash entries. Job
+        reconciliation is separate and runs at bootstrap on its own interval,
+        not through this endpoint.
+      required: [status, data]
+      properties:
+        status: { type: string, enum: [success] }
+        data:
+          type: object
+          required:
+            [sessions_deleted, login_attempts_deleted, audit_log_deleted,
+             jobs_deleted, snapshots_deleted, trash_deleted]
+          properties:
+            sessions_deleted: { type: integer, minimum: 0 }
+            login_attempts_deleted: { type: integer, minimum: 0 }
+            audit_log_deleted: { type: integer, minimum: 0 }
+            jobs_deleted: { type: integer, minimum: 0 }
+            snapshots_deleted: { type: integer, minimum: 0 }
+            trash_deleted: { type: integer, minimum: 0 }
     UserDeleteRequest:
       type: object
       properties:
@@ -865,7 +887,7 @@ paths:
                 networks: { type: array, items: { type: object } }
       responses:
         '201': { description: Created }
-        '422': { description: "Validation error, link invariant, or guest demo limit (node count, template, or RAM)" }
+        '422': { description: "Validation error, link invariant, or guest demo limit (lab count, total lab bytes, node count, template, or RAM)" }
   /api/v2/labs/import:
     post:
       tags: [labs]
@@ -926,7 +948,7 @@ paths:
                         items: { $ref: '#/components/schemas/LabYamlWarning' }
         '403': { description: Editor role or CSRF required }
         '413': { description: Request body too large }
-        '422': { description: "Empty/oversized file, YAML compile error, compiled .unl over 10 MB, or a guest demo node-count/template violation; ambiguous XML+YAML failures include both messages" }
+        '422': { description: "Empty/oversized file, YAML compile error, compiled .unl over 10 MB, or a guest demo violation (lab count, lab bytes, node count, or template); ambiguous XML+YAML failures include both messages" }
   /api/v2/labs/validate:
     post:
       tags: [labs]
@@ -991,7 +1013,7 @@ paths:
       responses:
         '200': { description: Saved }
         '409': { description: Revision conflict or running-lab lock }
-        '422': { description: "Validation error, link invariant, or guest demo limit when nodes are sent" }
+        '422': { description: "Validation error, link invariant, or a guest demo limit (lab bytes, node count, template, or RAM) when nodes are sent" }
     delete:
       tags: [labs]
       summary: Move a stopped lab to trash
@@ -1037,7 +1059,7 @@ paths:
         '403': { description: "Editor role, CSRF, or lab access denied" }
         '404': { description: Lab not found }
         '409': { description: "A node is running or the supplied revision is stale" }
-        '422': { description: "Missing/non-string yaml, bad filename/revision type, YAML compile error, compiled .unl over 10 MB, or a guest demo limit" }
+        '422': { description: "Missing/non-string yaml, bad filename/revision type, YAML compile error, compiled .unl over 10 MB, or a guest demo limit (lab bytes, node count, template, or RAM)" }
   /api/v2/labs/{id}/export:
     get:
       tags: [labs]
@@ -1096,7 +1118,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '201': { description: Duplicated }
-        '422': { description: "Guest demo limit on the source lab's nodes" }
+        '422': { description: "Guest demo limit on the source lab's nodes or total lab bytes, or the per-guest lab-count cap" }
   /api/v2/labs/{id}/nodes:
     get:
       tags: [nodes]
@@ -1424,8 +1446,14 @@ paths:
     post:
       tags: [labs]
       summary: Create a topology/config snapshot
+      description: |
+        Enforces `demo_max_snapshots_per_lab` and the per-lab snapshot byte
+        budget (`demo_max_lab_bytes_per_guest` when creating the snapshot).
+        These caps apply to every account. Exceeding either answers 422 before
+        the snapshot is written.
       responses:
         '201': { description: Snapshot created }
+        '422': { description: "Missing name, snapshot count cap, or snapshot byte budget" }
   /api/v2/labs/{id}/snapshots/{snapshot}/restore:
     post:
       tags: [labs]
@@ -1564,7 +1592,8 @@ paths:
       description: |
         Administrator only, with CSRF. Accepts any subset of the settings
         keys, including `turnstile_hostname` (lower-cased hostname, or `""` to
-        disable the check); unknown keys are ignored.
+        disable the check), the guest caps, the retention windows, and the
+        backup/restore limits; unknown keys are ignored.
 
         Production guard: in the `production` environment, enabling
         `turnstile_enabled` with an empty or Cloudflare-test secret, or an
@@ -1583,6 +1612,79 @@ paths:
                 turnstile_hostname:
                   type: string
                   description: "Optional siteverify hostname, lower-cased; empty disables the check"
+                demo_max_labs_per_guest:
+                  type: integer
+                  default: 3
+                  minimum: 1
+                  maximum: 20
+                  description: "Lab files per guest account"
+                demo_max_lab_bytes_per_guest:
+                  type: integer
+                  default: 20971520
+                  minimum: 1048576
+                  maximum: 268435456
+                  description: "Total compiled `.unl` bytes per guest; also the per-lab snapshot byte budget"
+                demo_max_snapshots_per_lab:
+                  type: integer
+                  default: 3
+                  minimum: 1
+                  maximum: 20
+                  description: "Snapshots kept per lab"
+                demo_max_tokens_per_user:
+                  type: integer
+                  default: 5
+                  minimum: 1
+                  maximum: 50
+                  description: "API tokens per non-guest account; guests are fixed at 1"
+                retention_login_attempts_days:
+                  type: integer
+                  default: 30
+                  minimum: 1
+                  maximum: 3650
+                retention_audit_log_days:
+                  type: integer
+                  default: 90
+                  minimum: 1
+                  maximum: 3650
+                retention_jobs_days:
+                  type: integer
+                  default: 30
+                  minimum: 1
+                  maximum: 3650
+                retention_jobs_max_rows:
+                  type: integer
+                  default: 1000
+                  minimum: 100
+                  maximum: 1000000
+                  description: "Terminal jobs kept, newest first"
+                maintenance_interval_seconds:
+                  type: integer
+                  default: 3600
+                  minimum: 60
+                  maximum: 86400
+                  description: "Seconds between lazy retention runs on the demo sweep"
+                backup_max_archive_bytes:
+                  type: integer
+                  default: 2147483648
+                  minimum: 1048576
+                  maximum: 10737418240
+                  description: "Uploaded restore archive size limit"
+                backup_max_entries:
+                  type: integer
+                  default: 10000
+                  minimum: 1
+                  maximum: 1000000
+                backup_max_uncompressed_bytes:
+                  type: integer
+                  default: 4294967296
+                  minimum: 1048576
+                  maximum: 42949672960
+                backup_max_database_bytes:
+                  type: integer
+                  default: 1073741824
+                  minimum: 1048576
+                  maximum: 10737418240
+                  description: "`database.sdb` entry size limit"
       responses:
         '200': { description: Updated }
         '401': { description: Authentication required }
@@ -1609,7 +1711,10 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [last_sweep_at, mem_available_mb, guests_active, demo_nodes_running]
+                    required:
+                      [last_sweep_at, mem_available_mb, guests_active,
+                       demo_nodes_running, guest_labs, guest_lab_bytes,
+                       guest_snapshots]
                     properties:
                       last_sweep_at:
                         type: integer
@@ -1627,6 +1732,18 @@ paths:
                         type: integer
                         minimum: 0
                         description: "Nodes currently running in guest-owned labs"
+                      guest_labs:
+                        type: integer
+                        minimum: 0
+                        description: "Guest-owned `.unl` files (trash excluded)"
+                      guest_lab_bytes:
+                        type: integer
+                        minimum: 0
+                        description: "Total on-disk size of guest-owned lab files"
+                      guest_snapshots:
+                        type: integer
+                        minimum: 0
+                        description: "Snapshot rows belonging to guest-owned labs"
         '403': { description: Administrator role required }
   /api/v2/system/demo/sweep:
     post:
@@ -1655,7 +1772,9 @@ paths:
                   status: { type: string, enum: [success] }
                   data:
                     type: object
-                    required: [guests_purged, labs_wiped, labs_failed, nodes_reaped, mem_available_mb]
+                    required:
+                      [guests_purged, labs_wiped, labs_failed, nodes_reaped,
+                       guest_files_removed, snapshots_removed, mem_available_mb]
                     properties:
                       guests_purged: { type: integer, minimum: 0 }
                       labs_wiped:
@@ -1670,21 +1789,77 @@ paths:
                         type: integer
                         minimum: 0
                         description: "Guest nodes stopped by the memory reaper"
+                      guest_files_removed:
+                        type: integer
+                        minimum: 0
+                        description: "Deleted guest `.unl` files plus trash entries"
+                      snapshots_removed:
+                        type: integer
+                        minimum: 0
+                        description: "Deleted snapshot rows"
                       mem_available_mb:
                         type: integer
                         nullable: true
                         description: "Host MemAvailable after the sweep; null when it cannot be read"
         '403': { description: Administrator role or invalid CSRF token }
+  /api/v2/system/maintenance:
+    post:
+      tags: [system]
+      summary: Run retention cleanup now (admin)
+      description: |
+        Administrator only, with CSRF. Runs the retention cleanup immediately:
+        expired/idle sessions, login attempts and audit rows past their
+        retention windows, terminal jobs past `retention_jobs_days` or beyond
+        `retention_jobs_max_rows`, snapshots beyond
+        `demo_max_snapshots_per_lab` per lab, and expired lab-trash entries.
+        Active `queued`/`running` jobs are never removed. Job reconciliation is
+        a separate bootstrap step and is not part of this call. The response is
+        `Cache-Control: no-store`; the action is audited as
+        `system.maintenance`.
+      responses:
+        '200':
+          description: Retention cleanup summary
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MaintenanceResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role or invalid CSRF token }
   /api/v2/system/backup:
     get:
       tags: [system]
       summary: Download a backup archive (admin)
+      description: |
+        Administrator only. Returns a zip containing `database.sdb`,
+        `labs/*.unl`, `templates/*.yaml`, `settings.json`, and `images.json`.
+        The response is `Cache-Control: no-store`; the archive contains
+        settings and image metadata, so it must not be cached.
       responses:
-        '200': { description: Zip backup }
+        '200':
+          description: Zip backup
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '500': { description: "Zip extension unavailable or the archive cannot be read" }
   /api/v2/system/restore:
     post:
       tags: [system]
       summary: Restore labs, templates, settings, and image metadata (admin)
+      description: |
+        Administrator only, with CSRF. The response is `Cache-Control:
+        no-store`. Before extracting anything, the uploaded zip is validated
+        against `backup_max_archive_bytes`, `backup_max_entries`,
+        `backup_max_uncompressed_bytes`, and `backup_max_database_bytes`; an
+        entry above its cap answers 413, and an unsafe path or nested archive
+        answers 422. A rejected archive writes no labs, templates, settings, or
+        staged database.
       requestBody:
         required: true
         content:
@@ -1695,7 +1870,16 @@ paths:
               properties:
                 file: { type: string, format: binary }
       responses:
-        '200': { description: Restore result }
+        '200':
+          description: Restore result
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+        '400': { description: The upload did not complete }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role or invalid CSRF token }
+        '413': { description: "Archive, entry count, uncompressed size, or database entry exceeds its configured limit" }
+        '422': { description: "Invalid zip, unsafe path, nested archive, or missing file field" }
   /api/v2/system/tokens:
     get:
       tags: [system]
@@ -1705,8 +1889,18 @@ paths:
     post:
       tags: [system]
       summary: Create an API token
+      description: |
+        The caller may hold at most `demo_max_tokens_per_user` tokens (default
+        5); a demo guest is fixed at one regardless of the setting. Exceeding
+        the cap answers 422. Minting is also limited to 10 attempts per user
+        and client address in 15 minutes; the next attempt answers 429
+        `Too many API token requests. Try again later.`
       responses:
         '201': { description: Token created; plaintext returned once }
+        '401': { description: Authentication required }
+        '403': { description: Invalid CSRF token }
+        '422': { description: "Missing/invalid name or scopes, or the per-user token cap" }
+        '429': { description: "Token-creation budget exhausted (10 per 15 minutes per user and address)" }
   /api/v2/system/tokens/{id}:
     delete:
       tags: [system]

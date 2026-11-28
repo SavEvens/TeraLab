@@ -131,6 +131,7 @@ export const api = {
   saveSettings: (payload) => request('/system/settings', { method: 'PUT', body: payload }),
   demoStatus: () => request('/system/demo/status'),
   demoSweep: () => request('/system/demo/sweep', { method: 'POST' }),
+  maintenance: () => request('/system/maintenance', { method: 'POST' }),
   logs: (source) => request(`/system/logs?source=${encodeURIComponent(source)}`),
   tokens: () => request('/system/tokens'),
   createToken: (payload) => request('/system/tokens', { method: 'POST', body: payload }),

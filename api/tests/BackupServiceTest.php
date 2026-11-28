@@ -171,6 +171,128 @@ final class BackupServiceTest extends TestCase
         self::assertSame(0600, fileperms($directory . '/pending') & 0777);
     }
 
+    public function testRestoreRejectsUnsafePathsBeforeExtracting(): void
+    {
+        $contents = $this->zipBytes(['../evil.unl' => $this->labXml()]);
+        $upload = $this->upload($contents);
+
+        try {
+            $this->backup->restore($upload);
+            self::fail('a traversal entry must be rejected');
+        } catch (\TeraLab\Api\Http\HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('unsafe path', $exception->getMessage());
+        }
+        self::assertFileDoesNotExist($this->root . '/evil.unl');
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+    }
+
+    public function testRestoreRejectsNestedArchives(): void
+    {
+        $upload = $this->upload($this->zipBytes(['labs/nested.zip' => 'PK fake']));
+
+        try {
+            $this->backup->restore($upload);
+            self::fail('a nested archive must be rejected');
+        } catch (\TeraLab\Api\Http\HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('Nested archives', $exception->getMessage());
+        }
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+    }
+
+    public function testRestoreRejectsTooManyEntries(): void
+    {
+        $this->settings->update(['backup_max_entries' => 1]);
+        $upload = $this->upload($this->zipBytes([
+            'labs/one.unl' => $this->labXml(),
+            'labs/two.unl' => $this->labXml(),
+        ]));
+
+        try {
+            $this->backup->restore($upload);
+            self::fail('an archive over the entry cap must be rejected');
+        } catch (\TeraLab\Api\Http\HttpException $exception) {
+            self::assertSame(413, $exception->status);
+            self::assertStringContainsString('too many entries', $exception->getMessage());
+        }
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+    }
+
+    public function testRestoreRejectsExpandedSizeAndOversizedDatabase(): void
+    {
+        $this->settings->update(['backup_max_uncompressed_bytes' => 1048576]);
+        $upload = $this->upload($this->zipBytes(['labs/big.unl' => $this->labXml() . str_repeat('A', 1100000)]));
+        try {
+            $this->backup->restore($upload);
+            self::fail('an archive that expands past the cap must be rejected');
+        } catch (\TeraLab\Api\Http\HttpException $exception) {
+            self::assertSame(413, $exception->status);
+            self::assertStringContainsString('expands beyond', $exception->getMessage());
+        }
+
+        $this->settings->update([
+            'backup_max_uncompressed_bytes' => 4294967296,
+            'backup_max_database_bytes' => 1048576,
+        ]);
+        $database = $this->upload($this->zipBytes(['database.sdb' => str_repeat('D', 1100000)]));
+        try {
+            $this->backup->restore($database);
+            self::fail('an oversized database must be rejected');
+        } catch (\TeraLab\Api\Http\HttpException $exception) {
+            self::assertSame(413, $exception->status);
+            self::assertStringContainsString('database exceeds', $exception->getMessage());
+        }
+        self::assertFileDoesNotExist($this->root . '/data/restore/database.sdb');
+    }
+
+    public function testRestoreRejectsAnArchiveOverTheUploadCap(): void
+    {
+        $this->settings->update(['backup_max_archive_bytes' => 1048576]);
+        $upload = $this->upload($this->zipBytes([
+            'labs/random.unl' => random_bytes(1200000),
+        ]));
+
+        try {
+            $this->backup->restore($upload);
+            self::fail('an archive over the upload cap must be rejected');
+        } catch (\TeraLab\Api\Http\HttpException $exception) {
+            self::assertSame(413, $exception->status);
+            self::assertStringContainsString('size limit', $exception->getMessage());
+        }
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+    }
+
+    private function upload(string $contents): UploadedFile
+    {
+        return new UploadedFile(
+            (new StreamFactory())->createStream($contents),
+            'backup.zip',
+            'application/zip',
+            strlen($contents),
+            UPLOAD_ERR_OK,
+        );
+    }
+
+    /**
+     * @param array<string, string> $entries
+     */
+    private function zipBytes(array $entries): string
+    {
+        $path = $this->root . '/archive-' . bin2hex(random_bytes(4)) . '.zip';
+        $zip = new ZipArchive();
+        self::assertTrue($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true);
+        foreach ($entries as $name => $contents) {
+            $zip->addFromString($name, $contents);
+        }
+        $zip->close();
+        $bytes = file_get_contents($path);
+        self::assertIsString($bytes);
+        @unlink($path);
+
+        return $bytes;
+    }
+
     private function linkedPath(string $id): string
     {
         $directory = $this->config->imagesDir . '/qemu/' . $id;

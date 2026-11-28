@@ -16,6 +16,7 @@ use TeraLab\Api\Policy\IconPolicy;
 use TeraLab\Api\Policy\PicturePolicy;
 use TeraLab\Api\Snapshots\SnapshotRepository;
 use TeraLab\Api\System\DemoGuard;
+use TeraLab\Api\System\SettingsService;
 use TeraLab\Api\Templates\DockerOptions;
 use TeraLab\Api\Templates\QemuDisks;
 use TeraLab\Api\Templates\QemuOptions;
@@ -25,6 +26,12 @@ final class LabService
 {
     private const TRASH_TTL = 2592000; // 30 days
     private const MAX_UNL_BYTES = 10485760;
+
+    /** Default snapshot cap when the settings service is not injected (tests/CLI). */
+    private const DEFAULT_SNAPSHOT_COUNT_CAP = 3;
+
+    /** Default snapshot byte budget; matches demo_max_lab_bytes_per_guest. */
+    private const DEFAULT_SNAPSHOT_BYTES_CAP = 20971520;
 
     /** Node types the agent can run. */
     private const ENGINES = ['qemu', 'vpcs', 'iol', 'dynamips', 'docker'];
@@ -42,6 +49,7 @@ final class LabService
         private readonly ?DemoGuard $demoGuard = null,
         private readonly ?IconPolicy $icons = null,
         private readonly ?PicturePolicy $pictures = null,
+        private readonly ?SettingsService $settings = null,
     ) {
     }
 
@@ -101,7 +109,7 @@ final class LabService
         }
 
         $path = $this->targetPath($name, null);
-        $lab = $this->write($path, $lab);
+        $lab = $this->write($path, $lab, $ownerId);
 
         return $this->metadata($lab, $path);
     }
@@ -130,7 +138,7 @@ final class LabService
             ? $this->normalizeNodes($input['nodes'])
             : $this->labNodes($lab);
         if (array_key_exists('nodes', $input)) {
-            $this->demoGuard?->assertCanAuthor($userId, $nodes);
+            $this->demoGuard?->assertCanAuthor($userId, $nodes, (string) $lab['id']);
         }
         $networks = array_key_exists('networks', $input)
             ? $this->normalizeNetworks($input['networks'])
@@ -152,7 +160,7 @@ final class LabService
                 $lab['attributes']['tags'] = $tags;
             }
         }
-        $lab = $this->write($path, $lab);
+        $lab = $this->write($path, $lab, $userId, (string) $lab['id']);
 
         return $this->metadata($lab, $path);
     }
@@ -185,6 +193,7 @@ final class LabService
             $this->labNodes($lab),
             $this->labNetworks($lab),
         );
+        $this->demoGuard?->assertCanAuthor($ownerId, $this->labNodes($lab));
         $lab['id'] = $this->uuid();
         $lab['author'] = $lab['author'] !== '' ? $lab['author'] : ($author ?? '');
         $lab['revision'] = 1;
@@ -195,7 +204,7 @@ final class LabService
         $lab['attributes']['updated_at'] = gmdate('c');
 
         $path = $this->targetPath(self::labName($lab['name']), null);
-        $lab = $this->write($path, $lab);
+        $lab = $this->write($path, $lab, $ownerId);
 
         return $this->metadata($lab, $path);
     }
@@ -298,7 +307,7 @@ final class LabService
             $this->normalizeNodes($payload['nodes'] ?? []),
             $this->normalizeNetworks($payload['networks'] ?? []),
         );
-        $this->demoGuard?->assertCanAuthor($userId, $nodes);
+        $this->demoGuard?->assertCanAuthor($userId, $nodes, (string) $lab['id']);
 
         $oldRuns = [];
         foreach ($this->engineNodes($lab) as $node) {
@@ -345,7 +354,7 @@ final class LabService
 
         // Write (and validate) the new lab before touching any run state, so
         // a failed write cannot wipe a node that is still referenced.
-        $lab = $this->write($path, $lab);
+        $lab = $this->write($path, $lab, $userId, (string) $lab['id']);
         $mappingPreserved = $this->cleanupRunState((string) $lab['id'], $oldRuns, $newRuns);
         if (!$mappingPreserved && $oldRuns !== []) {
             $lab['warnings'][] = [
@@ -392,11 +401,33 @@ final class LabService
             throw new HttpException(422, 'Snapshot name is required.');
         }
 
-        return $this->snapshotRepository()->create(
-            (string) $lab['id'],
+        $repository = $this->snapshotRepository();
+        $labID = (string) $lab['id'];
+        $stats = $repository->stats($labID);
+        $countCap = $this->settings?->int('demo_max_snapshots_per_lab', self::DEFAULT_SNAPSHOT_COUNT_CAP)
+            ?? self::DEFAULT_SNAPSHOT_COUNT_CAP;
+        if ($stats['count'] >= $countCap) {
+            throw new HttpException(
+                422,
+                'At most ' . $countCap . ' snapshots are kept per lab; delete one before creating another.',
+            );
+        }
+
+        $xml = $this->writer->write($this->normaliseReferences($lab));
+        $byteCap = $this->settings?->int('demo_max_lab_bytes_per_guest', self::DEFAULT_SNAPSHOT_BYTES_CAP)
+            ?? self::DEFAULT_SNAPSHOT_BYTES_CAP;
+        if ($stats['bytes'] + strlen($xml) > $byteCap) {
+            throw new HttpException(
+                422,
+                'Snapshot storage for this lab would exceed the ' . $byteCap . '-byte demo limit; delete a snapshot first.',
+            );
+        }
+
+        return $repository->create(
+            $labID,
             $name,
             (int) $lab['revision'],
-            $this->writer->write($this->normaliseReferences($lab)),
+            $xml,
             $userId,
         );
     }
@@ -421,7 +452,7 @@ final class LabService
         $restored['id'] = $lab['id'];
         $restored['revision'] = (int) $lab['revision'] + 1;
         $restored['attributes']['updated_at'] = gmdate('c');
-        $restored = $this->write($path, $restored);
+        $restored = $this->write($path, $restored, $userId, (string) $lab['id']);
 
         return $this->metadata($restored, $path);
     }
@@ -458,7 +489,7 @@ final class LabService
         $lab['attributes']['updated_at'] = gmdate('c');
 
         $path = $this->targetPath($this->slug((string) $lab['name']), null);
-        $lab = $this->write($path, $lab);
+        $lab = $this->write($path, $lab, $ownerId);
 
         return $this->metadata($lab, $path);
     }
@@ -508,6 +539,9 @@ final class LabService
         if (!rename($path, $target)) {
             throw new RuntimeException('Cannot move the lab to trash.');
         }
+        // Snapshots belong to the live lab; a trashed lab must not leave an
+        // orphaned copy behind if it is never restored.
+        $this->snapshots?->deleteForLab((string) $lab['id']);
         $metadata = [
             'id' => (string) $lab['id'],
             'name' => (string) $lab['name'],
@@ -615,12 +649,19 @@ final class LabService
         return $this->config->labsDir . '/.trash';
     }
 
-    private function purgeExpiredTrash(): void
+    /**
+     * Remove trash entries past their retention window.
+     *
+     * Public so the maintenance service can run the same idempotent cleanup on
+     * its schedule. Returns the number of lab entries removed.
+     */
+    public function purgeExpiredTrash(): int
     {
         $directory = $this->trashDir();
         if (!is_dir($directory)) {
-            return;
+            return 0;
         }
+        $removed = 0;
         $cutoff = time() - self::TRASH_TTL;
         foreach (glob($directory . '/*.json') ?: [] as $metadataFile) {
             $metadata = json_decode((string) file_get_contents($metadataFile), true);
@@ -630,6 +671,91 @@ final class LabService
             $token = basename($metadataFile, '.json');
             @unlink($directory . '/' . $token . '.unl');
             @unlink($metadataFile);
+            $removed++;
+        }
+
+        return $removed;
+    }
+
+    /**
+     * Permanently remove one lab owned by a purged guest, without using the
+     * trash. Snapshots and now-empty folders are removed as well.
+     *
+     * Returns the number of snapshots deleted. A lab file that is already gone
+     * is idempotent; a failed unlink throws so the sweeper can keep the guest
+     * row for the next attempt.
+     */
+    public function deletePermanently(string $id): int
+    {
+        try {
+            [$lab, $path] = $this->loadById($id);
+        } catch (HttpException $exception) {
+            if ($exception->status === 404) {
+                return 0;
+            }
+
+            throw $exception;
+        }
+        $snapshots = $this->snapshots?->deleteForLab((string) $lab['id']) ?? 0;
+        if (is_file($path) && !@unlink($path)) {
+            throw new RuntimeException('Cannot delete the guest lab file.');
+        }
+        $this->removeEmptyParents(dirname($path));
+
+        return $snapshots;
+    }
+
+    /**
+     * Discard every trash entry created by one account and return how many lab
+     * entries were removed. Used when an expired guest is purged: its deleted
+     * labs must not outlive the identity that owned them.
+     */
+    public function purgeTrashForUser(string $userId): int
+    {
+        $directory = $this->trashDir();
+        if (!is_dir($directory)) {
+            return 0;
+        }
+        $removed = 0;
+        foreach (glob($directory . '/*.json') ?: [] as $metadataFile) {
+            $metadata = json_decode((string) file_get_contents($metadataFile), true);
+            if (!is_array($metadata) || (string) ($metadata['deleted_by'] ?? '') !== $userId) {
+                continue;
+            }
+            $token = basename($metadataFile, '.json');
+            $labFile = $directory . '/' . $token . '.unl';
+            if (is_file($labFile) && !@unlink($labFile)) {
+                throw new RuntimeException('Cannot delete the guest trash lab file.');
+            }
+            if (is_file($metadataFile) && !@unlink($metadataFile)) {
+                throw new RuntimeException('Cannot delete the guest trash entry.');
+            }
+            $removed++;
+        }
+
+        return $removed;
+    }
+
+    private function removeEmptyParents(string $directory): void
+    {
+        $root = rtrim((string) realpath($this->config->labsDir), DIRECTORY_SEPARATOR);
+        if ($root === '') {
+            return;
+        }
+        $directory = rtrim($directory, DIRECTORY_SEPARATOR);
+        while ($directory !== $root && str_starts_with($directory, $root . DIRECTORY_SEPARATOR)) {
+            if (!is_dir($directory)) {
+                $directory = dirname($directory);
+                continue;
+            }
+            $entries = scandir($directory);
+            if ($entries === false || count($entries) > 2) {
+                break;
+            }
+            if (!@rmdir($directory)) {
+                break;
+            }
+            $directory = dirname($directory);
         }
     }
 
@@ -1693,8 +1819,12 @@ final class LabService
      * @param array<string, mixed> $lab
      * @return array<string, mixed>
      */
-    private function write(string $path, array $lab): array
-    {
+    private function write(
+        string $path,
+        array $lab,
+        ?string $quotaOwner = null,
+        ?string $quotaExcludeLabId = null,
+    ): array {
         $lab = $this->normaliseReferences($lab);
         $lab['format'] = 'teralab-2';
         $xml = $this->writer->write($lab);
@@ -1706,6 +1836,9 @@ final class LabService
                 'Compiled lab exceeds the 10 MB .unl limit; reduce node configs or description size.'
             );
         }
+        // The demo byte budget is enforced on the compiled size, before the
+        // temporary file is created, so a rejected write leaves nothing behind.
+        $this->demoGuard?->assertCanWriteLab($quotaOwner, strlen($xml), $quotaExcludeLabId);
         $previous = libxml_use_internal_errors(true);
         $document = new \DOMDocument();
         $wellFormed = $document->loadXML($xml, LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);

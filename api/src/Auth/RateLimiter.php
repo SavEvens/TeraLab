@@ -7,6 +7,7 @@ declare(strict_types=1);
 namespace TeraLab\Api\Auth;
 
 use PDO;
+use TeraLab\Api\Database\BusyRetry;
 use TeraLab\Api\Http\HttpException;
 
 final class RateLimiter
@@ -44,6 +45,13 @@ final class RateLimiter
     public const SETUP_GLOBAL_IP = '*';
 
     public const SETUP_LIMIT_MESSAGE = 'Too many setup attempts. Try again later.';
+
+    /** API-token minting: bounded per user+address, separate from the token cap. */
+    public const TOKEN_WINDOW_SECONDS = 900;
+
+    public const TOKEN_MAX_PER_WINDOW = 10;
+
+    public const TOKEN_LIMIT_MESSAGE = 'Too many API token requests. Try again later.';
 
     public function __construct(private readonly PDO $pdo)
     {
@@ -99,12 +107,16 @@ final class RateLimiter
             'INSERT INTO login_attempts (username, ip, attempted_at, success) '
             . 'VALUES (:username, :ip, :attempted_at, :success)'
         );
-        $statement->execute([
-            ':username' => $username,
-            ':ip' => $ip,
-            ':attempted_at' => time(),
-            ':success' => $success ? 1 : 0,
-        ]);
+        // Appending a budget row twice is harmless, so a SQLITE_BUSY retry is
+        // safe and keeps a burst of failed logins from surfacing a lock error.
+        BusyRetry::retry(function () use ($statement, $username, $ip, $success): void {
+            $statement->execute([
+                ':username' => $username,
+                ':ip' => $ip,
+                ':attempted_at' => time(),
+                ':success' => $success ? 1 : 0,
+            ]);
+        });
     }
 
     public function clear(string $username, string $ip): void

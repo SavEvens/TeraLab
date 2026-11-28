@@ -15,6 +15,7 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Psr7\Factory\StreamFactory;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
+use TeraLab\Api\Auth\RateLimiter;
 use TeraLab\Api\Auth\TokenService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
@@ -81,11 +82,24 @@ final class DemoSettingsTest extends TestCase
         self::assertSame(48, $all['demo_guest_ttl_hours']);
         self::assertSame(6, $all['demo_guest_idle_hours']);
         self::assertSame(5, $all['demo_max_nodes_per_lab']);
+        self::assertSame(3, $all['demo_max_labs_per_guest']);
+        self::assertSame(20971520, $all['demo_max_lab_bytes_per_guest']);
+        self::assertSame(3, $all['demo_max_snapshots_per_lab']);
+        self::assertSame(5, $all['demo_max_tokens_per_user']);
         self::assertSame('vpcs', $all['demo_allowed_templates']);
         self::assertSame(1024, $all['demo_max_ram_per_node']);
         self::assertSame(2048, $all['demo_memory_floor_mb']);
         self::assertSame(120, $all['demo_idle_wipe_minutes']);
         self::assertSame(300, $all['demo_sweep_interval']);
+        self::assertSame(30, $all['retention_login_attempts_days']);
+        self::assertSame(90, $all['retention_audit_log_days']);
+        self::assertSame(30, $all['retention_jobs_days']);
+        self::assertSame(1000, $all['retention_jobs_max_rows']);
+        self::assertSame(3600, $all['maintenance_interval_seconds']);
+        self::assertSame(2147483648, $all['backup_max_archive_bytes']);
+        self::assertSame(10000, $all['backup_max_entries']);
+        self::assertSame(4294967296, $all['backup_max_uncompressed_bytes']);
+        self::assertSame(1073741824, $all['backup_max_database_bytes']);
         self::assertSame(0, $all['turnstile_enabled']);
         self::assertSame('3x00000000000000000000FF', $all['turnstile_site_key']);
         self::assertSame('1x0000000000000000000000000000000AA', $all['turnstile_secret_key']);
@@ -132,10 +146,23 @@ final class DemoSettingsTest extends TestCase
         yield 'demo_guest_ttl_hours' => ['demo_guest_ttl_hours', 1, 720];
         yield 'demo_guest_idle_hours' => ['demo_guest_idle_hours', 1, 72];
         yield 'demo_max_nodes_per_lab' => ['demo_max_nodes_per_lab', 1, 16];
+        yield 'demo_max_labs_per_guest' => ['demo_max_labs_per_guest', 1, 20];
+        yield 'demo_max_lab_bytes_per_guest' => ['demo_max_lab_bytes_per_guest', 1048576, 268435456];
+        yield 'demo_max_snapshots_per_lab' => ['demo_max_snapshots_per_lab', 1, 20];
+        yield 'demo_max_tokens_per_user' => ['demo_max_tokens_per_user', 1, 50];
         yield 'demo_max_ram_per_node' => ['demo_max_ram_per_node', 64, 4096];
         yield 'demo_memory_floor_mb' => ['demo_memory_floor_mb', 256, 65536];
         yield 'demo_idle_wipe_minutes' => ['demo_idle_wipe_minutes', 15, 1440];
         yield 'demo_sweep_interval' => ['demo_sweep_interval', 60, 3600];
+        yield 'retention_login_attempts_days' => ['retention_login_attempts_days', 1, 3650];
+        yield 'retention_audit_log_days' => ['retention_audit_log_days', 1, 3650];
+        yield 'retention_jobs_days' => ['retention_jobs_days', 1, 3650];
+        yield 'retention_jobs_max_rows' => ['retention_jobs_max_rows', 100, 1000000];
+        yield 'maintenance_interval_seconds' => ['maintenance_interval_seconds', 60, 86400];
+        yield 'backup_max_archive_bytes' => ['backup_max_archive_bytes', 1048576, 10737418240];
+        yield 'backup_max_entries' => ['backup_max_entries', 1, 1000000];
+        yield 'backup_max_uncompressed_bytes' => ['backup_max_uncompressed_bytes', 1048576, 42949672960];
+        yield 'backup_max_database_bytes' => ['backup_max_database_bytes', 1048576, 10737418240];
         yield 'turnstile_enabled' => ['turnstile_enabled', 0, 1];
         yield 'legacy_v1_enabled' => ['legacy_v1_enabled', 0, 1];
         // Pre-existing keys must keep their bounds too.
@@ -622,6 +649,40 @@ final class DemoSettingsTest extends TestCase
 
         $indexes = array_column($pdo->query('PRAGMA index_list(users)')->fetchAll(), 'name');
         self::assertContains('users_guest', $indexes);
+    }
+
+    public function testTokenCountCapAndGuestLowestCap(): void
+    {
+        $this->settings->update(['demo_max_tokens_per_user' => 2]);
+        self::assertSame(201, $this->request('POST', '/api/v2/system/tokens', ['name' => 'one'])->getStatusCode());
+        self::assertSame(201, $this->request('POST', '/api/v2/system/tokens', ['name' => 'two'])->getStatusCode());
+        $blocked = $this->request('POST', '/api/v2/system/tokens', ['name' => 'three']);
+        self::assertSame(422, $blocked->getStatusCode());
+        self::assertStringContainsString('At most 2 API tokens', (string) $blocked->getBody());
+
+        $expiration = time() + 3600;
+        $this->insertUser('guest-token-cap', 'guest-token-cap', 1, $expiration);
+        [$cookie, $csrf] = $this->login('guest-token-cap', self::OTHER_PASSWORD);
+        $first = $this->request('POST', '/api/v2/system/tokens', ['name' => 'guest-one'], [], $cookie, $csrf);
+        self::assertSame(201, $first->getStatusCode(), (string) $first->getBody());
+        $second = $this->request('POST', '/api/v2/system/tokens', ['name' => 'guest-two'], [], $cookie, $csrf);
+        self::assertSame(422, $second->getStatusCode());
+        self::assertSame(
+            'The demo allows one API token per guest; revoke it before creating another.',
+            $this->json($second)['message'],
+        );
+    }
+
+    public function testTokenCreationIsRateLimitedPerUserAndAddress(): void
+    {
+        $this->settings->update(['demo_max_tokens_per_user' => 50]);
+        for ($index = 1; $index <= RateLimiter::TOKEN_MAX_PER_WINDOW; $index++) {
+            $response = $this->request('POST', '/api/v2/system/tokens', ['name' => 'token-' . $index]);
+            self::assertSame(201, $response->getStatusCode(), (string) $response->getBody());
+        }
+        $blocked = $this->request('POST', '/api/v2/system/tokens', ['name' => 'token-over']);
+        self::assertSame(429, $blocked->getStatusCode());
+        self::assertSame(RateLimiter::TOKEN_LIMIT_MESSAGE, $this->json($blocked)['message']);
     }
 
     /**

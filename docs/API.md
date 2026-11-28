@@ -105,7 +105,10 @@ lifetime in seconds (`session_ttl`, default `3600`). The returned `user` object
 has `id`, `username`, `email`, `name`, `role`, `expiration`, and `guest`;
 `guest` is `false` for ordinary accounts. Failed password sign-ins are limited
 to 5 per window of 15 minutes for one username and address, and answer 429
-`Too many login attempts. Try again later.`
+`Too many login attempts. Try again later.` Authenticated requests update
+`sessions.last_seen_at` at most once every 30 seconds per session, so polling
+clients do not turn every read into a SQLite write; idle expiry uses the stored
+value and is therefore accurate to that window.
 
 ### Captcha on sign-in
 
@@ -274,6 +277,11 @@ below; a violation is a `422` with the usual `status: "error"` envelope:
 
 | Limit | Setting | Enforced on | Message |
 |---|---|---|---|
+| Labs per guest | `demo_max_labs_per_guest` | create, import, apply, duplicate | `The demo allows at most 3 labs per guest; delete a lab before creating another.` |
+| Total lab bytes | `demo_max_lab_bytes_per_guest` | create, save, import, apply, duplicate, snapshot restore; checked on the compiled `.unl` before writing | `The demo allows at most 20971520 bytes of lab data per guest; this lab would exceed it.` |
+| Snapshots per lab | `demo_max_snapshots_per_lab` | snapshot create | `At most 3 snapshots are kept per lab; delete one before creating another.` |
+| Snapshot bytes per lab | `demo_max_lab_bytes_per_guest` | snapshot create | `Snapshot storage for this lab would exceed the 20971520-byte demo limit; delete a snapshot first.` |
+| API tokens per user | `demo_max_tokens_per_user` (guests: fixed 1) | token create | `At most 5 API tokens are kept per user; revoke one first.` / `The demo allows one API token per guest; revoke it before creating another.` |
 | Nodes per lab | `demo_max_nodes_per_lab` | create, save, apply, import, duplicate, snapshot restore, lab start, node start | `The demo allows at most 5 nodes per lab; this lab has 6.` |
 | Templates | `demo_allowed_templates` ∩ installed templates; kind must equal node type | create, save, apply, import, duplicate, snapshot restore, lab start, node start | `Template "x" is not available on the demo.` |
 | RAM per node | `demo_max_ram_per_node` | create, save, apply, duplicate, snapshot restore, lab start, node start; `.unl` import clamps | `The demo allows at most 1024 MB of RAM per node; "R1" requests 2048 MB.` |
@@ -331,10 +339,12 @@ It sits alongside the ordinary import warnings. A RAM value alone never fails
 an import; node-count and template violations still answer `422`. The warning
 is not a stored property of the lab, so it appears in the import response only.
 
-Administrators and non-guest `editor` accounts are exempt from all three caps.
-A guest whose `expiration` has passed is treated as a non-guest by the guard;
-its session is already refused, so the guard is not a second authentication
-check.
+Administrators and non-guest `editor` accounts are exempt from the guest
+caps (labs, lab bytes, nodes, templates, and RAM). The snapshot count and
+snapshot byte caps apply to every account, and a guest may hold at most one
+API token regardless of `demo_max_tokens_per_user`. A guest whose
+`expiration` has passed is treated as a non-guest by the guard; its session
+is already refused, so the guard is not a second authentication check.
 
 For a guest, the Add-node picker shows allowed templates normally and renders
 the rest of the catalogue in a disabled **Available on the full platform**
@@ -357,11 +367,13 @@ job and no systemd timer. A sweep runs **lazily**, at most once every
   authorization check and before the node start.
 
 Between sweeps nothing is reclaimed, so the interval bounds how long an expired
-guest keeps its resources. Sweeps only act on **guest** resources: labs owned by an admin or a
-non-guest `editor` are never reaped or wiped, and the sweeper never deletes
-images or image-store files. Every action is a stop or a wipe through the
-existing agent and lab calls, so run directories and lab bridges are removed
-exactly as a user-initiated stop or wipe removes them.
+guest keeps its resources. Sweeps only act on **guest** resources: labs owned by
+an admin or a non-guest `editor` are never reaped, wiped, or deleted, and the
+sweeper never deletes images or image-store files. Runtime reclamation is a stop
+or a wipe through the existing agent and lab calls, so run directories and lab
+bridges are removed exactly as a user-initiated stop or wipe removes them. A
+purged guest's own `.unl` files, snapshots, and trash entries are then deleted
+without entering the trash; see step 2.
 
 A sweep performs these steps in order:
 
@@ -384,15 +396,21 @@ A sweep performs these steps in order:
 2. **Guest purge.** A guest is purged when `expiration` has passed (the hard
    TTL, `demo_guest_ttl_hours`) **or** when its activity is known to be idle —
    no activity and no creation time at all, or the newest one older than
-   `demo_guest_idle_hours` — whichever comes first. Its labs are
-   stopped and wiped, its sessions are deleted, and the user row is removed; the
-   concurrency slot is free afterwards. The purge is audited as `demo.sweep`
-   with reason `ttl` or `idle`.
-   If a lab wipe fails, that guest is **kept** (user and sessions) so the next
-   sweep can retry — deleting it would orphan the lab's files. The failure is
-   audited as `demo.sweep` with `result: failed`, the reason, the guest id, and
-   the failing `lab_ids`, and the other guests are still processed. The failed
-   labs are counted in `labs_failed`.
+   `demo_guest_idle_hours` — whichever comes first. Its running nodes are
+   stopped and wiped, then **only that guest's** lab files are deleted: each
+   owned `.unl`, its snapshots, its trash entries, and now-empty folders. Labs
+   owned by an admin or a non-guest editor, and permissions granted on other
+   labs, are never touched. Guest identities are ephemeral, so the purge does
+   not move lab files to the trash. Its sessions and the user row are deleted
+   and the concurrency slot is free afterwards. The purge is audited as
+   `demo.sweep` with reason `ttl` or `idle`, the removed `lab_ids`, and the
+   `guest_files_removed` / `snapshots_removed` counts.
+   If a lab wipe or a file deletion fails, that guest is **kept** (user and
+   sessions) so the next sweep can retry — deleting it would orphan the
+   remaining files. The failure is audited as `demo.sweep` with
+   `result: failed`, the reason, the guest id, and the failing `lab_ids`, and
+   the other guests are still processed. The failed labs are counted in
+   `labs_failed`.
 3. **Guest-lab idle wipe.** A running guest lab whose nodes and owner sessions
    have been inactive for `demo_idle_wipe_minutes` is stopped and wiped. The
    guest identity survives this step; only its lab is reclaimed, and the wipe is
@@ -438,7 +456,10 @@ memory the reaper measures, and the demo's current size:
     "last_sweep_at": 1795172800,
     "mem_available_mb": 6312,
     "guests_active": 3,
-    "demo_nodes_running": 11
+    "demo_nodes_running": 11,
+    "guest_labs": 4,
+    "guest_lab_bytes": 48213,
+    "guest_snapshots": 2
   }
 }
 ```
@@ -449,6 +470,9 @@ memory the reaper measures, and the demo's current size:
 | `mem_available_mb` | `MemAvailable` from `/proc/meminfo`, in MB; `null` when it cannot be read |
 | `guests_active` | Guest account rows (`guest = 1`), including any that expired but no sweep has removed yet |
 | `demo_nodes_running` | Nodes currently running in guest-owned labs |
+| `guest_labs` | `.unl` files owned by guest accounts (trash excluded) |
+| `guest_lab_bytes` | Total on-disk size of those guest lab files |
+| `guest_snapshots` | Snapshot rows belonging to guest-owned labs |
 
 ### `POST /api/v2/system/demo/sweep`
 
@@ -463,15 +487,19 @@ Administrator only, with `X-CSRF-Token`. Runs a sweep immediately, regardless of
     "labs_wiped": 2,
     "labs_failed": 1,
     "nodes_reaped": 2,
+    "guest_files_removed": 3,
+    "snapshots_removed": 2,
     "mem_available_mb": 4096
   }
 }
 ```
 
 `labs_wiped` counts the guest labs removed by both the purge and the idle-wipe
-step; `labs_failed` counts guest labs whose wipe failed during a purge (their
-guests were kept for the next sweep); `nodes_reaped` counts the nodes the reaper
-stopped. When there is nothing to reclaim the counts are `0`;
+step; `labs_failed` counts guest labs whose wipe or file deletion failed during a
+purge (their guests were kept for the next sweep); `nodes_reaped` counts the
+nodes the reaper stopped; `guest_files_removed` counts deleted guest `.unl` files
+plus trash entries; `snapshots_removed` counts deleted snapshot rows. When there
+is nothing to reclaim the counts are `0`;
 `mem_available_mb` reports the host value, or `null` when it cannot be read. A
 manual sweep is also audited as `demo.sweep` with `manual: true` and the
 summary. This is the action behind **Sweep now** in **System → Demo**.
@@ -515,6 +543,53 @@ A restart therefore makes a running node look newer, never older, so a live
 guest is not idle-wiped on stale evidence; a guest that is really active is also
 protected by its session activity and by new console I/O. `last_activity` is not
 a long-term record; it only decides idle cleanup.
+
+## Retention and maintenance
+
+Two interval-gated maintenance paths keep the SQLite database and storage
+bounded; a normal request pays only a cheap interval check:
+
+- **Job reconciliation** (`JobService::reconcile`) marks `queued`/`running`
+  jobs older than one hour as failed. It runs at most once every 300 seconds, with
+  its last run stored in the internal `maintenance_last_reconcile_at` settings
+  row.
+- **Retention cleanup** deletes expired/idle sessions, login attempts older than
+  `retention_login_attempts_days`, audit rows older than
+  `retention_audit_log_days`, terminal jobs older than `retention_jobs_days`,
+  terminal jobs beyond `retention_jobs_max_rows` (newest kept), snapshots beyond
+  `demo_max_snapshots_per_lab` per lab, and trash entries past the 30-day window.
+  It runs lazily on the demo sweep at most once every
+  `maintenance_interval_seconds` (default 3600). Active `queued`/`running` jobs
+  are never deleted.
+
+The demo sweep response does not include the retention counters; call the
+maintenance endpoint explicitly to see them.
+
+### `POST /api/v2/system/maintenance`
+
+Administrator only, with `X-CSRF-Token`. Runs the **retention cleanup**
+immediately and answers with the number of rows removed. Job reconciliation is
+a separate bootstrap step (`JobService::reconcileIfDue`) and is not triggered
+by this route:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "sessions_deleted": 4,
+    "login_attempts_deleted": 12,
+    "audit_log_deleted": 0,
+    "jobs_deleted": 3,
+    "snapshots_deleted": 1,
+    "trash_deleted": 0
+  }
+}
+```
+
+The response is `Cache-Control: no-store` and the action is audited as
+`system.maintenance`. Migrations are not part of retention: `App::create()` only
+reads a `.bootstrap.json` marker in the data directory and runs the migrator when
+the product version or migration list changes.
 
 ## Account
 
@@ -630,7 +705,10 @@ legacy hash.
 `GET /api/v2/labs/{id}/snapshots` lists checkpoints;
 `POST /api/v2/labs/{id}/snapshots` creates one;
 `POST /api/v2/labs/{id}/snapshots/{snapshot}/restore` restores topology/config;
-`DELETE /api/v2/labs/{id}/snapshots/{snapshot}` removes it.
+`DELETE /api/v2/labs/{id}/snapshots/{snapshot}` removes it. Deleting a lab
+also deletes its snapshots; a restore from trash brings the lab file back but not
+its snapshots. The per-lab count and total XML byte caps are enforced when a
+snapshot is created (see [Per-lab demo limits](#per-lab-demo-limits)).
 
 `GET /api/v2/labs/{id}` includes `lock` when the lab is running. While a lab is
 locked, saves from another user return 409 with the owner and expiry.
@@ -891,11 +969,24 @@ accepted range.
 | `demo_guest_ttl_hours` | integer | `48` | 1–720; total guest lifetime |
 | `demo_guest_idle_hours` | integer | `6` | 1–72; guest idle timeout |
 | `demo_max_nodes_per_lab` | integer | `5` | 1–16 nodes per guest lab |
+| `demo_max_labs_per_guest` | integer | `3` | 1–20 lab files per guest |
+| `demo_max_lab_bytes_per_guest` | integer | `20971520` | 1 MiB–256 MiB total `.unl` bytes per guest; also the per-lab snapshot byte budget |
+| `demo_max_snapshots_per_lab` | integer | `3` | 1–20 snapshots kept per lab |
+| `demo_max_tokens_per_user` | integer | `5` | 1–50 API tokens per non-guest account; guests are fixed at 1 |
 | `demo_allowed_templates` | string, CSV of template ids | `vpcs` | at most 32 ids, each `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`; entries are trimmed, empties dropped, duplicates removed, order preserved; ids that do not resolve to a template are ignored by the guest guard |
 | `demo_max_ram_per_node` | integer | `1024` | 64–4096 MB per node |
 | `demo_memory_floor_mb` | integer | `2048` | 256–65536 MB host-memory floor reserved for the demo tier |
 | `demo_idle_wipe_minutes` | integer | `120` | 15–1440; idle time before a guest lab is wiped |
 | `demo_sweep_interval` | integer | `300` | 60–3600 s between guest sweeps |
+| `retention_login_attempts_days` | integer | `30` | 1–3650 days of login-attempt rows |
+| `retention_audit_log_days` | integer | `90` | 1–3650 days of audit rows |
+| `retention_jobs_days` | integer | `30` | 1–3650 days of terminal job rows |
+| `retention_jobs_max_rows` | integer | `1000` | 100–1000000 terminal jobs kept, newest first |
+| `maintenance_interval_seconds` | integer | `3600` | 60–86400 s between lazy retention runs |
+| `backup_max_archive_bytes` | integer | `2147483648` | 1 MiB–10 GiB uploaded backup archive |
+| `backup_max_entries` | integer | `10000` | 1–1000000 entries in a backup archive |
+| `backup_max_uncompressed_bytes` | integer | `4294967296` | 1 MiB–40 GiB total uncompressed size |
+| `backup_max_database_bytes` | integer | `1073741824` | 1 MiB–10 GiB `database.sdb` entry |
 | `turnstile_enabled` | integer `0`/`1` | `0` | Require a Turnstile token |
 | `turnstile_site_key` | string | `3x00000000000000000000FF` | 0–128 printable ASCII characters; `""` stores “not configured” and overrides the default |
 | `turnstile_secret_key` | string | `1x0000000000000000000000000000000AA` | 0–128 printable ASCII characters; `""` stores “not configured” and overrides the default; omitted from `GET` responses for non-admin users |
@@ -926,11 +1017,43 @@ the test keys for local testing. `GET /api/v2/health` reports
 `turnstile.test_keys` so the UI can warn. Never commit real keys to the
 repository.
 
+### Backup and restore limits
+
+`GET /api/v2/system/backup` and `POST /api/v2/system/restore` are
+administrator-only; both responses are `Cache-Control: no-store`. Before
+extracting anything, a restore validates the archive against these settings and
+rejects an archive that breaks any of them:
+
+| Limit | Setting | Rejection |
+|---|---|---|
+| Uploaded archive bytes | `backup_max_archive_bytes` | `413 The backup archive exceeds the configured size limit.` |
+| Entry count | `backup_max_entries` | `413 The backup archive contains too many entries.` |
+| Total uncompressed bytes | `backup_max_uncompressed_bytes` | `413 The backup archive expands beyond the configured size limit.` |
+| `database.sdb` size | `backup_max_database_bytes` | `413 The backup database exceeds the configured size limit.` |
+| Unsafe entry path | — | `422 The backup archive contains an unsafe path.` |
+| Nested archive | — | `422 Nested archives are not supported in a backup restore.` |
+
+Unsafe paths include absolute paths, `..`, backslashes, NUL bytes, and empty
+names. Nested `.zip`, `.tar`, `.gz`, `.7z`, `.rar`, `.iso`, and similar entries
+are refused even when their path is otherwise safe. Validation is a separate
+pass, so a rejected archive writes no labs, templates, settings, or staged
+database. A valid archive smaller than every limit restores normally.
+
 ## API tokens
 
 Create a token with `POST /api/v2/system/tokens`. Use it as
 `Authorization: Bearer <token>`; CSRF headers are not required for bearer
-requests. Read-only tokens reject non-GET methods.
+requests. Read-only tokens reject non-GET methods. Bearer authentication writes
+`api_tokens.last_used_at` at most once every 60 seconds, so a read-heavy client
+does not turn every request into a SQLite write.
+
+Token creation is capped and rate-limited. A non-guest account may hold at most
+`demo_max_tokens_per_user` tokens (default 5); a guest may hold exactly one, even
+when the setting is higher. Exceeding the cap answers `422` with a message that
+names the cap (or the guest rule). Minting is also limited to
+`RateLimiter::TOKEN_MAX_PER_WINDOW` (10) attempts per user and client address in
+15 minutes; the next attempt answers
+`429 Too many API token requests. Try again later.`
 
 ## v1 compatibility
 
