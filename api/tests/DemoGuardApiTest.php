@@ -17,10 +17,12 @@ use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\System\SettingsService;
+use TeraLab\Api\Tests\Support\SetupToken;
 use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class DemoGuardApiTest extends TestCase
 {
+    use SetupToken;
     use StaticAssets;
 
     private const PASSWORD = 'Teralab-Admin-2026!';
@@ -44,6 +46,7 @@ final class DemoGuardApiTest extends TestCase
         mkdir($this->root . '/data', 0770, true);
         $this->installStaticAssets($this->root);
         $config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($config);
         $this->pdo = (new Database($config))->pdo();
         $this->app = (new App($config))->create();
         $this->settings = new SettingsService($this->pdo);
@@ -52,6 +55,7 @@ final class DemoGuardApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->adminCookie = $this->cookie($setup);

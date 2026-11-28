@@ -16,10 +16,12 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Tests\Support\SetupToken;
 use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class LabApiTest extends TestCase
 {
+    use SetupToken;
     use StaticAssets;
 
     private const PASSWORD = 'Teralab-Admin-2026!';
@@ -48,6 +50,7 @@ final class LabApiTest extends TestCase
         mkdir($this->root . '/data', 0770, true);
         $this->installStaticAssets($this->root);
         $config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($config);
         $agent = new AgentClient($config, function (string $method, string $path, array $payload): array {
             $this->calls[] = ['path' => $path, 'payload' => $payload];
             if ($path === '/v1/lab.ensure') {
@@ -93,6 +96,7 @@ final class LabApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         $this->cookie = $this->cookie($setup);
         $this->csrf = (string) $this->json($setup)['csrf_token'];

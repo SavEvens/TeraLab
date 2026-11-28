@@ -107,12 +107,28 @@ final class UsersController
         return Json::response($response, ['data' => ['revoked' => $revoked]]);
     }
 
+    public function legacyHashCount(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $this->access->user($request);
+
+        return Json::response($response, [
+            'data' => ['count' => $this->users->legacyHashCount()],
+        ]);
+    }
+
+    public function clearLegacyHashes(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $actor = $this->access->user($request);
+        $result = $this->users->clearLegacyHashes((string) $actor['id'], $this->ip($request));
+
+        return Json::response($response, ['data' => $result]);
+    }
+
     /**
      * @param array<string, string> $args
      */
     public function delete(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
-    {
-        $actor = $this->access->user($request);
+    {        $actor = $this->access->user($request);
         $body = Json::body($request);
         $query = $request->getQueryParams();
         $flag = $body['delete_labs'] ?? $query['delete_labs'] ?? null;

@@ -7,7 +7,8 @@
 # Idempotent. It applies the shared host state through apply-state.sh
 # (--package keeps the dpkg-owned conffiles untouched), wires PHP-FPM into
 # Apache, and verifies the units. It creates missing state but never
-# overwrites /etc/teralab/agent.secret or operator data.
+# overwrites /etc/teralab/agent.secret, /etc/teralab/setup.token or operator
+# data.
 set -e
 
 case "$1" in
@@ -22,7 +23,31 @@ fi
 # Every directory, identity, secret, helper, drop-in, symlink, enablement,
 # start and reload step. A genuine failure (for example a missing php8.4-fpm
 # installation) fails the install.
+#
+# Record whether the setup token already existed. apply-state.sh never
+# overwrites it, and the secret value is printed only on the run that creates
+# it; re-runs and upgrades point at the root-owned token file instead.
+SETUP_TOKEN_FILE=/etc/teralab/setup.token
+setup_token_existed=0
+if [ -f "$SETUP_TOKEN_FILE" ]; then
+	setup_token_existed=1
+fi
+
 /opt/teralab/packaging/teralab/apply-state.sh --package
+
+if [ "$setup_token_existed" -eq 0 ] && [ -f "$SETUP_TOKEN_FILE" ]; then
+	setup_token="$(cat -- "$SETUP_TOKEN_FILE")"
+	printf '\n'
+	printf 'teralab: first-run setup token (shown once): %s\n' "$setup_token"
+	printf 'teralab: the token is stored at %s (0640 root:teralab) and is not printed again.\n' "$SETUP_TOKEN_FILE"
+else
+	printf 'teralab: setup token: %s (already present; not printed again)\n' "$SETUP_TOKEN_FILE"
+fi
+printf 'teralab: first-run setup: open /ui/ or POST /api/v2/setup (only while no\n'
+printf 'teralab: administrator exists), sending the setup token in the request\n'
+printf 'teralab: header: X-TeraLab-Setup-Token: <token>\n'
+printf 'teralab: setup is disabled once an administrator exists; an existing\n'
+printf 'teralab: install upgraded with this package does not need the token.\n'
 
 # PHP-FPM is the packaged SAPI. apply-state.sh writes the teralab pool for
 # source installs, enables php8.4-fpm here, and enables mod_proxy_fcgi plus the

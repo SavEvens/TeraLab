@@ -18,9 +18,12 @@ use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class DockerImagesApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
     private const VIEWER_PASSWORD = 'Teralab-Viewer-2026!';
 
@@ -34,6 +37,7 @@ final class DockerImagesApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-docker-images-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installSetupToken(Config::forTests($this->root, $this->root . '/data'));
     }
 
     protected function tearDown(): void
@@ -261,6 +265,7 @@ final class DockerImagesApiTest extends TestCase
         $setup = $this->request($app, 'POST', '/api/v2/setup', null, [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
 

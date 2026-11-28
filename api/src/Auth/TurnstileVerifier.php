@@ -27,6 +27,37 @@ final class TurnstileVerifier
 
     public const UNAVAILABLE_MESSAGE = 'Captcha verification is unavailable; try again.';
 
+    /**
+     * Cloudflare's public testing credentials. They always validate, so they
+     * must never be enabled as production bot protection.
+     *
+     * @var list<string>
+     */
+    public const TEST_SECRET_KEYS = [
+        '1x0000000000000000000000000000000AA',
+        '2x0000000000000000000000000000000AA',
+        '3x0000000000000000000000000000000AA',
+    ];
+
+    /**
+     * @var list<string>
+     */
+    public const TEST_SITE_KEYS = [
+        '1x00000000000000000000AA',
+        '2x00000000000000000000AB',
+        '3x00000000000000000000FF',
+    ];
+
+    public static function isTestSecretKey(string $key): bool
+    {
+        return in_array($key, self::TEST_SECRET_KEYS, true);
+    }
+
+    public static function isTestSiteKey(string $key): bool
+    {
+        return in_array($key, self::TEST_SITE_KEYS, true);
+    }
+
     /** @var callable(string, array<string, string>): array<string, mixed> */
     private $transport;
 
@@ -41,9 +72,22 @@ final class TurnstileVerifier
     /**
      * Verify a Turnstile token. Throws HttpException(422) on every failure so
      * callers never have to decide whether a rejection is safe.
+     *
+     * @param string|null $expectedAction  `guest` or `login`; when set, the
+     *                                     action echoed by siteverify must
+     *                                     match exactly so a token minted for
+     *                                     one form cannot be replayed on the
+     *                                     other.
+     * @param string $expectedHostname     optional configured hostname; an
+     *                                     empty string disables the check
      */
-    public function verify(string $secret, string $token, string $ip): void
-    {
+    public function verify(
+        string $secret,
+        string $token,
+        string $ip,
+        ?string $expectedAction = null,
+        string $expectedHostname = '',
+    ): void {
         if ($secret === '' || $token === '') {
             throw new HttpException(422, self::INVALID_MESSAGE);
         }
@@ -60,6 +104,22 @@ final class TurnstileVerifier
 
         if (($result['success'] ?? null) !== true) {
             throw new HttpException(422, self::INVALID_MESSAGE);
+        }
+
+        if ($expectedAction !== null) {
+            $action = $result['action'] ?? null;
+            if (!is_string($action) || !hash_equals($expectedAction, $action)) {
+                throw new HttpException(422, self::INVALID_MESSAGE);
+            }
+        }
+
+        if ($expectedHostname !== '') {
+            $hostname = $result['hostname'] ?? null;
+            if (!is_string($hostname)
+                || !hash_equals(strtolower($expectedHostname), strtolower($hostname))
+            ) {
+                throw new HttpException(422, self::INVALID_MESSAGE);
+            }
         }
     }
 

@@ -14,9 +14,11 @@ use Slim\Psr7\Factory\StreamFactory;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class SystemLogsTest extends TestCase
 {
+    use SetupToken;
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private string $root;
@@ -31,6 +33,7 @@ final class SystemLogsTest extends TestCase
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
         $config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($config);
         $stub = static function (string $method, string $path, array $payload): array {
             return [200, '{"ok":true,"result":{}}'];
         };
@@ -39,6 +42,7 @@ final class SystemLogsTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->adminCookie = $this->cookie($setup);

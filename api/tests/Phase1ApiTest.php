@@ -17,9 +17,12 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class Phase1ApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
     private const EDITOR_PASSWORD = 'Teralab-Editor-2026!';
     private const VIEWER_PASSWORD = 'Teralab-Viewer-2026!';
@@ -44,6 +47,7 @@ final class Phase1ApiTest extends TestCase
             "schema: 1\nid: linux\nname: Linux\nkind: qemu\ndefaults:\n  cpu: 1\n  ram: 512\n  ethernet: 4\noptions:\n  qemu_arch: x86_64\n"
         );
         $config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($config);
         $agent = new AgentClient($config, static function (string $method, string $path, array $payload): array {
             if ($path === '/v1/lab.ensure') {
                 return [200, '{"ok":true,"result":{"bridges":{"0":"tl-test-bridge-0"}}}'];
@@ -83,6 +87,7 @@ final class Phase1ApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         $this->adminCookie = $this->cookie($setup);
         $this->adminCsrf = (string) $this->json($setup)['csrf_token'];

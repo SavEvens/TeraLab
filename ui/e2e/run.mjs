@@ -800,19 +800,23 @@ try {
   const captchaContext = await browser.newContext()
   let executeOnSubmitCount = 0
   let executeOnSubmitWidgetId = ''
+  let renderedTurnstileActions = []
   try {
     const captchaPage = await captchaContext.newPage()
     await captchaPage.addInitScript(() => {
       window.__turnstileExecutions = 0
+      window.__turnstileActionOptions = {}
       window.turnstile = {
         render: (_element, options) => {
-          window.__turnstileOptions = options
-          return 'e2e-turnstile-widget'
+          const action = options.action || 'default'
+          window.__turnstileActionOptions[action] = options
+          return `e2e-turnstile-${action}`
         },
         execute: (widgetId) => {
           window.__turnstileExecutions += 1
           window.__turnstileWidgetId = widgetId
-          setTimeout(() => window.__turnstileOptions?.callback?.('e2e-turnstile-token'), 0)
+          const action = widgetId.replace(/^e2e-turnstile-/, '')
+          setTimeout(() => window.__turnstileActionOptions[action]?.callback?.('e2e-turnstile-token'), 0)
         },
         reset: () => {},
         remove: () => {}
@@ -820,6 +824,7 @@ try {
     })
     await captchaPage.goto(`http://127.0.0.1:${uiPort}/ui/login`)
     await captchaPage.getByRole('button', { name: 'Enter demo' }).waitFor({ timeout: 10000 })
+    renderedTurnstileActions = await captchaPage.evaluate(() => Object.keys(window.__turnstileActionOptions))
     await captchaPage.getByRole('button', { name: 'Enter demo' }).click()
     await captchaPage.waitForURL('**/ui/labs', { timeout: 10000 })
     await captchaPage.waitForFunction(() => document.querySelector('.labs'), null, { timeout: 10000 })
@@ -1260,8 +1265,11 @@ try {
   if (executeOnSubmitCount !== 1) {
     throw new Error(`Turnstile execute ran ${executeOnSubmitCount} times on submit`)
   }
-  if (executeOnSubmitWidgetId !== 'e2e-turnstile-widget') {
+  if (executeOnSubmitWidgetId !== 'e2e-turnstile-guest') {
     throw new Error(`Turnstile execute got widget id ${executeOnSubmitWidgetId}`)
+  }
+  if (!renderedTurnstileActions.includes('guest') || !renderedTurnstileActions.includes('login')) {
+    throw new Error(`expected guest and login widgets, rendered ${JSON.stringify(renderedTurnstileActions)}`)
   }
   if (!demoLandingUrl.includes('mode=demo') || !demoPanelPrimary) {
     throw new Error(`demo landing did not select the demo panel: ${demoLandingUrl} primary=${demoPanelPrimary}`)

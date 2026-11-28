@@ -71,7 +71,10 @@ The package's `postinst` then:
 3. creates the `/etc/teralab` layout and the `/var/lib/teralab` data matrix
    from the table below, including the owner-only database and the image-store
    group modes, and generates `/etc/teralab/agent.secret` once (`root:teralab
-   0640`; it is never overwritten);
+   0640`; it is never overwritten). It also generates the first-run setup token
+   once at `/etc/teralab/setup.token` (`root:teralab 0640`, 32 random bytes;
+   never overwritten) and prints its value and the setup header to the
+   terminal on that run only;
 4. installs the root-owned firewall helper at
    `/usr/local/libexec/teralab/teralab-firewall` and the generated agent
    identity drop-in with the real `teralab-api` UID and `teralab-images` GID;
@@ -87,12 +90,32 @@ The Apache configuration, the three PHP upload-limit drop-ins, the
 configuration and `/usr/share/doc/teralab/copyright` are dpkg conffiles, so
 local edits survive upgrades. The package does **not** ship
 `/etc/teralab/config.php`; create that file yourself only when you need
-overrides. `/etc/teralab/agent.secret` and `/var/lib/teralab` are operator
-state and are never shipped, replaced or deleted.
+overrides. `/etc/teralab/agent.secret`, `/etc/teralab/setup.token` and
+`/var/lib/teralab` are operator state and are never shipped, replaced or
+deleted.
 
 Complete the first-run setup once at `/api/v2/setup`. Open `/ui/`; while no
 administrator exists, unauthenticated visitors see the login page, which links
-to the setup form. Log in afterwards.
+to the setup form. The form asks for the setup token; send it in the
+`X-TeraLab-Setup-Token` request header, or in the JSON field `setup_token`
+when a client cannot set headers (the header wins). The installer and the
+package `postinst` print the token once, on the run that creates it. If you no
+longer have that output, read it as root:
+
+```sh
+sudo cat /etc/teralab/setup.token
+```
+
+The token is generated once and never overwritten; it stays in
+`/etc/teralab/setup.token` (`root:teralab 0640`) across reinstalls and
+upgrades. The group read bit is for the API process: the PHP-FPM pool runs as
+`teralab-api:teralab`, so it can verify the token. The file is not
+world-readable, and `www-data` is not in `teralab`. Setup is refused with 409
+once any user or the completed marker exists, so the token is harmless but no
+longer useful. Setup attempts are limited to 10 per 15 minutes per client
+address and 50 per 15 minutes globally; exceeding either answers 429. A wrong
+token answers 403; a request with no token answers 401 when the token file is
+readable, and 403 when it is missing. Log in afterwards.
 
 Log rotation is installed at `/etc/logrotate.d/teralab`: weekly, eight
 rotations, compressed, with `copytruncate` because the agent and the API keep
@@ -126,7 +149,9 @@ The installer:
    `/opt/teralab/bin/teralab-agent`, then makes the whole install tree
    `root:root` with `chmod -R go-w` (no build-user-owned code);
 4. creates `/etc/teralab/agent.secret` if missing (never overwrites it) and
-   tightens it to `root:teralab 0640`;
+   tightens it to `root:teralab 0640`, then creates
+   `/etc/teralab/setup.token` if missing (`root:teralab 0640`, 32 random
+   bytes; never overwritten) and prints the token once;
 5. creates the `/var/lib/teralab` matrix, the `/etc/teralab/templates`
    directory and `/run/teralab`;
 6. builds the Vue UI and installs it at `html/ui`;
@@ -168,6 +193,7 @@ The installer and the package apply the same matrix:
 | `/usr/local/libexec/teralab/fpm-socket-acl` | `root:root` | `0755` | narrows Apache's FastCGI socket access to a named ACL |
 | `/etc/teralab` | `root:teralab` | `0750` | configuration root |
 | `/etc/teralab/agent.secret` | `root:teralab` | `0640` | never world-readable |
+| `/etc/teralab/setup.token` | `root:teralab` | `0640` | first-run setup token; generated once, never overwritten; group read for the `teralab-api` API process |
 | `/etc/teralab/templates` | `teralab-api:teralab` | `0750` | admin-written custom templates |
 | `/etc/php/8.4/fpm/pool.d/teralab.conf` | `root:root` | `0644` | dpkg conffile |
 | `/var/lib/teralab` | `teralab-api:teralab` | `0750` | ACL fallback `0711` |
@@ -225,8 +251,10 @@ sudo scripts/check-install-perms.sh   # from a source checkout
 
 The check is read-only and exits non-zero when the database is group/world
 readable, code or a root helper (or its directory) is group/world writable, the
-tree is not root-owned, `www-data` is in `teralab` or can read the secret, or
-the state directory is writable by an engine or the API identity.
+tree is not root-owned, `www-data` is in `teralab` or can read the secret, the
+first-run setup token is not `root:teralab 0640`, or the state directory is
+writable by an engine or the API identity. An absent setup token is skipped,
+so a host that has never run setup still passes.
 
 ## Apache
 
@@ -328,11 +356,27 @@ see, and `0.0.0.0/0` would trust client-supplied headers.
 ## First run
 
 1. Open `http://<host>/ui/` or call `GET /api/v2/health`.
-2. Create the administrator once with `POST /api/v2/setup`.
-3. Log in with the session cookie and use `/api/v2/labs` to create/start labs.
+2. Read the setup token (the installer or `postinst` printed it once):
+   `sudo cat /etc/teralab/setup.token`.
+3. Create the administrator once with `POST /api/v2/setup`, sending the token
+   in the `X-TeraLab-Setup-Token` header (or as the JSON field `setup_token`;
+   the header wins):
 
-4. Open the UI at `http://<host>/ui/`.
-5. Upload qcow2/ISO/IOL/Dynamips files on **Appliances → Images**, then pick
+   ```sh
+   curl -fsS -X POST http://<host>/api/v2/setup \
+       -H 'Content-Type: application/json' \
+       -H "X-TeraLab-Setup-Token: $(sudo cat /etc/teralab/setup.token)" \
+       -d '{"username":"admin","password":"<strong password>"}'
+   ```
+
+   The UI setup form asks for the same token. Setup is refused after the first
+   administrator exists (or once the completed marker is set); the token file
+   is kept but is no longer needed. Setup attempts are rate-limited to 10 per
+   15 minutes per address and 50 per 15 minutes globally.
+4. Log in with the session cookie and use `/api/v2/labs` to create/start labs.
+
+5. Open the UI at `http://<host>/ui/`.
+6. Upload qcow2/ISO/IOL/Dynamips files on **Appliances → Images**, then pick
    them in the node inspector. Custom YAML templates live in
    `/etc/teralab/templates`.
 
@@ -965,12 +1009,14 @@ sudo apt-get purge teralab
 Purge removes the package files, conffiles, units, the Apache configuration,
 the runtime directory and the generated KSM unit and drop-ins. It keeps
 `/var/lib/teralab` (labs, images, database) and `/etc/teralab` (including
-`agent.secret`) so a reinstall continues where you left off. Delete those two
-directories by hand only if you intend to lose the labs and the database.
+`agent.secret` and `setup.token`) so a reinstall continues where you left off.
+Delete those two directories by hand only if you intend to lose the labs and
+the database.
 
 For a source install, stop the units and remove the TeraLab-owned paths. This
 deletes `/var/lib/teralab` (labs, images, database) and `/etc/teralab`
-(config and agent secret); back them up first if you may want them later:
+(config, agent secret and setup token); back them up first if you may want
+them later:
 
 ```sh
 sudo systemctl disable --now teralab-agent teralab-firewall

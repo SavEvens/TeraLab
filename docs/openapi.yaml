@@ -7,7 +7,9 @@ info:
   description: |
     JSON API for TeraLab lab orchestration. State-changing requests require a
     session cookie and the `X-CSRF-Token` header returned by setup, login,
-    guest entry, or `/auth/me`. Setup, login, and guest entry are public.
+    guest entry, or `/auth/me`. Login and guest entry are public. First-run
+    setup is public only until an administrator exists and requires the
+    one-time operator token from `/etc/teralab/setup.token`.
 
     The legacy v1 adapter (`/api/auth`, `/api/status`, `/api/folders`,
     `/api/labs`) is registered only when `legacy_v1_enabled=1` (default `0`).
@@ -313,12 +315,19 @@ components:
               description: "Generated password, returned once; absent when the request supplied one"
     UserCreateRequest:
       type: object
+      description: |
+        `role` is required by this endpoint. The underlying `users` table
+        defaults to `user` only for rows inserted without a role; setup
+        explicitly creates the first administrator.
       required: [username, role]
       properties:
         username:
           type: string
           pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$'
-        role: { type: string, enum: [admin, editor, user] }
+        role:
+          type: string
+          enum: [admin, editor, user]
+          description: "Required here even though the table default is user"
         email: { type: string, format: email, nullable: true }
         name: { type: string, maxLength: 128, nullable: true }
         password:
@@ -368,6 +377,29 @@ components:
           required: [revoked]
           properties:
             revoked: { type: integer, minimum: 0 }
+    LegacyHashCountResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [count]
+          properties:
+            count:
+              type: integer
+              minimum: 0
+              description: "Accounts that still carry an imported legacy hash; usernames are never returned"
+    LegacyHashClearResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [cleared, sessions_revoked, api_tokens_revoked]
+          properties:
+            cleared: { type: integer, minimum: 0 }
+            sessions_revoked: { type: integer, minimum: 0 }
+            api_tokens_revoked: { type: integer, minimum: 0 }
     UserDeleteRequest:
       type: object
       properties:
@@ -424,12 +456,18 @@ paths:
                           contains no secret.
                   turnstile:
                     type: object
-                    required: [enabled, site_key]
+                    required: [enabled, site_key, test_keys]
                     properties:
                       enabled: { type: boolean }
                       site_key:
                         type: string
                         description: "Public widget key; empty when it was cleared"
+                      test_keys:
+                        type: boolean
+                        description: |
+                          True when the gate is enabled with Cloudflare's
+                          public testing keys. The UI warns; the secret is
+                          never returned.
         '503': { description: Database unavailable }
   /api/v2/version:
     get:
@@ -452,7 +490,28 @@ paths:
     post:
       tags: [auth]
       summary: Create the initial administrator (one time)
+      description: |
+        Public only while no administrator exists; requires the one-time
+        operator token from `/etc/teralab/setup.token` (`0640 root:teralab`).
+        Send it in `X-TeraLab-Setup-Token` or as the JSON field `setup_token`;
+        the header wins. The token is compared constant-time and is never
+        stored, logged, or returned by the API.
+
+        Gate order: 409 when an administrator already exists; then the
+        per-address and global setup budgets (429 when exhausted); then the
+        token (403 when the file is missing/unreadable or the token is wrong,
+        401 when no token was supplied); then input validation (422). The
+        transactional re-check also refuses a previously completed setup
+        (`setup_complete` marker) with 409. A successful call returns the
+        login session shape, writes `auth.setup`, and attempts to remove the
+        token file.
       security: []
+      parameters:
+        - name: X-TeraLab-Setup-Token
+          in: header
+          required: false
+          schema: { type: string }
+          description: "One-time operator token; takes precedence over the body field"
       requestBody:
         required: true
         content:
@@ -461,12 +520,26 @@ paths:
               type: object
               required: [username, password]
               properties:
-                username: { type: string }
+                username:
+                  type: string
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$'
                 password: { type: string }
-                email: { type: string }
+                email:
+                  type: string
+                  format: email
+                  nullable: true
+                  maxLength: 254
+                  description: "Optional; trimmed, no control characters"
+                setup_token:
+                  type: string
+                  description: "Fallback for clients that cannot set the header; the header wins"
       responses:
-        '201': { description: Administrator created }
-        '409': { description: Setup already completed }
+        '201': { description: "Administrator created; session cookie, user, CSRF token, and lifetime" }
+        '401': { description: "The setup token is required" }
+        '403': { description: "Setup is not available or the token is wrong" }
+        '409': { description: "Setup has already been completed" }
+        '422': { description: "Invalid username, password, or email" }
+        '429': { description: "Setup attempt budget exhausted (10 per 15 minutes per address, 50 per 15 minutes globally)" }
   /api/v2/auth/login:
     post:
       tags: [auth]
@@ -572,7 +645,11 @@ paths:
   /api/v2/auth/password:
     post:
       tags: [auth]
-      summary: Change the current password and revoke other sessions
+      summary: Change the current password and revoke other credentials
+      description: |
+        Revokes every other session of the caller and every API token it owns;
+        the calling session is kept. The change also clears any imported legacy
+        hash for the account.
       requestBody:
         required: true
         content:
@@ -585,7 +662,9 @@ paths:
                 new_password: { type: string }
       responses:
         '200': { description: Password changed }
+        '401': { description: Authentication required }
         '403': { description: Current password incorrect }
+        '422': { description: "Missing fields or password does not meet the policy" }
   /api/v2/users:
     get:
       tags: [users]
@@ -681,7 +760,8 @@ paths:
       description: |
         Administrator only, with CSRF. Omit `password` to generate one. A
         generated password is returned once in `data.password`; an admin-typed
-        password is never echoed. All sessions of the target user are revoked.
+        password is never echoed. All sessions **and every API token** of the
+        target user are revoked, and any imported legacy hash is cleared.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -715,6 +795,39 @@ paths:
         '401': { description: Authentication required }
         '403': { description: Administrator role required }
         '404': { description: User not found }
+  /api/v2/users/legacy-hashes:
+    get:
+      tags: [users]
+      summary: Count accounts with an imported legacy password hash (admin)
+      description: |
+        Administrator only; read-only, so no CSRF header is needed. Returns
+        only a count; usernames are never disclosed. A successful login before
+        the legacy cutoff rehashes an imported hash with Argon2id.
+      responses:
+        '200':
+          description: Legacy hash count
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegacyHashCountResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+  /api/v2/users/legacy-hashes/clear:
+    post:
+      tags: [users]
+      summary: Clear every imported legacy hash (admin)
+      description: |
+        Administrator only, with CSRF. Clears every legacy hash in one
+        transaction and removes those accounts' sessions and API tokens; the
+        accounts then require an administrator password reset. Writes the
+        `user.legacy_hashes.clear` audit entry.
+      responses:
+        '200':
+          description: Cleared
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegacyHashClearResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
   /api/v2/labs:
     get:
       tags: [labs]
@@ -1439,13 +1552,42 @@ paths:
     get:
       tags: [system]
       summary: Read runtime settings
+      description: |
+        Any authenticated user. Returns the built-in defaults overlaid by the
+        stored values, including `turnstile_hostname` (lower-cased; empty
+        disables the siteverify hostname check).
       responses:
         '200': { description: Settings }
     put:
       tags: [system]
       summary: Update runtime settings (admin)
+      description: |
+        Administrator only, with CSRF. Accepts any subset of the settings
+        keys, including `turnstile_hostname` (lower-cased hostname, or `""` to
+        disable the check); unknown keys are ignored.
+
+        Production guard: in the `production` environment, enabling
+        `turnstile_enabled` with an empty or Cloudflare-test secret, or an
+        empty or Cloudflare-test site key, is rejected with 422. Set both real
+        keys first. Non-production environments and
+        `TERALAB_ALLOW_TURNSTILE_TEST_KEYS=1` may use the public test keys for
+        local testing. `GET /api/v2/health` reports `turnstile.test_keys`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              properties:
+                turnstile_hostname:
+                  type: string
+                  description: "Optional siteverify hostname, lower-cased; empty disables the check"
       responses:
         '200': { description: Updated }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '422': { description: "Invalid value, including the production Turnstile test-key guard" }
   /api/v2/system/demo/status:
     get:
       tags: [system]

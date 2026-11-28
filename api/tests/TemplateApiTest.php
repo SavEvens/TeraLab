@@ -17,6 +17,7 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 /**
  * The builtin FRR templates through the public template API: they must load,
@@ -24,6 +25,8 @@ use TeraLab\Api\Database\Database;
  */
 final class TemplateApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private string $root;
@@ -41,6 +44,7 @@ final class TemplateApiTest extends TestCase
         // The repository root is the real one so the actual builtin templates
         // under api/templates/builtin are exercised.
         $this->config = Config::forTests(dirname(__DIR__, 2), $this->root . '/data');
+        $this->installSetupToken($this->config);
         $agent = new AgentClient($this->config, static fn (string $method, string $path, array $payload): array => [
             200,
             '{"ok":true,"result":{}}',
@@ -50,6 +54,7 @@ final class TemplateApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->cookie = $this->cookie($setup);

@@ -7,9 +7,9 @@
 # This is the single implementation of every state mutation a TeraLab host
 # needs: dependency checks, the service identities, the PHP upload drop-ins,
 # the data directory matrix, the ImageStore group, the agent secret, the
-# PHP-FPM pool, the /opt/unetlab compatibility link, the Apache
-# configuration, the firewall helper, the systemd units and drop-ins, and the
-# optional KSM settings.
+# first-run setup token, the PHP-FPM pool, the /opt/unetlab compatibility
+# link, the Apache configuration, the firewall helper, the systemd units and
+# drop-ins, and the optional KSM settings.
 #
 # It is called by packaging/teralab/install.sh after the source copy/build
 # steps, and by the Debian package's postinst. It never overwrites operator
@@ -25,6 +25,7 @@ IMAGE_GROUP="teralab-images"
 FPM_POOL_DIR="/etc/php/8.4/fpm/pool.d"
 FPM_SOCKET="/run/php/php8.4-fpm-teralab.sock"
 HELPER_DIR="/usr/local/libexec/teralab"
+SETUP_TOKEN="/etc/teralab/setup.token"
 INSTALL_SYSTEMD=1
 INSTALL_KSM=0
 PACKAGE_MODE=0
@@ -170,9 +171,22 @@ if [ ! -f /etc/teralab/agent.secret ]; then
 fi
 chown root:"$SERVICE_GROUP" /etc/teralab/agent.secret
 chmod 0640 /etc/teralab/agent.secret
+# First-run setup token. The API accepts POST /api/v2/setup only while no user
+# exists and requires this value in the X-TeraLab-Setup-Token header. It is
+# generated once, never overwritten, so a failed setup attempt can be retried
+# with the same token; the API disables setup after the first user regardless.
+# root:teralab 0640 lets the PHP-FPM pool identity (teralab-api, primary group
+# teralab) read it to verify the header. It is never world-readable, and
+# www-data is not in teralab. install.sh and the package postinst print it
+# once on creation; an operator can read it from this file as root.
+if [ ! -f "$SETUP_TOKEN" ]; then
+	( umask 077; head -c 32 /dev/urandom | base64 | tr -d '\n' > "$SETUP_TOKEN" )
+fi
+chown root:"$SERVICE_GROUP" "$SETUP_TOKEN"
+chmod 0640 "$SETUP_TOKEN"
 # Drop a stale named ACL left by an older, www-data-based install.
 if command -v setfacl >/dev/null 2>&1; then
-	setfacl -x u:www-data /etc/teralab /etc/teralab/agent.secret 2>/dev/null || true
+	setfacl -x u:www-data /etc/teralab /etc/teralab/agent.secret "$SETUP_TOKEN" 2>/dev/null || true
 fi
 # Custom YAML templates are admin-written through the API, so the service
 # identity owns this directory instead of www-data.
@@ -522,3 +536,5 @@ fi
 printf 'TeraLab identity: %s (uid %s), group %s (gid %s), image group %s (gid %s)\n' \
 	"$SERVICE_USER" "$SERVICE_UID" "$SERVICE_GROUP" "$SERVICE_GID" "$IMAGE_GROUP" "$IMAGE_GID"
 printf 'TeraLab PHP-FPM pool: %s (socket %s)\n' "$FPM_POOL_DIR/teralab.conf" "$FPM_SOCKET"
+printf 'TeraLab first-run setup token: %s (root:%s 0640; printed once when created)\n' \
+	"$SETUP_TOKEN" "$SERVICE_GROUP"

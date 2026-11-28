@@ -34,6 +34,7 @@ vi.mock('../src/api', () => ({
     setImageReference: vi.fn(),
     mapImageTemplate: vi.fn(),
     host: vi.fn(),
+    health: vi.fn(),
     settings: vi.fn(),
     saveSettings: vi.fn(),
     demoStatus: vi.fn(),
@@ -932,6 +933,7 @@ const settingsFixture = () => ({
   demo_sweep_interval: 120,
   turnstile_enabled: 1,
   turnstile_site_key: 'site-key',
+  turnstile_hostname: 'labs.example.test',
   turnstile_secret_key: 'configured-secret'
 })
 
@@ -1240,6 +1242,7 @@ describe('SystemView demo', () => {
     api.logs.mockResolvedValue({ data: { lines: [] } })
     api.tokens.mockResolvedValue({ data: [] })
     api.users.mockResolvedValue({ data: usersFixture() })
+    api.health.mockResolvedValue({ turnstile: { enabled: false, site_key: '', test_keys: false } })
     api.version.mockResolvedValue({ product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://example.test', components: [] })
     api.templates.mockResolvedValue({
       data: [
@@ -1277,6 +1280,7 @@ describe('SystemView demo', () => {
     expect(wrapper.find('input[aria-label="Guest sweep interval (seconds)"]').element.value).toBe('120')
     expect(wrapper.find('select[aria-label="Turnstile"]').element.value).toBe('1')
     expect(wrapper.find('input[aria-label="Turnstile site key"]').element.value).toBe('site-key')
+    expect(wrapper.find('input[aria-label="Turnstile hostname"]').element.value).toBe('labs.example.test')
 
     const labels = wrapper.findAll('.demo-panel label').map((label) => label.text())
     for (const text of [
@@ -1299,6 +1303,32 @@ describe('SystemView demo', () => {
     expect(secret.element.value).toBe('')
     expect(wrapper.find('.secret-field .badge').text()).toBe('configured')
     expect(wrapper.text()).toContain("Cloudflare's public testing keys")
+    wrapper.unmount()
+  })
+
+  it('warns when health reports the shipped Turnstile test keys', async () => {
+    api.health.mockResolvedValue({
+      turnstile: { enabled: true, site_key: '1x00000000000000000000AA', test_keys: true }
+    })
+    const wrapper = await mountSystemDemoView()
+
+    const warning = wrapper.get('[data-test="turnstile-test-key-warning"]')
+    expect(warning.text()).toMatch(/public test keys/i)
+    expect(warning.text()).toMatch(/not production-ready/i)
+    wrapper.unmount()
+  })
+
+  it('saves the optional Turnstile hostname with the demo settings', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    const hostname = wrapper.find('input[aria-label="Turnstile hostname"]')
+    expect(hostname.attributes('maxlength')).toBe('255')
+    await hostname.setValue('demo.example.test')
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+    expect(api.saveSettings.mock.calls[0][0].turnstile_hostname).toBe('demo.example.test')
     wrapper.unmount()
   })
 

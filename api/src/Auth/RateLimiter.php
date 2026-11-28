@@ -28,6 +28,23 @@ final class RateLimiter
 
     public const GUEST_LIMIT_MESSAGE = 'Too many demo entries from this network. Try again later.';
 
+    /**
+     * First-run setup budget. Setup is a one-time operator action, so both an
+     * address budget and a global budget are small; every attempt is charged
+     * before the token is compared.
+     */
+    public const SETUP_WINDOW_SECONDS = 900;
+
+    public const SETUP_MAX_PER_IP = 10;
+
+    public const SETUP_MAX_GLOBAL = 50;
+
+    public const SETUP_GLOBAL_KEY = 'setup:global';
+
+    public const SETUP_GLOBAL_IP = '*';
+
+    public const SETUP_LIMIT_MESSAGE = 'Too many setup attempts. Try again later.';
+
     public function __construct(private readonly PDO $pdo)
     {
     }

@@ -22,9 +22,12 @@ use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\SettingsService;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class DemoSettingsTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private const OTHER_PASSWORD = 'Teralab-Editor-2026!';
@@ -44,6 +47,7 @@ final class DemoSettingsTest extends TestCase
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
         $this->config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($this->config);
         $agent = new AgentClient(
             $this->config,
             static fn (string $method, string $path, array $payload): array => [200, '{"ok":true,"result":{}}']
@@ -55,6 +59,7 @@ final class DemoSettingsTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->adminCookie = $this->cookie($setup);
@@ -98,6 +103,12 @@ final class DemoSettingsTest extends TestCase
     #[DataProvider('integerBounds')]
     public function testIntegerSettingBounds(string $key, int $min, int $max): void
     {
+        if ($key === 'turnstile_enabled') {
+            $this->settings->update([
+                'turnstile_site_key' => 'site-key-for-tests',
+                'turnstile_secret_key' => 'secret-key-for-tests',
+            ]);
+        }
         $this->settings->update([$key => $min]);
         self::assertSame($min, $this->settings->int($key, -999));
 
@@ -134,6 +145,12 @@ final class DemoSettingsTest extends TestCase
 
     public function testBooleanSettingsRejectOtherValues(): void
     {
+        // The Turnstile switch cannot be enabled with Cloudflare's public test
+        // keys in production; give it real-looking keys before toggling it.
+        $this->settings->update([
+            'turnstile_site_key' => 'site-key-for-tests',
+            'turnstile_secret_key' => 'secret-key-for-tests',
+        ]);
         foreach (['demo_enabled', 'turnstile_enabled', 'legacy_v1_enabled'] as $key) {
             $values = $this->settings->update([$key => 1]);
             self::assertSame(1, $values[$key]);
@@ -229,6 +246,100 @@ final class DemoSettingsTest extends TestCase
         self::assertSame(
             '1x0000000000000000000000000000000AA',
             SettingsService::DEFAULTS['turnstile_secret_key']
+        );
+    }
+
+    public function testProductionRejectsShippedTurnstileTestKeys(): void
+    {
+        $production = new SettingsService($this->pdo);
+
+        try {
+            $production->update(['turnstile_enabled' => 1]);
+            self::fail('Turnstile was enabled with the shipped test secret in production.');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('turnstile_secret_key', $exception->getMessage());
+        }
+        self::assertSame(0, $production->int('turnstile_enabled', 0));
+
+        // A real key pair may be enabled.
+        $production->update([
+            'turnstile_site_key' => 'real-site-key',
+            'turnstile_secret_key' => 'real-secret-key',
+        ]);
+        self::assertSame(1, $production->update(['turnstile_enabled' => 1])['turnstile_enabled']);
+
+        // Swapping back to a test key while enabled is refused.
+        foreach ([
+            'turnstile_secret_key' => '1x0000000000000000000000000000000AA',
+            'turnstile_site_key' => '3x00000000000000000000FF',
+        ] as $key => $value) {
+            try {
+                $production->update([$key => $value]);
+                self::fail($key . ' accepted a Cloudflare test key in production.');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+        self::assertSame('real-secret-key', $production->string('turnstile_secret_key', ''));
+
+        // The explicit test escape hatch is environment-gated, not implicit.
+        putenv('TERALAB_ALLOW_TURNSTILE_TEST_KEYS=1');
+        try {
+            $production->update([
+                'turnstile_secret_key' => '1x0000000000000000000000000000000AA',
+            ]);
+            self::assertSame(
+                '1x0000000000000000000000000000000AA',
+                $production->string('turnstile_secret_key', '')
+            );
+        } finally {
+            putenv('TERALAB_ALLOW_TURNSTILE_TEST_KEYS');
+        }
+    }
+
+    public function testNonProductionAllowsShippedTurnstileTestKeys(): void
+    {
+        $test = new SettingsService($this->pdo, 'test');
+        $values = $test->update(['turnstile_enabled' => 1]);
+
+        self::assertSame(1, $values['turnstile_enabled']);
+    }
+
+    public function testTurnstileHostnameIsValidated(): void
+    {
+        $values = $this->settings->update(['turnstile_hostname' => 'Demo.Example.Test']);
+        self::assertSame('demo.example.test', $values['turnstile_hostname']);
+        self::assertSame('', $this->settings->update(['turnstile_hostname' => ''])['turnstile_hostname']);
+
+        foreach (['http://demo.example.test', 'demo.example.test/path', 'has space.test', str_repeat('a', 254)] as $bad) {
+            try {
+                $this->settings->update(['turnstile_hostname' => $bad]);
+                self::fail('turnstile_hostname accepted ' . $bad);
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+    }
+
+    public function testHealthFlagsShippedTurnstileTestKeysWithoutLeakingTheSecret(): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at) '
+            . 'ON CONFLICT(key) DO UPDATE SET value = :value, updated_at = :updated_at'
+        );
+        $statement->execute([':key' => 'turnstile_enabled', ':value' => '1', ':updated_at' => time()]);
+
+        $response = $this->request('GET', '/api/v2/health');
+        self::assertSame(200, $response->getStatusCode());
+        $turnstile = $this->json($response)['turnstile'];
+        self::assertIsArray($turnstile);
+        self::assertTrue($turnstile['enabled']);
+        self::assertTrue($turnstile['test_keys']);
+        self::assertArrayNotHasKey('secret_key', $turnstile);
+        self::assertStringNotContainsString(
+            '1x0000000000000000000000000000000AA',
+            (string) $response->getBody()
         );
     }
 
