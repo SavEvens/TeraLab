@@ -84,7 +84,7 @@ ui/test                  (cd ui) npm test
 ui/build                 (cd ui) npm run build (output in a temp dir)
 ui/e2e                   (cd ui) npm run e2e (artifacts in a temp dir)
 shellcheck               shellcheck <project scripts>
-tests/workflow-tools     bash tests/ci/workflow-tools.sh (or tests/ci/workflow-tools.sh)
+tests/workflow-tools     bash tests/ci/workflow-tools.sh
 install/perms            ./scripts/check-install-perms.sh (skipped when unprivileged)
 EOF
 	if [ "$MODE" = fast ]; then
@@ -267,17 +267,12 @@ if command -v shellcheck >/dev/null 2>&1; then
 		packaging/teralab/teralab-firewall \
 		packaging/teralab/fpm-socket-acl \
 		scripts/tests/prune-tree-test.sh \
-		tests/ci/workflow-tools.sh \
 		tests/ci/workflow-tools.sh
 else
 	skip_suite "shellcheck" "ShellCheck project scripts" "shellcheck is not installed (CI runs it)"
 fi
 
-WORKFLOW_TEST="tests/ci/workflow-tools.sh"
-if [ -f tests/ci/workflow-tools.sh ]; then
-	WORKFLOW_TEST="tests/ci/workflow-tools.sh"
-fi
-run_argv "tests/workflow-tools" "Workflow tool unit tests" . bash "$WORKFLOW_TEST"
+run_argv "tests/workflow-tools" "Workflow tool unit tests" . bash tests/ci/workflow-tools.sh
 
 if install_perms_skippable; then
 	skip_suite "install/perms" "install permission matrix" \

@@ -183,7 +183,13 @@ if [ "$MODE" != "validate-only" ] && [ -n "$VALIDATE_EVIDENCE" ]; then
 	die "--evidence is only valid with --validate-only"
 fi
 if [ "$MODE" = "smoke" ] || [ "$MODE" = "full" ]; then
-	[ -z "$STAMP_OVERRIDE" ] || die "--stamp is a verify/validate-only testing override"
+	[ -z "$STAMP_OVERRIDE" ] || die "--stamp is a validate-only testing override"
+fi
+if [ "$MODE" = "verify" ] && [ -n "$STAMP_OVERRIDE" ]; then
+	die "--stamp is not valid for the merge gate; use --validate-only for fixtures"
+fi
+if [ "$MODE" = "verify" ] && [ "$ALLOW_SHORT" -eq 1 ]; then
+	die "--allow-short is not valid for the merge gate"
 fi
 if [ "$MODE" = "validate-only" ] && { [ -z "$VALIDATE_EVIDENCE" ] || [ -z "$STAMP_OVERRIDE" ]; }; then
 	die "--validate-only requires --evidence and --stamp"

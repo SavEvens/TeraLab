@@ -56,7 +56,6 @@ for file in \
 	scripts/live-check.sh \
 	scripts/deploy-local.sh \
 	scripts/live-diagnostics.sh \
-	tests/ci/workflow-tools.sh \
 	tests/ci/workflow-tools.sh; do
 	[ -f "$file" ] || continue
 	check_file "$file"

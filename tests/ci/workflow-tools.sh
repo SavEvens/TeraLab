@@ -194,8 +194,7 @@ mkdir -p "$EVIDENCE_DIR"
 verify() {
 	local evidence="$1" stamp="$2"
 	shift 2
-	cp "$evidence" "$EVIDENCE_DIR/$TMP_HEAD.json"
-	bash "$LIVE" --verify --stamp "$stamp" --evidence-dir "$EVIDENCE_DIR" "$@"
+	bash "$LIVE" --validate-only --evidence "$evidence" --stamp "$stamp" "$@"
 }
 
 expect_ok "live-check baseline static validation" validate "$base_evidence" "$base_stamp"
@@ -256,6 +255,12 @@ cp "$base_evidence" "$EVIDENCE_DIR/$TMP_HEAD.json"
 cp "$base_stamp" "$EVIDENCE_DIR/deploy-$TMP_HEAD.json"
 expect_failure "verify ignores user-owned mirror and fails without canonical stamp" "deploy stamp" \
 	bash "$LIVE" --verify --evidence-dir "$EVIDENCE_DIR"
+
+# 5b. The merge gate must refuse the fixture override flags outright.
+expect_failure "verify refuses the stamp override" "not valid for the merge gate" \
+	bash "$LIVE" --verify --stamp "$base_stamp" --evidence-dir "$EVIDENCE_DIR"
+expect_failure "verify refuses allow-short" "not valid for the merge gate" \
+	bash "$LIVE" --verify --allow-short --evidence-dir "$EVIDENCE_DIR"
 
 # 6. deploy-local --dry-run in a temporary repository, plus refusals.
 INSTALLED="$WORK/installed-deploy-local"

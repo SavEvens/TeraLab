@@ -56,7 +56,6 @@ if command -v shellcheck >/dev/null 2>&1; then
 		packaging/teralab/prune-tree.sh \
 		scripts/tests/prune-tree-test.sh \
 		tests/ci/workflow-tools.sh \
-		tests/ci/workflow-tools.sh \
 		packaging/teralab/teralab-firewall \
 		packaging/teralab/fpm-socket-acl
 fi
