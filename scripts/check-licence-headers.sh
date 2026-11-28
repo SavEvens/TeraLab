@@ -51,7 +51,12 @@ for file in \
 	scripts/php-lint.sh \
 	scripts/check-secrets.sh \
 	scripts/check-install-perms.sh \
-	scripts/dev-vm.sh; do
+	scripts/dev-vm.sh \
+	scripts/test-all.sh \
+	scripts/live-check.sh \
+	scripts/deploy-local.sh \
+	scripts/live-diagnostics.sh \
+	tests/ci/workflow-tools.sh; do
 	[ -f "$file" ] || continue
 	check_file "$file"
 done

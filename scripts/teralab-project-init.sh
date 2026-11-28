@@ -42,6 +42,10 @@ if command -v shellcheck >/dev/null 2>&1; then
 		scripts/check-install-perms.sh \
 		scripts/dev-vm.sh \
 		scripts/setup-runtime-paths.sh \
+		scripts/test-all.sh \
+		scripts/live-check.sh \
+		scripts/deploy-local.sh \
+		scripts/live-diagnostics.sh \
 		packaging/dynamips/build.sh \
 		packaging/teralab/apply-state.sh \
 		packaging/teralab/build-deb.sh \
@@ -51,6 +55,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 		packaging/teralab/postrm.sh \
 		packaging/teralab/prune-tree.sh \
 		scripts/tests/prune-tree-test.sh \
+		tests/ci/workflow-tools.sh \
 		packaging/teralab/teralab-firewall \
 		packaging/teralab/fpm-socket-acl
 fi

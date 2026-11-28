@@ -423,8 +423,21 @@ final class ImageStoreTest extends TestCase
             return null;
         }
         $group = @posix_getgrnam('teralab-images');
+        if (!is_array($group)) {
+            return null;
+        }
+        $gid = (int) $group['gid'];
+        // chgrp only succeeds for root or a member of the group; assert the
+        // group only when this process can actually set it. CI has no such
+        // group and a developer host may have it without membership.
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            return $gid;
+        }
+        if (function_exists('posix_getgroups') && in_array($gid, posix_getgroups(), true)) {
+            return $gid;
+        }
 
-        return is_array($group) ? (int) $group['gid'] : null;
+        return null;
     }
 
     private function insertImageRow(

@@ -143,11 +143,38 @@ jobs:
             packaging/teralab/prune-tree.sh \
             packaging/teralab/teralab-firewall \
             scripts/tests/prune-tree-test.sh \
+            scripts/test-all.sh \
+            scripts/live-check.sh \
+            scripts/deploy-local.sh \
+            scripts/live-diagnostics.sh \
+            tests/ci/workflow-tools.sh \
             packaging/teralab/fpm-socket-acl \
             scripts/teralab-project-init.sh
 
       - name: Shell tests
         run: bash scripts/tests/prune-tree-test.sh
+
+  workflow-tools:
+    name: Workflow tooling
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: ShellCheck workflow tooling
+        run: |
+          shellcheck \
+            scripts/test-all.sh \
+            scripts/live-check.sh \
+            scripts/deploy-local.sh \
+            scripts/live-diagnostics.sh \
+            tests/ci/workflow-tools.sh
+      - name: Check live E2E syntax
+        run: node --check ui/e2e/live.mjs
+      - name: Workflow tool tests
+        run: bash tests/ci/workflow-tools.sh
 
   ui:
     name: UI build and tests

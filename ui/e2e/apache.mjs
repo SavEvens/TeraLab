@@ -3,7 +3,9 @@
 //
 // Real-stack E2E through the installed Apache /ui/ + /api + /ws paths.
 // Requires TERALAB_APACHE_URL (default http://127.0.0.1:18080), a running
-// agent/API, and TERALAB_TEST_IMAGE pointing at a small qcow2 file.
+// agent/API, TERALAB_ADMIN_PASSWORD or TERALAB_ADMIN_PASSWORD_FILE,
+// TERALAB_TEST_IMAGE (a small disposable qcow2) and TERALAB_TEST_ISO (a small
+// bootable ISO). TERALAB_EXPECT_VERSION defaults to 1.6-dev.
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -11,11 +13,31 @@ import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { chromium } from 'playwright-core'
 import WebSocket from 'ws'
+import { adminPassword } from './live-utils.mjs'
 
 const base = (process.env.TERALAB_APACHE_URL || 'http://127.0.0.1:18080').replace(/\/$/, '')
-const password = process.env.TERALAB_ADMIN_PASSWORD || 'Teralab-Admin-2026!'
-const qcow2 = process.env.TERALAB_TEST_IMAGE || '/tmp/apache-base.qcow2'
+const adminUser = process.env.TERALAB_ADMIN_USER || 'admin'
+const expectVersion = (process.env.TERALAB_EXPECT_VERSION || '1.6-dev').trim() || '1.6-dev'
 const outDir = process.env.TERALAB_E2E_OUT || path.join(os.tmpdir(), 'teralab-apache-e2e')
+
+function requiredTestFile(name, description) {
+  const value = process.env[name]
+  if (!value) throw new Error(`${name} is required (${description})`)
+  if (!existsSync(value)) throw new Error(`${name} does not exist: ${value}`)
+  return value
+}
+
+let password
+let qcow2
+let iso
+try {
+  password = adminPassword(process.env).password
+  qcow2 = requiredTestFile('TERALAB_TEST_IMAGE', 'a small disposable qcow2 image')
+  iso = requiredTestFile('TERALAB_TEST_ISO', 'a small bootable ISO for the VNC node')
+} catch (error) {
+  console.error(`APACHE_E2E_ENV_ERROR ${error.message}`)
+  process.exit(1)
+}
 mkdirSync(outDir, { recursive: true })
 
 const stamp = Date.now()
@@ -41,16 +63,10 @@ async function call(method, apiPath, body) {
 }
 
 async function login() {
-  await fetch(`${base}/api/v2/setup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password })
-  }).catch(() => {})
-
   const response = await fetch(`${base}/api/v2/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password })
+    body: JSON.stringify({ username: adminUser, password })
   })
   if (!response.ok) throw new Error(`login failed: ${response.status} ${await response.text()}`)
   const data = await response.json()
@@ -88,14 +104,14 @@ try {
   session = await login()
   const version = await call('GET', '/version')
   const health = await call('GET', '/health')
-  if (version.version !== '1.6-dev' || health.version !== '1.6-dev') {
-    throw new Error(`version mismatch: ${version.version}/${health.version}`)
+  if (version.version !== expectVersion || health.version !== expectVersion) {
+    throw new Error(`version mismatch: ${version.version}/${health.version} (expected ${expectVersion})`)
   }
   if (session.cookieSecure) throw new Error('session cookie is Secure over plain HTTP')
 
   const vnc = await createLab(`Apache VNC ${stamp}`, [
     node(1, 'VNC1', 'qemu', {
-      iso: '/var/lib/teralab-test/images/alpine.iso',
+      iso,
       console: 'vnc'
     })
   ])
@@ -129,7 +145,7 @@ try {
   })
 
   await page.goto(`${base}/ui/login`)
-  await page.getByLabel('Username').fill('admin')
+  await page.getByLabel('Username').fill(adminUser)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await page.waitForURL('**/ui/labs')

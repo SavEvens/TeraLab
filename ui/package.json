@@ -14,7 +14,8 @@
     "test": "vitest run",
     "e2e": "node e2e/run.mjs",
     "e2e:real": "node e2e/real.mjs",
-    "e2e:apache": "node e2e/apache.mjs"
+    "e2e:apache": "node e2e/apache.mjs",
+    "e2e:live": "node e2e/live.mjs"
   },
   "dependencies": {
     "@novnc/novnc": "^1.5.1",
