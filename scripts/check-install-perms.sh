@@ -18,6 +18,7 @@
 #     group/other;
 #   - installed code or a root helper is group/world writable or not root-owned;
 #   - www-data is in the teralab group or can read the agent secret;
+#   - the first-run setup token is present and is not root:teralab 0640;
 #   - teralab-api is not a member of teralab-images;
 #   - the agent state directory is writable by teralab-vm or teralab-api.
 set -Euo pipefail
@@ -436,7 +437,38 @@ else
 	skip "www-data (user absent)"
 fi
 
-# 7. The agent state directory must not be writable by an engine or the API.
+# 7. The first-run setup token, when it exists, is root:teralab 0640. The
+#    group read bit lets the teralab-api PHP-FPM identity verify the setup
+#    header; www-data is not in the teralab group. It is absent on hosts where
+#    setup has never run and on checkouts; that is not a failure, because the
+#    API stops accepting it after the first user anyway.
+setup_token="$ETC_DIR/setup.token"
+if [ -e "$setup_token" ]; then
+	checked=$((checked + 1))
+	if ! mode="$(stat_mode "$setup_token")"; then
+		fail "cannot stat $setup_token"
+	elif ! token_uid="$(stat_uid "$setup_token")"; then
+		fail "cannot stat the owner of $setup_token"
+	elif ! token_gid="$(stat_gid "$setup_token")"; then
+		fail "cannot stat the group of $setup_token"
+	else
+		token_group="$(getent group "$token_gid" | cut -d: -f1)"
+		if (( mode & 0007 )); then
+			fail "$setup_token is world accessible ($(describe "$setup_token"))"
+		fi
+		if (( mode != MODE_0640 )); then
+			fail "$setup_token mode is $(printf '%04o' "$mode"), expected 0640"
+		fi
+		[ "$token_uid" = "0" ] \
+			|| fail "$setup_token is not owned by root: $(describe "$setup_token")"
+		[ "$token_group" = "$SERVICE_GROUP" ] \
+			|| fail "$setup_token group is $token_group, expected $SERVICE_GROUP"
+	fi
+else
+	skip "$setup_token (not created yet)"
+fi
+
+# 8. The agent state directory must not be writable by an engine or the API.
 state_dir="$DATA/state"
 if [ -d "$state_dir" ]; then
 	checked=$((checked + 1))

@@ -17,10 +17,12 @@ use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Http\V1Session;
+use TeraLab\Api\Tests\Support\SetupToken;
 use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class AuthorizationApiTest extends TestCase
 {
+    use SetupToken;
     use StaticAssets;
 
     private const PASSWORD = 'Teralab-Admin-2026!';
@@ -50,6 +52,7 @@ final class AuthorizationApiTest extends TestCase
             $this->root . '/data/templates/vpcs.yaml',
         );
         $this->config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($this->config);
         $this->agent = new AgentClient($this->config, function (string $method, string $path, array $payload): array {
             $this->calls[] = ['method' => $method, 'path' => $path, 'payload' => $payload];
 
@@ -114,6 +117,7 @@ final class AuthorizationApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->adminCookie = $this->cookie($setup);

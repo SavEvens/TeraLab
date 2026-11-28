@@ -9,7 +9,7 @@ CREATE TABLE users (
     email TEXT,
     name TEXT,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'editor', 'user')),
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'editor', 'user')),
     expiration INTEGER NOT NULL DEFAULT -1,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL

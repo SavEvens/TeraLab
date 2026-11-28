@@ -3,7 +3,8 @@
 # Copyright (C) 2026 TeraLab contributors
 #
 # Debian postrm for TeraLab. Purge removes only the runtime directory; labs,
-# images, the database and configuration are operator data and are kept.
+# images, the database, configuration, the agent secret and the setup token are
+# operator data and are kept.
 set -e
 
 case "$1" in
@@ -39,7 +40,7 @@ purge)
 		printf 'teralab: removed /opt/unetlab compatibility link.\n'
 	fi
 	printf 'teralab: /var/lib/teralab (labs, images and the database) was not deleted; purge never removes operator data.\n'
-	printf 'teralab: /etc/teralab (config.php, if any, and the agent secret) was kept for a future reinstall.\n'
+	printf 'teralab: /etc/teralab (config.php, if any, the agent secret and the setup token) was kept for a future reinstall.\n'
 	;;
 esac
 

@@ -33,6 +33,7 @@ final class Config
         public readonly string $imagesDir = '/var/lib/teralab/images',
         public readonly int $maxUploadBytes = 34359738368,
         public readonly array $trustedProxies = [],
+        public readonly string $setupTokenFile = '/etc/teralab/setup.token',
     ) {
     }
 
@@ -117,6 +118,10 @@ final class Config
                     self::listValue($values, 'trusted_proxies'),
                 ),
             ),
+            setupTokenFile: self::env(
+                'TERALAB_SETUP_TOKEN_FILE',
+                self::stringValue($values, 'setup_token_file', '/etc/teralab/setup.token'),
+            ),
         );
     }
 
@@ -139,6 +144,7 @@ final class Config
             maxUploadBytes: 2147483648,
             templatesDir: $dataDir . '/templates',
             trustedProxies: $trustedProxies,
+            setupTokenFile: $dataDir . '/setup.token',
         );
     }
 

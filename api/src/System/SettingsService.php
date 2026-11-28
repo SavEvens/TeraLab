@@ -7,6 +7,7 @@ declare(strict_types=1);
 namespace TeraLab\Api\System;
 
 use PDO;
+use TeraLab\Api\Auth\TurnstileVerifier;
 use TeraLab\Api\Http\HttpException;
 
 final class SettingsService
@@ -31,6 +32,7 @@ final class SettingsService
         'turnstile_enabled' => 0,
         'turnstile_site_key' => '3x00000000000000000000FF',
         'turnstile_secret_key' => '1x0000000000000000000000000000000AA',
+        'turnstile_hostname' => '',
         'legacy_v1_enabled' => 0,
     ];
 
@@ -78,8 +80,19 @@ final class SettingsService
 
     private const MAX_TURNSTILE_KEY_LENGTH = 128;
 
-    public function __construct(private readonly PDO $pdo)
-    {
+    private const MAX_HOSTNAME_LENGTH = 253;
+
+    /** Settings whose change can make the Turnstile gate unsafe. */
+    private const TURNSTILE_KEYS = [
+        'turnstile_enabled',
+        'turnstile_site_key',
+        'turnstile_secret_key',
+    ];
+
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly string $environment = 'production',
+    ) {
     }
 
     /**
@@ -134,6 +147,9 @@ final class SettingsService
         if ($clean === []) {
             throw new HttpException(422, 'No supported settings were provided.');
         }
+        if (array_intersect(array_keys($clean), self::TURNSTILE_KEYS) !== []) {
+            $this->assertTurnstileIsUsable(array_merge($this->all(), $clean));
+        }
 
         $now = time();
         $statement = $this->pdo->prepare(
@@ -180,6 +196,9 @@ final class SettingsService
         }
         if ($key === 'turnstile_site_key' || $key === 'turnstile_secret_key') {
             return $this->turnstileKey($key, $value);
+        }
+        if ($key === 'turnstile_hostname') {
+            return $this->hostname($value);
         }
         if (in_array($key, self::BOOL_KEYS, true)) {
             return $this->boolSetting($key, $value);
@@ -268,6 +287,64 @@ final class SettingsService
             throw new HttpException(
                 422,
                 $key . ' must be 0-' . self::MAX_TURNSTILE_KEY_LENGTH . ' printable ASCII characters.'
+            );
+        }
+
+        return $value;
+    }
+
+    /**
+     * Refuse to enable the bot gate with Cloudflare's public test credentials
+     * in production. Non-production environments and the explicit
+     * TERALAB_ALLOW_TURNSTILE_TEST_KEYS=1 escape hatch keep the test flow
+     * available without weakening a real deployment silently.
+     *
+     * @param array<string, string|int> $effective
+     */
+    private function assertTurnstileIsUsable(array $effective): void
+    {
+        if ((int) ($effective['turnstile_enabled'] ?? 0) !== 1) {
+            return;
+        }
+        if ($this->environment !== 'production') {
+            return;
+        }
+        if (getenv('TERALAB_ALLOW_TURNSTILE_TEST_KEYS') === '1') {
+            return;
+        }
+
+        $secret = (string) ($effective['turnstile_secret_key'] ?? '');
+        $siteKey = (string) ($effective['turnstile_site_key'] ?? '');
+        if ($secret === '' || TurnstileVerifier::isTestSecretKey($secret)) {
+            throw new HttpException(
+                422,
+                'turnstile_secret_key must be a real key in production; empty and Cloudflare test keys are refused.',
+            );
+        }
+        if ($siteKey === '' || TurnstileVerifier::isTestSiteKey($siteKey)) {
+            throw new HttpException(
+                422,
+                'turnstile_site_key must be a real key in production; empty and Cloudflare test keys are refused.',
+            );
+        }
+    }
+
+    private function hostname(mixed $value): string
+    {
+        if (!is_string($value)) {
+            throw new HttpException(422, 'turnstile_hostname must be a hostname or empty.');
+        }
+        $value = strtolower(trim($value));
+        if ($value === '') {
+            return '';
+        }
+        $pattern = '/^(?=.{1,' . self::MAX_HOSTNAME_LENGTH . '}$)'
+            . '([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*'
+            . '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/';
+        if (preg_match($pattern, $value) !== 1) {
+            throw new HttpException(
+                422,
+                'turnstile_hostname must be a hostname or empty.',
             );
         }
 

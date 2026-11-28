@@ -144,6 +144,7 @@ export function startMockServer(port = 8099) {
     demo_sweep_interval: 300,
     turnstile_enabled: 0,
     turnstile_site_key: '3x00000000000000000000FF',
+    turnstile_hostname: '',
     turnstile_secret_key: '1x0000000000000000000000000000000AA'
   }
   let lab = {
@@ -358,7 +359,7 @@ export function startMockServer(port = 8099) {
             .map((id) => id.trim())
             .filter(Boolean)
         },
-        turnstile: { enabled: !!settings.turnstile_enabled, site_key: settings.turnstile_site_key }
+        turnstile: { enabled: !!settings.turnstile_enabled, site_key: settings.turnstile_site_key, test_keys: false }
       })
     }
     if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })

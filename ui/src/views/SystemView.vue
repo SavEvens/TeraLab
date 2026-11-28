@@ -223,6 +223,15 @@
           <label>Site key
             <input v-model="settingsForm.turnstile_site_key" aria-label="Turnstile site key" autocomplete="off" maxlength="128" />
           </label>
+          <label>Hostname
+            <input
+              v-model="settingsForm.turnstile_hostname"
+              aria-label="Turnstile hostname"
+              autocomplete="off"
+              maxlength="255"
+              placeholder="optional"
+            />
+          </label>
           <label>Secret key
             <span class="secret-field">
               <input
@@ -242,6 +251,7 @@
           The shipped defaults are Cloudflare's public testing keys. Replace the site and secret keys before
           exposing the demo publicly.
         </p>
+        <TurnstileTestKeyNotice v-if="turnstileTestKeys" />
 
         <div class="row">
           <button type="submit" :disabled="!canAdmin || !settingsLoaded || saving">{{ saving ? 'Saving…' : 'Save demo settings' }}</button>
@@ -470,6 +480,7 @@ import { api } from '../api'
 import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
 import PasswordChangeDialog from '../components/PasswordChangeDialog.vue'
+import TurnstileTestKeyNotice from '../components/TurnstileTestKeyNotice.vue'
 import AboutView from './AboutView.vue'
 
 const DEMO_INT_KEYS = [
@@ -490,7 +501,8 @@ const DEMO_DEFAULTS = {
   demo_idle_wipe_minutes: 120,
   demo_sweep_interval: 300,
   turnstile_enabled: 0,
-  turnstile_site_key: '3x00000000000000000000FF'
+  turnstile_site_key: '3x00000000000000000000FF',
+  turnstile_hostname: ''
 }
 
 const route = useRoute()
@@ -521,6 +533,7 @@ const demoTemplatesError = ref('')
 const demoTemplatesSelected = ref([])
 const turnstileSecret = ref('')
 const secretConfigured = ref(false)
+const turnstileTestKeys = ref(false)
 const demoStatus = ref(null)
 const demoStatusError = ref('')
 const sweeping = ref(false)
@@ -589,6 +602,7 @@ function applySettingsData(data) {
   const next = { ...DEMO_DEFAULTS, ...(data || {}) }
   for (const key of DEMO_INT_KEYS) next[key] = Number(next[key])
   if (!['login', 'demo'].includes(next.demo_landing)) next.demo_landing = DEMO_DEFAULTS.demo_landing
+  if (typeof next.turnstile_hostname !== 'string') next.turnstile_hostname = ''
   secretConfigured.value = typeof next.turnstile_secret_key === 'string' && next.turnstile_secret_key !== ''
   delete next.turnstile_secret_key
   next.demo_allowed_templates = templateCsv(splitTemplateCsv(next.demo_allowed_templates))
@@ -720,6 +734,17 @@ async function loadSettings() {
   settingsLoaded.value = true
 }
 
+// Health is public and advisory; a failed probe must not blank the Settings
+// page. It tells us whether the API is still using Cloudflare's test secret.
+async function loadTurnstileFlags() {
+  try {
+    const flags = await api.health()
+    turnstileTestKeys.value = flags?.turnstile?.test_keys === true
+  } catch {
+    turnstileTestKeys.value = false
+  }
+}
+
 async function loadLogs() {
   logLines.value = (await api.logs(logSource.value)).data.lines
 }
@@ -742,7 +767,7 @@ async function refreshUsers() {
 async function loadAll() {
   error.value = ''
   try {
-    await Promise.all([loadHost(), loadSettings(), loadLogs(), loadTokens()])
+    await Promise.all([loadHost(), loadSettings(), loadLogs(), loadTokens(), loadTurnstileFlags()])
   } catch (exception) {
     error.value = exception.message
   }

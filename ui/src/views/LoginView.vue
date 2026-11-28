@@ -21,20 +21,27 @@
           Explore TeraLab with a temporary guest workspace. No account, password, or
           personal details are required.
         </p>
+        <div v-if="turnstile.enabled" class="auth-captcha">
+          <div
+            ref="guestCaptchaEl"
+            class="cf-turnstile"
+            data-test="turnstile-guest"
+            data-action="guest"
+            aria-label="Demo security check"
+          ></div>
+          <p v-if="guestCaptcha.error" class="error" role="alert" data-test="turnstile-guest-error">{{ guestCaptcha.error }}</p>
+          <p v-else-if="guestCaptcha.status === 'loading'" class="hint" role="status">Loading the demo security check…</p>
+        </div>
         <button
           type="button"
           class="demo-enter"
           data-test="enter-demo"
-          :disabled="busy || captchaBlocked"
+          :disabled="busy || guestCaptchaBlocked"
           @click="enterDemo"
         >{{ busyAction === 'guest' ? 'Preparing demo…' : 'Enter demo' }}</button>
       </section>
 
-      <div v-if="turnstile.enabled" class="auth-captcha">
-        <div ref="captchaEl" class="cf-turnstile" data-test="turnstile" aria-label="Security check"></div>
-        <p v-if="turnstileError" class="error" role="alert" data-test="turnstile-error">{{ turnstileError }}</p>
-        <p v-else-if="turnstileStatus === 'loading'" class="hint" role="status">Loading the security check…</p>
-      </div>
+      <TurnstileTestKeyNotice v-if="turnstileTestKeys" class="auth-warning" />
 
       <div v-if="demo.enabled" class="auth-divider" aria-hidden="true"><span>or sign in</span></div>
 
@@ -48,7 +55,18 @@
         <h2 v-if="demo.enabled">Account sign-in</h2>
         <label>Username <input v-model="username" autocomplete="username" required /></label>
         <label>Password <input v-model="password" type="password" autocomplete="current-password" required /></label>
-        <button type="submit" :disabled="busy || captchaBlocked">{{ busyAction === 'login' ? 'Signing in…' : 'Sign in' }}</button>
+        <div v-if="turnstile.enabled" class="auth-captcha">
+          <div
+            ref="loginCaptchaEl"
+            class="cf-turnstile"
+            data-test="turnstile-login"
+            data-action="login"
+            aria-label="Sign-in security check"
+          ></div>
+          <p v-if="loginCaptcha.error" class="error" role="alert" data-test="turnstile-login-error">{{ loginCaptcha.error }}</p>
+          <p v-else-if="loginCaptcha.status === 'loading'" class="hint" role="status">Loading the sign-in security check…</p>
+        </div>
+        <button type="submit" :disabled="busy || loginCaptchaBlocked">{{ busyAction === 'login' ? 'Signing in…' : 'Sign in' }}</button>
       </form>
 
       <p class="hint">First run? <router-link to="/setup">Create the administrator</router-link>.</p>
@@ -57,12 +75,13 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { guestLogin, login } from '../stores/session'
 import { notify } from '../stores/toasts'
 import { loadTurnstile } from '../turnstile'
+import TurnstileTestKeyNotice from '../components/TurnstileTestKeyNotice.vue'
 
 const username = ref('')
 const password = ref('')
@@ -71,39 +90,69 @@ const busyAction = ref('')
 const error = ref('')
 const demo = ref({ enabled: false, landing: 'login' })
 const turnstile = ref({ enabled: false, site_key: '' })
-const captchaEl = ref(null)
-const turnstileToken = ref('')
-const turnstileStatus = ref('idle')
-const turnstileError = ref('')
+const turnstileTestKeys = ref(false)
 const router = useRouter()
 const route = useRoute()
 
+// Each panel owns a widget with the action the API expects from that flow.
+// Cloudflare includes the action in the token, and the API rejects a token
+// minted for the other flow, so the two widgets must never share a token.
+const guestCaptchaEl = ref(null)
+const loginCaptchaEl = ref(null)
+
+function captchaState(action) {
+  return reactive({
+    action,
+    token: '',
+    status: 'idle',
+    error: '',
+    widgetId: null
+  })
+}
+
+const guestCaptcha = captchaState('guest')
+const loginCaptcha = captchaState('login')
+const captchaElements = { guest: guestCaptchaEl, login: loginCaptchaEl }
+const captchaFlows = [guestCaptcha, loginCaptcha]
+// Pending token requests live outside the reactive state so a Promise or timer
+// handle is never proxied by Vue.
+const pendingRequests = { guest: null, login: null }
+
 let widgetApi = null
-let widgetId = null
-let pendingTokenRequest = null
 
 const requestedMode = computed(() => {
   const mode = route.query.mode
   return Array.isArray(mode) ? mode[0] : mode
 })
 const demoPrimary = computed(() => demo.value.enabled && requestedMode.value === 'demo')
-const captchaBlocked = computed(() => turnstile.value.enabled && turnstileStatus.value === 'error')
+const guestCaptchaBlocked = computed(() => captchaBlocked(guestCaptcha))
+const loginCaptchaBlocked = computed(() => captchaBlocked(loginCaptcha))
+
+function captchaBlocked(state) {
+  return turnstile.value.enabled && state.status === 'error'
+}
 
 onMounted(async () => {
   await loadHealth()
   await nextTick()
-  if (turnstile.value.enabled) await mountCaptcha()
+  if (!turnstile.value.enabled) return
+  // The demo panel only exists when demo mode is enabled; the credential panel
+  // is always visible, even when the demo is the landing page.
+  const states = demo.value.enabled ? captchaFlows : [loginCaptcha]
+  await Promise.all(states.map((state) => mountCaptcha(state)))
 })
 
 onBeforeUnmount(() => {
-  // Release a pending token request so its timer cannot fire after the widget
-  // is gone; the promise resolves empty and no request is sent.
-  settleTokenRequest('')
-  if (widgetId === null || !widgetApi?.remove) return
-  try {
-    widgetApi.remove(widgetId)
-  } catch {
-    // The widget may already be gone along with the page.
+  // Release pending requests so their timers cannot fire after the widgets are
+  // gone, then remove every rendered widget.
+  for (const state of captchaFlows) {
+    settleTokenRequest(state, '')
+    if (state.widgetId === null || !widgetApi?.remove) continue
+    try {
+      widgetApi.remove(state.widgetId)
+    } catch {
+      // The widget may already be gone along with the page.
+    }
   }
 })
 
@@ -126,6 +175,9 @@ async function loadHealth() {
     enabled: turnstileFlag.enabled === true,
     site_key: typeof turnstileFlag.site_key === 'string' ? turnstileFlag.site_key : ''
   }
+  // The API reports when the shipped test secret is active. Test keys prove
+  // the widget works but must never be mistaken for a production deployment.
+  turnstileTestKeys.value = turnstileFlag.test_keys === true
 
   const requested = typeof requestedMode.value === 'string' ? requestedMode.value : ''
   if (demo.value.enabled && !requested && demo.value.landing === 'demo') {
@@ -133,66 +185,72 @@ async function loadHealth() {
   }
 }
 
-async function mountCaptcha() {
+async function mountCaptcha(state) {
   if (!turnstile.value.site_key) {
-    failCaptcha('The security check is not configured. Demo entry and sign-in are unavailable.')
+    failCaptcha(state, 'The security check is not configured. Demo entry and sign-in are unavailable.')
     return
   }
-  turnstileStatus.value = 'loading'
+  state.status = 'loading'
   try {
     widgetApi = await loadTurnstile()
-    if (!captchaEl.value) throw new Error('Captcha container is not mounted.')
-    widgetId = widgetApi.render(captchaEl.value, {
+    const element = captchaElements[state.action].value
+    if (!element) throw new Error('Captcha container is not mounted.')
+    state.widgetId = widgetApi.render(element, {
       sitekey: turnstile.value.site_key,
+      action: state.action,
       theme: 'dark',
-      callback: (token) => {
-        turnstileToken.value = token || ''
-        settleTokenRequest(turnstileToken.value)
-        if (turnstileStatus.value === 'error') {
-          turnstileStatus.value = 'ready'
-          turnstileError.value = ''
-          error.value = ''
-        }
-      },
-      'expired-callback': () => {
-        turnstileToken.value = ''
-        settleTokenRequest('')
-      },
-      'timeout-callback': () => {
-        turnstileToken.value = ''
-        settleTokenRequest('')
-      },
+      callback: (token) => handleToken(state, token),
+      'expired-callback': () => clearToken(state),
+      'timeout-callback': () => clearToken(state),
       'error-callback': () => {
-        failCaptcha('The security check failed. Reload the page and try again.')
+        failCaptcha(state, 'The security check failed. Reload the page and try again.')
       }
     })
-    turnstileStatus.value = 'ready'
+    if (state.status !== 'error') state.status = 'ready'
   } catch {
-    failCaptcha('The security check could not be loaded. Reload the page to try again; demo entry and sign-in stay unavailable until it loads.')
+    failCaptcha(state, 'The security check could not be loaded. Reload the page to try again; demo entry and sign-in stay unavailable until it loads.')
   }
 }
 
-function failCaptcha(message) {
-  turnstileToken.value = ''
-  settleTokenRequest('')
-  turnstileStatus.value = 'error'
-  turnstileError.value = message
+function handleToken(state, token) {
+  state.token = token || ''
+  settleTokenRequest(state, state.token)
+  if (state.status === 'error') {
+    const previous = state.error
+    state.status = 'ready'
+    state.error = ''
+    // Only clear a top-level error that this widget raised; an unrelated
+    // message from the other panel must survive.
+    if (previous && error.value === previous) error.value = ''
+  }
 }
 
-function resetCaptcha() {
-  turnstileToken.value = ''
-  if (widgetId === null || !widgetApi?.reset) return
+function clearToken(state) {
+  state.token = ''
+  settleTokenRequest(state, '')
+}
+
+function failCaptcha(state, message) {
+  state.token = ''
+  settleTokenRequest(state, '')
+  state.status = 'error'
+  state.error = message
+}
+
+function resetCaptcha(state) {
+  state.token = ''
+  if (state.widgetId === null || !widgetApi?.reset) return
   try {
-    widgetApi.reset(widgetId)
+    widgetApi.reset(state.widgetId)
   } catch {
     // A widget that cannot be reset will simply have no usable token.
   }
 }
 
-function settleTokenRequest(token) {
-  const pending = pendingTokenRequest
+function settleTokenRequest(state, token) {
+  const pending = pendingRequests[state.action]
   if (!pending) return
-  pendingTokenRequest = null
+  pendingRequests[state.action] = null
   clearTimeout(pending.timer)
   pending.resolve(token || '')
 }
@@ -203,26 +261,26 @@ function settleTokenRequest(token) {
 // others stay silent until execute() runs. Driving execute() when a widget
 // exists is safe in both cases (a visible widget that is mid-challenge treats
 // it as a no-op) and the submitted token always comes from the render callback.
-function requestToken(timeoutMs = 15000) {
+function requestToken(state, timeoutMs = 15000) {
   if (!turnstile.value.enabled) return Promise.resolve('')
-  if (turnstileToken.value) return Promise.resolve(turnstileToken.value)
-  if (captchaBlocked.value) return Promise.resolve('')
-  if (pendingTokenRequest) return pendingTokenRequest.promise
+  if (state.token) return Promise.resolve(state.token)
+  if (captchaBlocked(state)) return Promise.resolve('')
+  if (pendingRequests[state.action]) return pendingRequests[state.action].promise
 
   // Without an execute-capable widget there is no way to obtain a token, so
   // fail closed immediately rather than waiting for a callback that cannot come.
-  if (widgetId === null || typeof widgetApi?.execute !== 'function') return Promise.resolve('')
+  if (state.widgetId === null || typeof widgetApi?.execute !== 'function') return Promise.resolve('')
 
   let resolveRequest
   const promise = new Promise((resolve) => { resolveRequest = resolve })
   const timer = setTimeout(() => {
-    settleTokenRequest('')
+    settleTokenRequest(state, '')
     // Let the widget start a fresh challenge on the next attempt.
-    resetCaptcha()
+    resetCaptcha(state)
   }, timeoutMs)
-  pendingTokenRequest = { promise, resolve: resolveRequest, timer }
+  pendingRequests[state.action] = { promise, resolve: resolveRequest, timer }
   try {
-    widgetApi.execute(widgetId)
+    widgetApi.execute(state.widgetId)
   } catch {
     // A visible widget may already be running its challenge; the render
     // callback still delivers the token when the visitor completes it.
@@ -230,19 +288,19 @@ function requestToken(timeoutMs = 15000) {
   return promise
 }
 
-// Returns the token to send, or null when the visitor must retry. A null
-// result always leaves the request unsent so a gated API call never fires
-// without a token.
-async function acquireToken() {
+// Returns the token to send for this panel, or null when the visitor must
+// retry. A null result always leaves the request unsent so a gated API call
+// never fires without a token.
+async function acquireToken(state) {
   if (!turnstile.value.enabled) return ''
-  if (captchaBlocked.value) {
-    error.value = turnstileError.value || 'The security check is unavailable. Reload the page to try again.'
+  if (captchaBlocked(state)) {
+    error.value = state.error || 'The security check is unavailable. Reload the page to try again.'
     return null
   }
-  const token = await requestToken()
+  const token = await requestToken(state)
   if (token) return token
-  if (captchaBlocked.value) {
-    error.value = turnstileError.value || 'The security check is unavailable. Reload the page to try again.'
+  if (captchaBlocked(state)) {
+    error.value = state.error || 'The security check is unavailable. Reload the page to try again.'
   } else {
     error.value = 'Please complete the security check before continuing.'
   }
@@ -260,14 +318,14 @@ async function enterDemo() {
   busy.value = true
   busyAction.value = 'guest'
   try {
-    const token = await acquireToken()
+    const token = await acquireToken(guestCaptcha)
     if (token === null) return
     await guestLogin(token)
-    resetCaptcha()
+    resetCaptcha(guestCaptcha)
     notify('success', 'Entered the demo')
     await router.push(destination())
   } catch (exception) {
-    resetCaptcha()
+    resetCaptcha(guestCaptcha)
     error.value = exception.message
   } finally {
     busy.value = false
@@ -281,14 +339,14 @@ async function submit() {
   busy.value = true
   busyAction.value = 'login'
   try {
-    const token = await acquireToken()
+    const token = await acquireToken(loginCaptcha)
     if (token === null) return
     await login(username.value, password.value, token)
-    resetCaptcha()
+    resetCaptcha(loginCaptcha)
     notify('success', 'Signed in')
     await router.push(destination())
   } catch (exception) {
-    resetCaptcha()
+    resetCaptcha(loginCaptcha)
     error.value = exception.message
   } finally {
     busy.value = false
@@ -397,6 +455,11 @@ async function submit() {
 .auth-captcha .hint,
 .auth-captcha .error {
   margin: 0;
+  text-align: center;
+}
+
+.auth-warning {
+  margin-top: 16px;
   text-align: center;
 }
 

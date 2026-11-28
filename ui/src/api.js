@@ -42,8 +42,8 @@ export function setCsrf(token) {
   csrfToken = token || ''
 }
 
-async function request(path, { method = 'GET', body, raw = false } = {}) {
-  const headers = { Accept: 'application/json' }
+async function request(path, { method = 'GET', body, raw = false, headers: extraHeaders } = {}) {
+  const headers = { Accept: 'application/json', ...(extraHeaders || {}) }
   if (csrfToken) headers['X-CSRF-Token'] = csrfToken
   let payload = body
   if (body !== undefined && !(body instanceof FormData)) {
@@ -80,7 +80,14 @@ async function request(path, { method = 'GET', body, raw = false } = {}) {
 export const api = {
   health: () => request('/health'),
   version: () => request('/version'),
-  setup: (payload) => request('/setup', { method: 'POST', body: payload }),
+  // The operator token is sent in the header the API treats as authoritative
+  // and repeated in the JSON body so either accepted contract works. It is
+  // never persisted by the client.
+  setup: (payload, setupToken = '') => request('/setup', {
+    method: 'POST',
+    body: setupToken ? { ...payload, setup_token: setupToken } : payload,
+    headers: setupToken ? { 'X-TeraLab-Setup-Token': setupToken } : {}
+  }),
   login: (payload) => request('/auth/login', { method: 'POST', body: payload }),
   guest: (payload) => request('/auth/guest', { method: 'POST', body: payload }),
   logout: () => request('/auth/logout', { method: 'POST' }),

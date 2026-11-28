@@ -16,9 +16,12 @@ use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Http\V1Session;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class ApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private string $root;
@@ -33,6 +36,7 @@ final class ApiTest extends TestCase
         copy(__DIR__ . '/fixtures/sample.unl', $this->root . '/labs/sample.unl');
 
         $config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($config);
         // These tests exercise the legacy adapter, which is off by default.
         (new App($config))->create();
         $pdo = (new Database($config))->pdo();
@@ -71,6 +75,7 @@ final class ApiTest extends TestCase
         $second = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin2',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(409, $second->getStatusCode());
     }
@@ -224,6 +229,7 @@ final class ApiTest extends TestCase
             'username' => 'admin',
             'password' => self::PASSWORD,
             'email' => 'admin@example.test',
+            'setup_token' => $this->setupToken(),
         ]);
     }
 

@@ -26,6 +26,16 @@ What changes:
   `root:teralab 0750`, and the agent socket group becomes `teralab`.
   `www-data` is removed from that group if an older install added it, and it
   cannot read the secret or reach the agent socket.
+- First-run setup is operator-gated. The installer and the package `postinst`
+  generate `/etc/teralab/setup.token` once (`root:teralab 0640`, 32 random
+  bytes; never overwritten) and print it once together with the
+  `X-TeraLab-Setup-Token` header. The token may also be sent as the JSON field
+  `setup_token`; the header wins. The group read bit lets the `teralab-api`
+  PHP-FPM pool identity verify the token; `www-data` is not in `teralab`.
+  Setup attempts are limited to 10 per 15 minutes per address and 50 per 15
+  minutes globally. An existing install that upgrades gets a token on that
+  run; if an administrator account already exists, setup remains disabled and
+  the token is not needed.
 - The data matrix becomes: `/var/lib/teralab` `teralab-api:teralab 0750`;
   the database and its WAL/SHM `0600`; `labs`/`logs` `0750`;
   `backups`/`restore` `0700`; `images` directories `0755` with files in the new
@@ -90,8 +100,10 @@ sudo scripts/check-install-perms.sh   # from this source checkout
 
 The source installer re-copies the tree, forces it to `root:root`, rewrites the
 pool and the generated agent drop-in, re-applies the data matrix, and then
-starts the services. Existing labs, images, the database and the agent secret
-are preserved.
+starts the services. Existing labs, images, the database, the agent secret and
+the setup token are preserved; if the token is missing, the installer creates
+it once and prints it (setup is already disabled when an administrator
+exists).
 
 ### Rollback
 
@@ -141,6 +153,14 @@ The package upgrades in place:
 - `/etc/teralab/agent.secret`, `/etc/teralab/config.php` and
   `/var/lib/teralab` (database, labs, images, run directories and logs) are
   not replaced or deleted.
+- If `/etc/teralab/setup.token` does not exist, `postinst` creates it
+  (`root:teralab 0640`) and prints it once with the setup URL and the
+  `X-TeraLab-Setup-Token` header. It is never overwritten. Send the token in
+  that header or in the JSON field `setup_token` (the header wins); setup is
+  limited to 10 attempts per 15 minutes per address and 50 per 15 minutes
+  globally. `/api/v2/setup` stays disabled once an administrator exists, so a
+  configured install does not need the token; read it later with
+  `sudo cat /etc/teralab/setup.token` if setup is still pending.
 - The agent is restarted so it runs the new binary; the agent is version-locked
   to the API, so the restart is required. On startup the agent reconciles its
   state: **running labs are stopped** (non-docker engines are killed and their
@@ -199,7 +219,8 @@ sudo packaging/teralab/install.sh
 
 What is preserved:
 
-- `/etc/teralab/agent.secret` and any `config.php`;
+- `/etc/teralab/agent.secret`, `/etc/teralab/setup.token` and any
+  `config.php`;
 - `/var/lib/teralab/database.sdb` and its WAL files;
 - labs under `/var/lib/teralab/labs` and images under `images`;
 - run directories are recreated and reconciled by the agent.

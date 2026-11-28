@@ -10,6 +10,7 @@ use PDO;
 use PDOException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use TeraLab\Api\Auth\TurnstileVerifier;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
@@ -33,6 +34,10 @@ final class HealthController
             throw new HttpException(503, 'Database unavailable.');
         }
 
+        $turnstileEnabled = $this->settings->int('turnstile_enabled', 0) === 1;
+        $turnstileSiteKey = $this->settings->string('turnstile_site_key', '');
+        $turnstileSecret = $this->settings->string('turnstile_secret_key', '');
+
         return Json::response($response, [
             'status' => 'ok',
             'version' => $this->config->version(),
@@ -50,8 +55,14 @@ final class HealthController
                 ),
             ],
             'turnstile' => [
-                'enabled' => $this->settings->int('turnstile_enabled', 0) === 1,
-                'site_key' => $this->settings->string('turnstile_site_key', ''),
+                'enabled' => $turnstileEnabled,
+                'site_key' => $turnstileSiteKey,
+                // The UI warns when the gate is enabled with Cloudflare's
+                // public testing credentials.
+                'test_keys' => $turnstileEnabled && (
+                    TurnstileVerifier::isTestSecretKey($turnstileSecret)
+                    || TurnstileVerifier::isTestSiteKey($turnstileSiteKey)
+                ),
             ],
         ]);
     }

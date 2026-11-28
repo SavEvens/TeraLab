@@ -18,6 +18,7 @@ use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Auth\AuthService;
 use TeraLab\Api\Auth\PasswordPolicy;
 use TeraLab\Api\Auth\RateLimiter;
+use TeraLab\Api\Auth\SetupToken;
 use TeraLab\Api\Auth\TurnstileVerifier;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Database\Migrator;
@@ -158,6 +159,14 @@ final class App
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
         $container->set(RateLimiter::class, static fn (PDO $pdo): RateLimiter => new RateLimiter($pdo));
         $container->set(AuditLogger::class, static fn (PDO $pdo): AuditLogger => new AuditLogger($pdo));
+        $container->set(
+            SetupToken::class,
+            static fn (Config $config): SetupToken => new SetupToken($config->setupTokenFile)
+        );
+        $container->set(
+            SettingsService::class,
+            static fn (PDO $pdo, Config $config): SettingsService => new SettingsService($pdo, $config->environment)
+        );
         $turnstile = $this->turnstile;
         $container->set(
             TurnstileVerifier::class,
@@ -450,6 +459,15 @@ final class App
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/users/{id}/sessions/revoke', fn ($request, $response, array $args) => $users->revokeSessions($request, $response, $args))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
+        // Legacy import lifecycle: count only, then clear every imported hash
+        // and its sessions so the account requires an administrator reset.
+        $app->get('/api/v2/users/legacy-hashes', fn ($request, $response) => $users->legacyHashCount($request, $response))
+            ->add($adminRole())
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/users/legacy-hashes/clear', fn ($request, $response) => $users->clearLegacyHashes($request, $response))
             ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
