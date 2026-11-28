@@ -14,6 +14,7 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Labs\LabLocks;
+use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\LabService;
 use TeraLab\Api\Labs\UnlParser;
 use TeraLab\Api\Image\ImageReferences;
@@ -1209,6 +1210,89 @@ final class LabServiceTest extends TestCase
         self::assertSame(['node_unsupported'], $byNode['SW1'] ?? []);
     }
 
+    public function testGuestLabByteCapRejectsBeforeWritingForCreateImportAndApply(): void
+    {
+        $settings = new SettingsService($this->pdo);
+        $settings->update(['demo_max_lab_bytes_per_guest' => 1048576]);
+        $this->template('vpcs', "schema: 1\nid: vpcs\nname: Vpcs\nkind: vpcs\n");
+        $guest = $this->insertUser('guest-bytes', 'editor', 1, time() + 600);
+        $service = $this->service($this->demoGuard(), new SnapshotRepository($this->pdo));
+        $big = str_repeat('a', 1048576 + 2048);
+
+        try {
+            $service->create(['name' => 'Too Big', 'description' => $big], 'guest', $guest);
+            self::fail('an over-cap create must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('bytes of lab data', $exception->getMessage());
+        }
+        self::assertSame([], glob($this->config->labsDir . '/*.unl') ?: []);
+
+        $yaml = "schema: 1\nname: Too Big YAML\nnodes:\n  PC1:\n    template: vpcs\ndescription: " . $big . "\n";
+        try {
+            $service->importYaml($yaml, 'too-big.yaml', null, $guest);
+            self::fail('an over-cap YAML import must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('bytes of lab data', $exception->getMessage());
+        }
+        self::assertSame([], glob($this->config->labsDir . '/*.unl') ?: []);
+
+        $lab = $service->create(['name' => 'Apply Target', 'nodes' => []], 'guest', $guest);
+        $path = $this->config->labsDir . '/' . (string) $lab['path'];
+        $before = (string) file_get_contents($path);
+        try {
+            $service->applyYaml(
+                (string) $lab['id'],
+                "schema: 1\nname: Apply Target\nnodes:\n  PC1:\n    template: vpcs\nbody: " . $big . "\n",
+                null,
+                null,
+                $guest,
+                false,
+            );
+            self::fail('an over-cap YAML apply must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('bytes of lab data', $exception->getMessage());
+        }
+        self::assertSame($before, (string) file_get_contents($path));
+    }
+
+    public function testSnapshotCountAndByteCaps(): void
+    {
+        $settings = new SettingsService($this->pdo);
+        $settings->update(['demo_max_snapshots_per_lab' => 2]);
+        $service = $this->service(null, new SnapshotRepository($this->pdo));
+        $lab = $service->create(['name' => 'Snapshot Caps', 'nodes' => []]);
+
+        $service->createSnapshot((string) $lab['id'], 'one', null);
+        $service->createSnapshot((string) $lab['id'], 'two', null);
+        try {
+            $service->createSnapshot((string) $lab['id'], 'three', null);
+            self::fail('the third snapshot must exceed the cap of two');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('At most 2 snapshots', $exception->getMessage());
+        }
+
+        $settings->update([
+            'demo_max_snapshots_per_lab' => 10,
+            'demo_max_lab_bytes_per_guest' => 1048576,
+        ]);
+        foreach ($service->snapshots((string) $lab['id']) as $snapshot) {
+            $service->deleteSnapshot((string) $lab['id'], (string) $snapshot['id']);
+        }
+        $fat = $service->create(['name' => 'Fat Lab', 'body' => str_repeat('b', 700000)], 'guest', null);
+        $service->createSnapshot((string) $fat['id'], 'first', null);
+        try {
+            $service->createSnapshot((string) $fat['id'], 'second', null);
+            self::fail('the second snapshot must exceed the byte budget');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('byte demo limit', $exception->getMessage());
+        }
+    }
+
     private function demoGuard(): DemoGuard
     {
         return new DemoGuard(
@@ -1216,6 +1300,7 @@ final class LabServiceTest extends TestCase
             new SettingsService($this->pdo),
             new DemoPolicy(),
             new TemplateRepository($this->config),
+            new LabRepository($this->config->labsDir, new UnlParser()),
         );
     }
 
@@ -1485,6 +1570,7 @@ final class LabServiceTest extends TestCase
             new ImageReferences($this->pdo, $this->config),
             snapshots: $snapshots,
             demoGuard: $demoGuard,
+            settings: new SettingsService($this->pdo),
         );
     }
 

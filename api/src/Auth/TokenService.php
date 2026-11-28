@@ -7,11 +7,15 @@ declare(strict_types=1);
 namespace TeraLab\Api\Auth;
 
 use PDO;
+use TeraLab\Api\Database\BusyRetry;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\System\DemoPolicy;
 
 final class TokenService
 {
+    /** Bearer traffic must not write api_tokens.last_used_at on every request. */
+    public const LAST_USED_THROTTLE_SECONDS = 60;
+
     public function __construct(private readonly PDO $pdo)
     {
     }
@@ -88,13 +92,21 @@ final class TokenService
         }
     }
 
+    public function count(string $userId): int
+    {
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM api_tokens WHERE user_id = :user_id');
+        $statement->execute([':user_id' => $userId]);
+
+        return (int) $statement->fetchColumn();
+    }
+
     /**
      * @return array{user: array<string, mixed>, scopes: list<string>}|null
      */
     public function authenticate(string $token): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT t.id, t.scopes, t.expires_at, u.id AS user_id, u.username, u.role, u.email, u.name, '
+            'SELECT t.id, t.scopes, t.expires_at, t.last_used_at, u.id AS user_id, u.username, u.role, u.email, u.name, '
             . 'u.expiration, u.guest '
             . 'FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = :hash'
         );
@@ -112,8 +124,13 @@ final class TokenService
         if ((int) $row['expiration'] >= 0 && (int) $row['expiration'] < time()) {
             throw new HttpException(403, 'This account has expired.');
         }
-        $update = $this->pdo->prepare('UPDATE api_tokens SET last_used_at = :now WHERE id = :id');
-        $update->execute([':now' => time(), ':id' => (string) $row['id']]);
+        $lastUsed = $row['last_used_at'] !== null ? (int) $row['last_used_at'] : null;
+        if ($lastUsed === null || time() - $lastUsed >= self::LAST_USED_THROTTLE_SECONDS) {
+            BusyRetry::retry(function () use ($row): void {
+                $update = $this->pdo->prepare('UPDATE api_tokens SET last_used_at = :now WHERE id = :id');
+                $update->execute([':now' => time(), ':id' => (string) $row['id']]);
+            });
+        }
 
         return [
             'user' => [

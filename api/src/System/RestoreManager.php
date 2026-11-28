@@ -11,6 +11,9 @@ use TeraLab\Api\Config;
 
 final class RestoreManager
 {
+    /** Hard ceiling for a staged database file; matches the highest backup setting. */
+    public const MAX_DATABASE_BYTES = 10737418240;
+
     public static function applyPending(Config $config): void
     {
         $directory = $config->dataDir . '/restore';
@@ -18,6 +21,10 @@ final class RestoreManager
         $marker = $directory . '/pending';
         if (!is_file($staged) || !is_file($marker)) {
             return;
+        }
+        $size = filesize($staged);
+        if ($size === false || $size > self::MAX_DATABASE_BYTES) {
+            throw new RuntimeException('The staged restore database exceeds the size limit.');
         }
 
         // The staging area holds a full copy of the database: keep it and the

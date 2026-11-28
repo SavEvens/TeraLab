@@ -142,6 +142,19 @@ export function startMockServer(port = 8099) {
     demo_memory_floor_mb: 2048,
     demo_idle_wipe_minutes: 120,
     demo_sweep_interval: 300,
+    demo_max_labs_per_guest: 3,
+    demo_max_lab_bytes_per_guest: 20971520,
+    demo_max_snapshots_per_lab: 3,
+    demo_max_tokens_per_user: 5,
+    retention_login_attempts_days: 30,
+    retention_audit_log_days: 90,
+    retention_jobs_days: 30,
+    retention_jobs_max_rows: 1000,
+    maintenance_interval_seconds: 3600,
+    backup_max_archive_bytes: 2147483648,
+    backup_max_entries: 10000,
+    backup_max_uncompressed_bytes: 4294967296,
+    backup_max_database_bytes: 1073741824,
     turnstile_enabled: 0,
     turnstile_site_key: '3x00000000000000000000FF',
     turnstile_hostname: '',
@@ -839,7 +852,24 @@ export function startMockServer(port = 8099) {
           last_sweep_at: demo.lastSweepAt,
           mem_available_mb: demo.memAvailableMb,
           guests_active: users.filter((user) => user.guest).length,
-          demo_nodes_running: demo.nodesRunning
+          demo_nodes_running: demo.nodesRunning,
+          guest_labs: 2,
+          guest_lab_bytes: 1572864,
+          guest_snapshots: 1
+        }
+      })
+    }
+    if (path === '/api/v2/system/maintenance' && request.method === 'POST') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      return send(response, 200, {
+        data: {
+          sessions_deleted: 1,
+          login_attempts_deleted: 0,
+          audit_log_deleted: 2,
+          jobs_deleted: 0,
+          snapshots_deleted: 1,
+          trash_deleted: 0
         }
       })
     }
@@ -849,7 +879,10 @@ export function startMockServer(port = 8099) {
       demo.lastSweepAt = Math.floor(Date.now() / 1000)
       demo.memAvailableMb = 6144
       demo.nodesRunning = 0
-      lastDemoSweep = { guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, labs_failed: 0, mem_available_mb: demo.memAvailableMb }
+      lastDemoSweep = {
+        guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, labs_failed: 0,
+        mem_available_mb: demo.memAvailableMb, guest_files_removed: 4, snapshots_removed: 2
+      }
       return send(response, 200, { data: lastDemoSweep })
     }
     if (path === '/api/v2/system/logs') return send(response, 200, { data: { source: 'api', lines: ['mock log line'], size: 14, modified: 0 } })

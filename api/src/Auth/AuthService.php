@@ -23,6 +23,9 @@ final class AuthService
      */
     public const LEGACY_HASH_CUTOFF = 1798761600; // 2027-01-01T00:00:00Z
 
+    /** Writes to sessions.last_seen_at are cheap but not free; one per 30 s is enough. */
+    public const LAST_SEEN_THROTTLE_SECONDS = 30;
+
     public function __construct(
         private readonly PDO $pdo,
         private readonly PasswordPolicy $passwordPolicy,
@@ -317,10 +320,16 @@ final class AuthService
         }
 
         // Last-seen bookkeeping is idempotent and must never fail a request.
-        BusyRetry::retry(function () use ($row): void {
-            $update = $this->pdo->prepare('UPDATE sessions SET last_seen_at = :now WHERE id_hash = :id_hash');
-            $update->execute([':now' => time(), ':id_hash' => (string) $row['id_hash']]);
-        });
+        // Authenticated traffic is frequent; writing on every request turns a
+        // read-only call into a SQLite write. One update per throttle window is
+        // enough for idle-expiry (which is measured in minutes).
+        $lastSeen = (int) $row['last_seen_at'];
+        if (time() - $lastSeen >= self::LAST_SEEN_THROTTLE_SECONDS) {
+            BusyRetry::retry(function () use ($row): void {
+                $update = $this->pdo->prepare('UPDATE sessions SET last_seen_at = :now WHERE id_hash = :id_hash');
+                $update->execute([':now' => time(), ':id_hash' => (string) $row['id_hash']]);
+            });
+        }
 
         return [
             'user' => $this->publicUser($row),

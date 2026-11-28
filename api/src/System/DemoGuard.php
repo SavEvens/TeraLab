@@ -8,6 +8,7 @@ namespace TeraLab\Api\System;
 
 use PDO;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Templates\DockerOptions;
 use TeraLab\Api\Templates\TemplateRepository;
 
@@ -28,6 +29,7 @@ final class DemoGuard
         private readonly SettingsService $settings,
         private readonly DemoPolicy $policy,
         private readonly TemplateRepository $templates,
+        private readonly LabRepository $labs,
         private readonly ?HostMemory $memory = null,
     ) {
     }
@@ -53,15 +55,22 @@ final class DemoGuard
     /**
      * Reject an authoring request that exceeds the demo caps.
      *
+     * The lab-count cap is checked here because every authoring entry point
+     * already calls this method. An existing lab that is being replaced is
+     * excluded so a save or YAML apply does not count itself twice; the exact
+     * byte budget is checked against the compiled file before it is written
+     * (see assertCanWriteLab()).
+     *
      * @param array<array-key, mixed> $nodes
      */
-    public function assertCanAuthor(?string $userId, array $nodes): void
+    public function assertCanAuthor(?string $userId, array $nodes, ?string $excludeLabId = null): void
     {
         if (!$this->isGuarded($userId)) {
             return;
         }
 
         $this->assertNodeCount($nodes);
+        $this->assertLabCount((string) $userId, $excludeLabId);
         $allowed = $this->resolvedAllowedTemplates();
         $ramCap = $this->ramCap();
         foreach ($nodes as $node) {
@@ -76,6 +85,28 @@ final class DemoGuard
             if ($ram > $ramCap) {
                 throw new HttpException(422, $this->ramMessage($node, $ram, $ramCap));
             }
+        }
+    }
+
+    /**
+     * Refuse a guest write whose compiled lab file would exceed the byte cap.
+     *
+     * Called with the exact XML length after compilation and before any file is
+     * created. `$excludeLabId` is the lab being replaced (save/apply/restore),
+     * whose current bytes are not counted twice.
+     */
+    public function assertCanWriteLab(?string $userId, int $bytes, ?string $excludeLabId = null): void
+    {
+        if (!$this->isGuarded($userId)) {
+            return;
+        }
+        $cap = $this->labBytesCap();
+        $stats = $this->ownedStats((string) $userId, $excludeLabId);
+        if ($stats['bytes'] + max(0, $bytes) > $cap) {
+            throw new HttpException(
+                422,
+                'The demo allows at most ' . $cap . ' bytes of lab data per guest; this lab would exceed it.',
+            );
         }
     }
 
@@ -128,6 +159,7 @@ final class DemoGuard
             }
         }
         $this->assertNodeCount($nodes);
+        $this->assertLabCount((string) $userId, null);
 
         $allowed = $this->resolvedAllowedTemplates();
         $ramCap = $this->ramCap();
@@ -210,6 +242,38 @@ final class DemoGuard
                 'The demo allows at most ' . $cap . ' nodes per lab; this lab has ' . $count . '.',
             );
         }
+    }
+
+    private function assertLabCount(string $userId, ?string $excludeLabId): void
+    {
+        $cap = $this->labCountCap();
+        $stats = $this->ownedStats($userId, $excludeLabId);
+        if ($stats['count'] >= $cap) {
+            throw new HttpException(
+                422,
+                'The demo allows at most ' . $cap . ' labs per guest; delete a lab before creating another.',
+            );
+        }
+    }
+
+    private function labCountCap(): int
+    {
+        return $this->settings->int('demo_max_labs_per_guest', 3);
+    }
+
+    private function labBytesCap(): int
+    {
+        return $this->settings->int('demo_max_lab_bytes_per_guest', 20971520);
+    }
+
+    /**
+     * @return array{count: int, bytes: int}
+     */
+    private function ownedStats(string $userId, ?string $excludeLabId): array
+    {
+        $stats = $this->labs->ownedStats($userId, $excludeLabId);
+
+        return ['count' => $stats['count'], 'bytes' => $stats['bytes']];
     }
 
     /**

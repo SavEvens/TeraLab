@@ -176,6 +176,9 @@ try {
   const demoMemoryBefore = (await page.locator('[data-test="demo-memory"]').innerText()).trim()
   const demoGuestsBefore = (await page.locator('[data-test="demo-guests"]').innerText()).trim()
   const demoNodesBefore = (await page.locator('[data-test="demo-nodes"]').innerText()).trim()
+  const demoGuestLabs = (await page.locator('[data-test="demo-guest-labs"]').innerText()).trim()
+  const demoGuestBytes = (await page.locator('[data-test="demo-guest-bytes"]').innerText()).trim()
+  const demoGuestSnapshots = (await page.locator('[data-test="demo-guest-snapshots"]').innerText()).trim()
   await page.getByRole('button', { name: 'Sweep now' }).click()
   await page.waitForFunction(
     () => document.querySelector('[data-test="demo-last-sweep"]')?.textContent.trim() !== 'never',
@@ -185,7 +188,7 @@ try {
   const demoLastSweepAfter = (await page.locator('[data-test="demo-last-sweep"]').innerText()).trim()
   const demoMemoryAfter = (await page.locator('[data-test="demo-memory"]').innerText()).trim()
   await page.waitForFunction(
-    () => [...document.querySelectorAll('.toast')].some((toast) => /Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped\./.test(toast.textContent || '')),
+    () => [...document.querySelectorAll('.toast')].some((toast) => /Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped; 4 guest files and 2 snapshots removed\./.test(toast.textContent || '')),
     null,
     { timeout: 10000 }
   )
@@ -1240,13 +1243,18 @@ try {
   if (demoGuestsBefore !== '0' || demoNodesBefore !== '1') {
     throw new Error(`demo counts are wrong: guests=${demoGuestsBefore} nodes=${demoNodesBefore}`)
   }
-  if (!/Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped\./.test(demoSweepToast)) {
+  if (demoGuestLabs !== '2' || demoGuestBytes !== '1.5 MiB' || demoGuestSnapshots !== '1') {
+    throw new Error(`demo guest footprint is wrong: labs=${demoGuestLabs} bytes=${demoGuestBytes} snapshots=${demoGuestSnapshots}`)
+  }
+  if (!/Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped; 4 guest files and 2 snapshots removed\./.test(demoSweepToast)) {
     throw new Error(`demo sweep toast is wrong: ${demoSweepToast}`)
   }
   if (
     demoSweepSummary?.guests_purged !== 2 ||
     demoSweepSummary?.labs_wiped !== 3 ||
-    demoSweepSummary?.nodes_reaped !== 1
+    demoSweepSummary?.nodes_reaped !== 1 ||
+    demoSweepSummary?.guest_files_removed !== 4 ||
+    demoSweepSummary?.snapshots_removed !== 2
   ) {
     throw new Error(`demo sweep summary is wrong: ${JSON.stringify(demoSweepSummary)}`)
   }

@@ -19,9 +19,11 @@ use TeraLab\Api\Labs\LabService;
  * Reclaims demo resources: expired and idle guests, idle guest labs, and the
  * newest guest nodes when host memory is below the demo floor.
  *
- * The sweeper only ever stops nodes and wipes run state through the existing
- * services; it never deletes lab files or image-store content. Guest scope is
- * derived from lab ownership, so admin and editor labs are never touched.
+ * The sweeper only ever stops and wipes nodes through the existing services.
+ * On an identity purge it then deletes that guest's own lab files, snapshots,
+ * and trash entries; it never deletes image-store content or another owner's
+ * labs. Guest scope is derived from lab ownership, so admin and editor labs are
+ * never touched.
  *
  * `sweepIfDue()` runs lazily from request paths. Its bookkeeping timestamp
  * lives in the settings table under a key that is not part of
@@ -45,6 +47,7 @@ final class DemoSweeper
         private readonly HostMemory $memory,
         private readonly LabRepository $repository,
         ?callable $clock = null,
+        private readonly ?MaintenanceService $maintenance = null,
     ) {
         $this->clock = $clock === null ? null : $clock(...);
     }
@@ -78,6 +81,8 @@ final class DemoSweeper
      *   labs_wiped: int,
      *   labs_failed: int,
      *   nodes_reaped: int,
+     *   guest_files_removed: int,
+     *   snapshots_removed: int,
      *   mem_available_mb: int|null
      * }
      */
@@ -123,6 +128,8 @@ final class DemoSweeper
         $labsWiped = 0;
         $labsFailed = 0;
         $nodesReaped = 0;
+        $guestFilesRemoved = 0;
+        $snapshotsRemoved = 0;
 
         // b. Purge expired or idle guests, their labs, sessions, and row.
         //
@@ -161,12 +168,32 @@ final class DemoSweeper
             }
 
             $failed = [];
+            $removedLabIDs = [];
+            $removedFiles = 0;
+            $removedSnapshots = 0;
             foreach ($labsByOwner[$guestId] ?? [] as $labID) {
-                if ($this->wipeLab($labID)) {
-                    $labsWiped++;
-                } else {
+                if (!$this->wipeLab($labID)) {
+                    $failed[] = $labID;
+                    continue;
+                }
+                $labsWiped++;
+                // Owner decision: guest identities are ephemeral, so a purged
+                // guest leaves no lab files or snapshots behind. Only files
+                // whose stored owner is this guest reach this loop.
+                try {
+                    $removedSnapshots += $this->labs->deletePermanently($labID);
+                    $removedLabIDs[] = $labID;
+                    $removedFiles++;
+                } catch (Throwable) {
                     $failed[] = $labID;
                 }
+            }
+            try {
+                $removedFiles += $this->labs->purgeTrashForUser($guestId);
+            } catch (Throwable) {
+                // A failed trash removal keeps the identity for the next sweep;
+                // the audit records the guest without inventing a lab id.
+                $failed[] = 'trash:' . $guestId;
             }
             if ($failed !== []) {
                 // Keep the identity and its sessions so the next sweep can
@@ -177,13 +204,20 @@ final class DemoSweeper
                     'reason' => $reason,
                     'guest' => $guestId,
                     'lab_ids' => $failed,
+                    'guest_files_removed' => $removedFiles,
+                    'snapshots_removed' => $removedSnapshots,
                 ]);
                 continue;
             }
             $this->deleteGuest($guestId);
+            $guestFilesRemoved += $removedFiles;
+            $snapshotsRemoved += $removedSnapshots;
             $this->audit->log(null, '', 'demo.sweep', $guestId, 'success', [
                 'reason' => $reason,
                 'guest' => $guestId,
+                'guest_files_removed' => $removedFiles,
+                'lab_ids' => $removedLabIDs,
+                'snapshots_removed' => $removedSnapshots,
             ]);
             $guestsPurged++;
         }
@@ -265,7 +299,19 @@ final class DemoSweeper
             }
         }
 
-        // e. Record the sweep and report.
+        // e. Run the platform retention cleanup when its own interval has
+        // elapsed. It shares the sweeper's lazy trigger so a deployment without
+        // a timer still trims sessions, attempts, audit rows, jobs, snapshots,
+        // and expired trash.
+        if ($this->maintenance !== null) {
+            try {
+                $this->maintenance->runIfDue();
+            } catch (Throwable $exception) {
+                error_log('teralab maintenance failed: ' . $exception->getMessage());
+            }
+        }
+
+        // f. Record the sweep and report.
         $this->writeLastSweep($now);
 
         return [
@@ -273,6 +319,8 @@ final class DemoSweeper
             'labs_wiped' => $labsWiped,
             'labs_failed' => $labsFailed,
             'nodes_reaped' => $nodesReaped,
+            'guest_files_removed' => $guestFilesRemoved,
+            'snapshots_removed' => $snapshotsRemoved,
             'mem_available_mb' => $available,
         ];
     }
@@ -282,7 +330,10 @@ final class DemoSweeper
      *   last_sweep_at: int|null,
      *   mem_available_mb: int|null,
      *   guests_active: int,
-     *   demo_nodes_running: int
+     *   demo_nodes_running: int,
+     *   guest_labs: int,
+     *   guest_lab_bytes: int,
+     *   guest_snapshots: int
      * }
      */
     public function status(): array
@@ -293,6 +344,7 @@ final class DemoSweeper
             $guestIds[(string) $guestId] = true;
         }
         [$ownerByLab] = $this->guestLabMap($guestIds);
+        $footprint = $this->guestFootprint($guestIds);
 
         $running = 0;
         foreach ($this->runningNodes() ?? [] as $node) {
@@ -306,7 +358,53 @@ final class DemoSweeper
             'mem_available_mb' => $this->memory->availableMb(),
             'guests_active' => count($guests),
             'demo_nodes_running' => $running,
+            'guest_labs' => $footprint['labs'],
+            'guest_lab_bytes' => $footprint['bytes'],
+            'guest_snapshots' => $footprint['snapshots'],
         ];
+    }
+
+    /**
+     * Guest-owned lab files and snapshot rows, for the admin capacity view.
+     *
+     * @param array<string, true> $guestIds
+     * @return array{labs: int, bytes: int, snapshots: int}
+     */
+    private function guestFootprint(array $guestIds): array
+    {
+        $root = realpath($this->repository->root());
+        $labs = 0;
+        $bytes = 0;
+        $labIDs = [];
+        foreach ($this->repository->all() as $lab) {
+            $attributes = is_array($lab['attributes'] ?? null) ? $lab['attributes'] : [];
+            $owner = $attributes['owner'] ?? null;
+            if (!is_string($owner) || !isset($guestIds[$owner])) {
+                continue;
+            }
+            $labID = (string) ($lab['id'] ?? '');
+            if ($labID !== '') {
+                $labIDs[] = $labID;
+            }
+            $labs++;
+            if ($root !== false) {
+                $path = $root . DIRECTORY_SEPARATOR . (string) ($lab['path'] ?? '');
+                $size = is_file($path) ? filesize($path) : false;
+                $bytes += $size === false ? 0 : $size;
+            }
+        }
+
+        $snapshots = 0;
+        if ($labIDs !== []) {
+            $placeholders = implode(',', array_fill(0, count($labIDs), '?'));
+            $statement = $this->pdo->prepare(
+                'SELECT COUNT(*) FROM lab_snapshots WHERE lab_id IN (' . $placeholders . ')'
+            );
+            $statement->execute($labIDs);
+            $snapshots = (int) $statement->fetchColumn();
+        }
+
+        return ['labs' => $labs, 'bytes' => $bytes, 'snapshots' => $snapshots];
     }
 
     /**
