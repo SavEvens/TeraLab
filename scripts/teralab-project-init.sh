@@ -49,6 +49,8 @@ if command -v shellcheck >/dev/null 2>&1; then
 		packaging/teralab/postinst.sh \
 		packaging/teralab/prerm.sh \
 		packaging/teralab/postrm.sh \
+		packaging/teralab/prune-tree.sh \
+		scripts/tests/prune-tree-test.sh \
 		packaging/teralab/teralab-firewall \
 		packaging/teralab/fpm-socket-acl
 fi

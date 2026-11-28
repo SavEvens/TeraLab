@@ -177,8 +177,10 @@ files as locally created. For that one migration:
 - run the installer's state step once (`sudo /opt/teralab/packaging/teralab/apply-state.sh --package`)
   and `sudo scripts/check-install-perms.sh` from a matching checkout.
 
-`apply-state.sh` re-owns the installed tree root:root and removes group/world
-write bits, which covers any files the package did not replace. Later package
+`apply-state.sh` re-owns the installed tree root:root, removes group/world
+write bits and deletes files under `/opt/teralab` that dpkg does not own, so
+the package becomes the single owner of the tree (dev vendor, caches, old UI
+bundles and a leftover source tree are removed). Later package
 upgrades are ordinary conffile-prompt upgrades.
 
 If TeraLab was installed from the Debian package, upgrade with the new

@@ -195,6 +195,7 @@ install -m 0644 "$SRC/LICENSE" "$PAYLOAD/LICENSE"
 install -m 0644 "$SRC/PROVENANCE.md" "$PAYLOAD/PROVENANCE.md"
 install -m 0644 "$SRC/TERALAB_VERSION" "$PAYLOAD/TERALAB_VERSION"
 install -m 0755 "$SRC/packaging/teralab/apply-state.sh" "$PAYLOAD/packaging/teralab/apply-state.sh"
+install -m 0755 "$SRC/packaging/teralab/prune-tree.sh" "$PAYLOAD/packaging/teralab/prune-tree.sh"
 install -m 0755 "$SRC/packaging/teralab/teralab-firewall" "$PAYLOAD/packaging/teralab/teralab-firewall"
 install -m 0755 "$SRC/packaging/teralab/fpm-socket-acl" "$PAYLOAD/packaging/teralab/fpm-socket-acl"
 install -m 0644 "$SRC/packaging/teralab/import-legacy.php" "$PAYLOAD/packaging/teralab/import-legacy.php"
@@ -256,6 +257,7 @@ find "$PAYLOAD" -type d -exec chmod 0755 {} +
 find "$PAYLOAD" -type f -exec chmod 0644 {} +
 chmod 0755 "$PAYLOAD/bin/teralab-agent" \
 	"$PAYLOAD/packaging/teralab/apply-state.sh" \
+	"$PAYLOAD/packaging/teralab/prune-tree.sh" \
 	"$PAYLOAD/packaging/teralab/teralab-firewall" \
 	"$PAYLOAD/packaging/teralab/fpm-socket-acl"
 chmod 0755 "$STAGE/usr/local/libexec/teralab/teralab-firewall" \
@@ -347,6 +349,7 @@ for path in \
 	./opt/teralab/LICENSES/BSD-3-Clause.txt \
 	./opt/teralab/LICENSES/GPL-2.0.txt \
 	./opt/teralab/packaging/teralab/apply-state.sh \
+	./opt/teralab/packaging/teralab/prune-tree.sh \
 	./opt/teralab/packaging/teralab/teralab.apache.conf \
 	./opt/teralab/packaging/teralab/teralab-agent.service \
 	./opt/teralab/packaging/teralab/teralab-firewall.service \

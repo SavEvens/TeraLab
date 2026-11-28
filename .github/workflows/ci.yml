@@ -140,9 +140,14 @@ jobs:
             packaging/teralab/postinst.sh \
             packaging/teralab/prerm.sh \
             packaging/teralab/postrm.sh \
+            packaging/teralab/prune-tree.sh \
             packaging/teralab/teralab-firewall \
+            scripts/tests/prune-tree-test.sh \
             packaging/teralab/fpm-socket-acl \
             scripts/teralab-project-init.sh
+
+      - name: Shell tests
+        run: bash scripts/tests/prune-tree-test.sh
 
   ui:
     name: UI build and tests
