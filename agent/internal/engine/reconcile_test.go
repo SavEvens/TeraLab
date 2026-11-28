@@ -12,18 +12,32 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/config"
+	"github.com/SavEvens/TeraLab/agent/internal/network"
 )
 
-func TestReconcileKillsOrphansAndRemovesResources(t *testing.T) {
-	cfg := config.Config{
+func reconcileTestConfig(t *testing.T) config.Config {
+	t.Helper()
+
+	return config.Config{
 		RunDir:         t.TempDir(),
+		StateDir:       t.TempDir(),
 		ImagesDir:      t.TempDir(),
 		CgroupRoot:     t.TempDir(),
 		DisableCgroups: true,
 		VMUser:         "teralab-vm",
 	}
+}
+
+func TestReconcileKillsOrphansAndRemovesResources(t *testing.T) {
+	cfg := reconcileTestConfig(t)
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep binary is required for this test")
+	}
+	cfg.QEMUBinary = sleepPath
 	manager := NewManager(cfg, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 	defer manager.Shutdown()
 
@@ -31,16 +45,12 @@ func TestReconcileKillsOrphansAndRemovesResources(t *testing.T) {
 	manager.net.SysClassNet = sys
 	deleted := []string{}
 	manager.net.Run = func(name string, args ...string) ([]byte, error) {
-		if len(args) >= 3 && args[0] == "link" && args[1] == "delete" {
+		if name == "ip" && len(args) >= 3 && args[0] == "link" && args[1] == "delete" {
 			deleted = append(deleted, args[2])
 		}
 		return nil, nil
 	}
 
-	sleepPath, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Skip("sleep binary is required for this test")
-	}
 	orphan := exec.Command(sleepPath, "30")
 	orphan.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := orphan.Start(); err != nil {
@@ -51,27 +61,19 @@ func TestReconcileKillsOrphansAndRemovesResources(t *testing.T) {
 		_ = orphan.Wait()
 	})
 
-	nodeDir := filepath.Join(cfg.RunDir, "lab1", "node1")
-	if err := os.MkdirAll(nodeDir, 0o750); err != nil {
-		t.Fatal(err)
+	statePath, err := writeTrustedState(t, manager, nodeState{
+		ID:         "node1",
+		LabID:      "lab1",
+		Engine:     "qemu",
+		Exe:        sleepPath,
+		PID:        orphan.Process.Pid,
+		StartTicks: processStartTicks(orphan.Process.Pid),
+		Taps:       []string{Spec{LabID: "lab1", ID: "node1"}.TapName(0)},
+	})
+	if err != nil {
+		t.Fatalf("write state: %v", err)
 	}
 	tap := Spec{LabID: "lab1", ID: "node1"}.TapName(0)
-	state := nodeState{
-		ID:     "node1",
-		LabID:  "lab1",
-		Engine: "qemu",
-		Exe:    sleepPath,
-		PID:    orphan.Process.Pid,
-		Taps:   []string{tap},
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(nodeDir, stateFileName), data, 0o640); err != nil {
-		t.Fatal(err)
-	}
-
 	stale := "tlstale000000"
 	for _, name := range []string{tap, stale} {
 		if err := os.MkdirAll(filepath.Join(sys, name), 0o755); err != nil {
@@ -91,8 +93,14 @@ func TestReconcileKillsOrphansAndRemovesResources(t *testing.T) {
 	if err := syscall.Kill(orphan.Process.Pid, 0); err == nil {
 		t.Fatal("orphan process still running")
 	}
-	if _, err := os.Stat(nodeDir); !os.IsNotExist(err) {
-		t.Fatalf("node directory not removed: %v", err)
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("state file not removed: %v", err)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("state file not removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.runDirFor("node1", "lab1"))); !os.IsNotExist(err) {
+		t.Fatalf("run directory not removed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.RunDir, "lab1")); !os.IsNotExist(err) {
 		t.Fatalf("empty lab directory not removed: %v", err)
@@ -106,14 +114,8 @@ func TestReconcileKillsOrphansAndRemovesResources(t *testing.T) {
 }
 
 func TestReconcileLeavesLiveNodesAlone(t *testing.T) {
-	cfg := config.Config{
-		RunDir:         t.TempDir(),
-		ImagesDir:      t.TempDir(),
-		CgroupRoot:     t.TempDir(),
-		DisableCgroups: true,
-		VMUser:         "teralab-vm",
-	}
-	manager := NewManager(cfg, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	manager := NewManager(reconcileTestConfig(t),
+		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 	manager.net.SysClassNet = t.TempDir()
 	manager.net.Run = func(name string, args ...string) ([]byte, error) { return nil, nil }
 
@@ -126,7 +128,7 @@ func TestReconcileLeavesLiveNodesAlone(t *testing.T) {
 		State: "running",
 	}
 
-	if err := os.MkdirAll(filepath.Join(cfg.RunDir, "lab1", "node1"), 0o750); err != nil {
+	if err := os.MkdirAll(manager.runDirFor(spec.ID, spec.LabID), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	result, err := manager.Reconcile(nil)
@@ -152,26 +154,25 @@ func mkdirLab(t *testing.T, runRoot, labID string) string {
 	return dir
 }
 
-// writeNodeStateFile writes one node.json under a lab directory.
-func writeNodeStateFile(t *testing.T, labDir, nodeID, labID string) string {
+// writeTrustedState writes one record through the manager's own writer, so the
+// mode and path are exactly what production writes.
+func writeTrustedState(t *testing.T, manager *Manager, state nodeState) (string, error) {
 	t.Helper()
-	nodeDir := filepath.Join(labDir, shortPathComponent(nodeID))
-	if err := os.MkdirAll(nodeDir, 0o750); err != nil {
-		t.Fatalf("create node directory: %v", err)
+	state.RunDir = manager.runDirFor(state.ID, state.LabID)
+	if err := os.MkdirAll(state.RunDir, 0o750); err != nil {
+		t.Fatalf("create run dir: %v", err)
 	}
-	data, err := json.Marshal(nodeState{ID: nodeID, LabID: labID, Engine: "qemu"})
-	if err != nil {
-		t.Fatalf("marshal node state: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(nodeDir, stateFileName), data, 0o640); err != nil {
-		t.Fatalf("write node state: %v", err)
+	path := manager.statePathFor(state.ID, state.LabID)
+	if err := manager.writeStateFile(path, state); err != nil {
+		return path, err
 	}
 
-	return nodeDir
+	return path, nil
 }
 
 func TestReconcilePrunesStaleLabDirectories(t *testing.T) {
 	manager, deleted := newCleanupTestManager(t)
+	manager.cfg.StateDir = t.TempDir()
 	runRoot := manager.cfg.RunDir
 
 	// A lab id longer than 32 bytes exercises the hashed run-directory
@@ -179,10 +180,13 @@ func TestReconcilePrunesStaleLabDirectories(t *testing.T) {
 	keepLab := strings.Repeat("a", 40)
 	keepDir := mkdirLab(t, runRoot, keepLab)
 
-	// This lab is not in the keep-set but still holds a live node marker.
+	// This lab is not in the keep-set but still holds a running node.
 	liveLab := "lab-live"
 	liveDir := mkdirLab(t, runRoot, liveLab)
-	liveNodeDir := writeNodeStateFile(t, liveDir, "node-live", liveLab)
+	liveNodeDir := filepath.Join(liveDir, shortPathComponent("node-live"))
+	if err := os.MkdirAll(liveNodeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
 	manager.nodes["node-live"] = &Node{
 		Spec:  Spec{ID: "node-live", LabID: liveLab},
 		State: "running",
@@ -215,28 +219,35 @@ func TestReconcilePrunesStaleLabDirectories(t *testing.T) {
 	}
 }
 
-// A tracked node whose state file still names an older lab must keep the lab
-// directory it lives in, even when that directory is not in the keep-set.
-func TestReconcileKeepsLabDirectoryWithLiveNodeState(t *testing.T) {
+// Legacy run-directory state is untrusted even when it names a live node: the
+// lab directory is pruned and the forged file is discarded.
+func TestReconcileIgnoresLegacyNodeStateForLabPruning(t *testing.T) {
 	manager, _ := newCleanupTestManager(t)
+	manager.cfg.StateDir = t.TempDir()
 	runRoot := manager.cfg.RunDir
 
 	dir := mkdirLab(t, runRoot, "lab-renamed")
-	writeNodeStateFile(t, dir, "node-live", "lab-old")
-	manager.nodes["node-live"] = &Node{
-		Spec:  Spec{ID: "node-live"},
-		State: "running",
+	nodeDir := filepath.Join(dir, shortPathComponent("node-live"))
+	if err := os.MkdirAll(nodeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(nodeState{ID: "node-live", LabID: "lab-old", Engine: "qemu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeDir, stateFileName), data, 0o640); err != nil {
+		t.Fatal(err)
 	}
 
 	result, err := manager.Reconcile([]string{})
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if _, err := os.Stat(dir); err != nil {
-		t.Fatalf("lab directory holding live node state was removed: %v", err)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("lab directory holding only legacy state survived: %v", err)
 	}
-	if len(result.RemovedDirs) != 0 {
-		t.Fatalf("removed dirs = %v, want none", result.RemovedDirs)
+	if !contains(result.QuarantinedState, filepath.Join(nodeDir, stateFileName)) {
+		t.Fatalf("legacy state file was not reported: %+v", result.QuarantinedState)
 	}
 }
 
@@ -244,12 +255,16 @@ func TestReconcileKeepsLabDirectoryWithLiveNodeState(t *testing.T) {
 // keeping it in the manager must not pin its lab directory outside the keep-set.
 func TestReconcileRemovesLabDirectoryOfStoppedNode(t *testing.T) {
 	manager, _ := newCleanupTestManager(t)
+	manager.cfg.StateDir = t.TempDir()
 	manager.cfg.DisableCgroups = false
 	runRoot := manager.cfg.RunDir
 
 	labDir := mkdirLab(t, runRoot, "lab-deleted")
-	nodeDir := writeNodeStateFile(t, labDir, "node-stopped", "lab-deleted")
-	cgroupDir := filepath.Join(manager.cfg.CgroupRoot, "node-node-stopped")
+	nodeDir := filepath.Join(labDir, shortPathComponent("node-stopped"))
+	if err := os.MkdirAll(nodeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cgroupDir := filepath.Join(manager.cfg.CgroupRoot, "lab-"+shortPathComponent("lab-deleted"), "node-node-stopped")
 	if err := os.MkdirAll(cgroupDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +295,7 @@ func TestReconcileRemovesLabDirectoryOfStoppedNode(t *testing.T) {
 // keep-set and the node has no state file on disk.
 func TestReconcileKeepsRunningNodeLabDirectory(t *testing.T) {
 	manager, _ := newCleanupTestManager(t)
+	manager.cfg.StateDir = t.TempDir()
 	runRoot := manager.cfg.RunDir
 
 	labDir := mkdirLab(t, runRoot, "lab-running")
@@ -301,12 +317,12 @@ func TestReconcileKeepsRunningNodeLabDirectory(t *testing.T) {
 
 func TestReconcileLeavesLabDirectoriesWithoutKeepSet(t *testing.T) {
 	manager, _ := newCleanupTestManager(t)
+	manager.cfg.StateDir = t.TempDir()
 	runRoot := manager.cfg.RunDir
 
 	keepDir := mkdirLab(t, runRoot, "lab-keep")
 	unknownDir := mkdirLab(t, runRoot, "lab-unknown")
 	liveDir := mkdirLab(t, runRoot, "lab-live")
-	writeNodeStateFile(t, liveDir, "node-live", "lab-live")
 	manager.nodes["node-live"] = &Node{
 		Spec:  Spec{ID: "node-live", LabID: "lab-live"},
 		State: "running",
@@ -323,6 +339,163 @@ func TestReconcileLeavesLabDirectoriesWithoutKeepSet(t *testing.T) {
 	}
 	if len(result.RemovedDirs) != 0 {
 		t.Fatalf("nil keep-set removed directories: %v", result.RemovedDirs)
+	}
+}
+
+// TestReconcileRejectsForgedTrustedState is the SEC-02/09 regression for the
+// new state directory: even a record the attacker could plant there is
+// rejected unless it matches its path, carries a real engine executable, a
+// positive PID and a TeraLab-owned tap.
+func TestReconcileRejectsForgedTrustedState(t *testing.T) {
+	manager, deleted := newCleanupTestManager(t)
+	manager.cfg.StateDir = t.TempDir()
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep binary is required for this test")
+	}
+	manager.cfg.QEMUBinary = sleepPath
+
+	victim := exec.Command(sleepPath, "30")
+	if err := victim.Start(); err != nil {
+		t.Fatalf("start victim: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = victim.Process.Kill()
+		_ = victim.Wait()
+	})
+	_ = os.MkdirAll(filepath.Join(manager.net.SysClassNet, "eth0"), 0o755)
+
+	cases := []struct {
+		name       string
+		mutate     func(*nodeState)
+		quarantine bool
+	}{
+		{name: "empty exe", mutate: func(state *nodeState) { state.Exe = "" }, quarantine: true},
+		{name: "unknown engine", mutate: func(state *nodeState) { state.Engine = "shell" }, quarantine: true},
+		{name: "host tap", mutate: func(state *nodeState) { state.Taps = []string{"eth0"} }, quarantine: true},
+		{name: "other lab tap", mutate: func(state *nodeState) { state.Taps = []string{network.TapName("other", "node1", 0)} }, quarantine: true},
+		{name: "zero pid", mutate: func(state *nodeState) { state.PID = 0 }, quarantine: true},
+		{name: "wrong start ticks", mutate: func(state *nodeState) { state.StartTicks++ }},
+		{name: "unexpected executable", mutate: func(state *nodeState) { state.Exe = "/bin/sh" }, quarantine: true},
+	}
+	for index, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			state := nodeState{
+				ID:         "node1",
+				LabID:      "lab1",
+				Engine:     "qemu",
+				Exe:        sleepPath,
+				PID:        victim.Process.Pid,
+				StartTicks: processStartTicks(victim.Process.Pid),
+				Taps:       []string{network.TapName("lab1", "node1", 0)},
+			}
+			testCase.mutate(&state)
+			state.RunDir = manager.runDirFor(state.ID, state.LabID)
+			path := manager.statePathFor(state.ID, state.LabID)
+			if err := manager.writeStateFile(path, state); err != nil {
+				t.Fatalf("write forged state: %v", err)
+			}
+			// Every forged case is written afresh; rejected files are renamed.
+			t.Cleanup(func() { _ = os.Remove(path) })
+
+			result, err := manager.Reconcile(nil)
+			if err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if err := syscall.Kill(victim.Process.Pid, 0); err != nil {
+				t.Fatalf("case %d: forged state killed an unrelated process: %v", index, err)
+			}
+			if contains(*deleted, "eth0") {
+				t.Fatalf("forged state deleted a host link: %v", *deleted)
+			}
+			if len(result.KilledProcesses) != 0 {
+				t.Fatalf("forged state was trusted: %+v", result)
+			}
+			if testCase.quarantine && !contains(result.QuarantinedState, path) {
+				t.Fatalf("forged state file was not quarantined: %+v", result.QuarantinedState)
+			}
+		})
+	}
+}
+
+// A state file that is readable by the engine user is rejected even when the
+// record contents look valid.
+func TestReconcileRejectsWorldReadableStateFile(t *testing.T) {
+	manager, _ := newCleanupTestManager(t)
+	manager.cfg.StateDir = t.TempDir()
+	path := manager.statePathFor("node1", "lab1")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := nodeState{
+		ID:      "node1",
+		LabID:   "lab1",
+		Engine:  "qemu",
+		RunDir:  manager.runDirFor("node1", "lab1"),
+		Exe:     "/usr/bin/qemu-system-x86_64",
+		PID:     os.Getpid(),
+		Started: time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.Reconcile(nil)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !contains(result.QuarantinedState, path) {
+		t.Fatalf("world-readable state file was accepted: %+v", result)
+	}
+	if len(result.KilledProcesses) != 0 {
+		t.Fatalf("world-readable state killed a process: %+v", result)
+	}
+}
+
+func TestProcessMatchesRejectsEmptyExeAndReusedPid(t *testing.T) {
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep binary is required for this test")
+	}
+	command := exec.Command(sleepPath, "30")
+	if err := command.Start(); err != nil {
+		t.Fatalf("start process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	ticks := processStartTicks(command.Process.Pid)
+	if ticks == 0 {
+		t.Fatal("cannot read the process start time")
+	}
+
+	cases := []struct {
+		name  string
+		pid   int
+		exe   string
+		ticks uint64
+		want  bool
+	}{
+		{name: "matches", pid: command.Process.Pid, exe: sleepPath, ticks: ticks, want: true},
+		{name: "empty exe", pid: command.Process.Pid, exe: "", ticks: ticks},
+		{name: "whitespace exe", pid: command.Process.Pid, exe: "   ", ticks: ticks},
+		{name: "zero pid", pid: 0, exe: sleepPath, ticks: ticks},
+		{name: "negative pid", pid: -1, exe: sleepPath, ticks: ticks},
+		{name: "reused pid", pid: command.Process.Pid, exe: sleepPath, ticks: ticks + 1},
+		{name: "mismatched exe", pid: command.Process.Pid, exe: "/bin/sh", ticks: ticks},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := processMatches(testCase.pid, testCase.exe, testCase.ticks); got != testCase.want {
+				t.Fatalf("processMatches(%d, %q, %d) = %t, want %t",
+					testCase.pid, testCase.exe, testCase.ticks, got, testCase.want)
+			}
+		})
 	}
 }
 

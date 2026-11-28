@@ -98,7 +98,7 @@ func TapName(labID, nodeID string, index int) string {
 
 // EnsureBridge creates or refreshes a lab bridge using the configured backend.
 func (m *Manager) EnsureBridge(name string) error {
-	if err := ValidateLinkName(name); err != nil {
+	if err := validateOwnedLinkName(name); err != nil {
 		return err
 	}
 	if m.Backend == BackendOVS {
@@ -235,19 +235,27 @@ func (m *Manager) EnsureLab(labID string, networkIDs []string) (map[string]strin
 
 // CreateTap creates a tap owned by the unprivileged VM user and attaches it.
 func (m *Manager) CreateTap(tap, bridge string) error {
-	if err := ValidateLinkName(tap); err != nil {
+	return m.CreateTapAs(tap, bridge, m.VMUser)
+}
+
+// CreateTapAs creates a tap owned by owner and attaches it. owner may be a
+// user name or a numeric uid: iproute2 resolves a missing account name as an
+// integer, which lets the agent bind a tap to a per-lab uid without a passwd
+// entry.
+func (m *Manager) CreateTapAs(tap, bridge, owner string) error {
+	if err := validateOwnedLinkName(tap); err != nil {
 		return err
 	}
 	if bridge != "" {
-		if err := ValidateLinkName(bridge); err != nil {
+		if err := validateOwnedLinkName(bridge); err != nil {
 			return err
 		}
 	}
 	m.DeleteLink(tap)
 
 	args := []string{"tuntap", "add", "dev", tap, "mode", "tap"}
-	if m.VMUser != "" {
-		args = append(args, "user", m.VMUser)
+	if owner != "" {
+		args = append(args, "user", owner)
 	}
 	if output, err := m.Run("ip", args...); err != nil {
 		return fmt.Errorf("create tap %s: %s: %w", tap, strings.TrimSpace(string(output)), err)
@@ -279,11 +287,11 @@ func (m *Manager) CreateTap(tap, bridge string) error {
 // and brings the link up. Container nodes use it for the host end of a veth
 // pair; TeraLab remains the sole owner of lab bridges.
 func (m *Manager) AttachInterface(link, bridge string) error {
-	if err := ValidateLinkName(link); err != nil {
+	if err := validateOwnedLinkName(link); err != nil {
 		return err
 	}
 	if bridge != "" {
-		if err := ValidateLinkName(bridge); err != nil {
+		if err := validateOwnedLinkName(bridge); err != nil {
 			return err
 		}
 		if m.Backend == BackendOVS {
@@ -304,9 +312,11 @@ func (m *Manager) AttachInterface(link, bridge string) error {
 	return nil
 }
 
-// DeleteLink removes a link and tolerates an already-missing device.
+// DeleteLink removes a TeraLab-owned link and tolerates an already-missing
+// device. Host links (eth0, br0, docker0, ...) are never touched; a future
+// administrative cleanup helper must be a separate, explicit function.
 func (m *Manager) DeleteLink(name string) error {
-	if err := ValidateLinkName(name); err != nil {
+	if err := validateOwnedLinkName(name); err != nil {
 		return err
 	}
 	if m.Backend == BackendOVS {

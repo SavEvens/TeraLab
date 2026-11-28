@@ -35,7 +35,6 @@ var (
 	// cpuModelPattern covers "host", "max", named models and feature lists
 	// such as "qemu64,+ssse3,+sse4.2" found in the shipped templates.
 	cpuModelPattern = regexp.MustCompile(`^[A-Za-z0-9_.+,-]{1,64}$`)
-	bridgePattern   = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
 	uuidPattern     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	platformPattern = regexp.MustCompile(`^(c7200|c3600|c2691|c3725|c3745|c1700|c2600)$`)
 	slotPattern     = regexp.MustCompile(`^[0-9]{1,2}:[0-9]{1,2}:(tap|linux|unix)$`)
@@ -56,7 +55,8 @@ var (
 	dockerConsolePattern = regexp.MustCompile(`^/[A-Za-z0-9_./+-]{1,255}$`)
 	// dockerConfigPathPattern is the container path a template may copy the
 	// node startup configuration to. ".." segments and control characters are
-	// rejected separately.
+	// rejected separately, and the final value must be in
+	// dockerConfigPathAllowlist.
 	dockerConfigPathPattern = regexp.MustCompile(`^/[A-Za-z0-9_./-]{1,200}$`)
 )
 
@@ -70,6 +70,11 @@ const (
 	dockerDaemonsPath  = "/etc/frr/daemons"
 )
 
+// dockerTemplateCapabilities is the complete template cap_add allowlist. It is
+// admin-only since the shared catalogue became read-only for editors in phase
+// 02. SYS_ADMIN is retained because zebra in the published FRR image needs it;
+// that is an owner-signed residual (owner decision, 2026-11-27): a compromised
+// editor cannot request it, and containers are never privileged.
 var dockerTemplateCapabilities = []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"}
 
 var dockerCapabilities = map[string]bool{
@@ -301,8 +306,18 @@ func (s Spec) Validate(imageRoots []string) error {
 		return errors.New("networks length must match ethernet")
 	}
 	for _, bridge := range s.Networks {
-		if bridge != "" && !bridgePattern.MatchString(bridge) {
+		if bridge == "" {
+			continue
+		}
+		// Only lab-owned TeraLab bridges may be attached. The lab tag is
+		// derived from LabID exactly as network.BridgeName derives it, so a
+		// spec cannot join another lab's segment or a host bridge such as
+		// docker0, br0 or eth0.
+		if err := network.ValidateLinkName(bridge); err != nil {
 			return fmt.Errorf("invalid bridge name %q", bridge)
+		}
+		if !strings.HasPrefix(bridge, "tl"+network.LabTag(s.LabID)) {
+			return fmt.Errorf("bridge %q is not owned by lab %q", bridge, s.LabID)
 		}
 	}
 	if s.Console != "telnet" && s.Console != "vnc" {
@@ -554,6 +569,14 @@ func (s Spec) validateIOL(imageRoots []string) error {
 	return nil
 }
 
+// dockerConfigPathAllowlist is the complete set of container paths a v1.6
+// template may write the node startup configuration to. Anything else is
+// rejected, including /proc, /sys, /dev and host-like paths.
+var dockerConfigPathAllowlist = map[string]bool{
+	"/etc/frr/frr.conf": true,
+	"/etc/frr/daemons":  true,
+}
+
 // validateDocker checks the container-specific fields. Container images are
 // registry references, not files under the image store, so they never pass
 // through resolveFile.
@@ -680,6 +703,12 @@ func validateDockerConfigPath(path string) error {
 		if segment == ".." {
 			return fmt.Errorf("invalid docker config_path %q: parent directory segments are not allowed", path)
 		}
+	}
+	if !dockerConfigPathAllowlist[path] {
+		return fmt.Errorf(
+			"docker config_path %q is not in the template allowlist (allowed: /etc/frr/frr.conf, /etc/frr/daemons)",
+			path,
+		)
 	}
 
 	return nil

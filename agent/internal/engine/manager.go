@@ -4,11 +4,11 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +34,35 @@ import (
 var ErrEngineUnavailable = errors.New("engine unavailable")
 
 const stateFileName = "node.json"
+
+// qemuSandboxProfile is QEMU's seccomp sandbox. It denies obsolete syscalls,
+// privilege elevation, process spawning (the engine uses script=no for taps
+// and stdio for the serial console) and resource-control syscalls outside the
+// agent's cgroup management.
+const qemuSandboxProfile = "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny"
+
+// engineEnv returns the minimal environment an engine process needs. The agent
+// environment is not inherited: the agent holds the service secret and may run
+// with proxy/credential variables that no guest engine should see.
+func engineEnv(home string) []string {
+	return []string{
+		"PATH=/usr/local/bin:/usr/bin:/bin",
+		"HOME=" + home,
+		"TERM=vt100",
+		"LC_ALL=C",
+	}
+}
+
+// qemuSandboxArgs renders the sandbox flags. It is a no-op only when the
+// operator explicitly disabled the sandbox; the compensating controls are the
+// teralab-vm credential, the minimal environment and the engine allowlist.
+func qemuSandboxArgs(enabled bool) []string {
+	if !enabled {
+		return nil
+	}
+
+	return []string{"-sandbox", qemuSandboxProfile}
+}
 
 type NodeInfo struct {
 	ID            string    `json:"id"`
@@ -81,8 +110,12 @@ type Node struct {
 	State        string
 	Started      time.Time
 	LastActivity time.Time
-	Done         chan struct{}
-	Ready        atomic.Bool
+	// LabUID/LabGID are the numeric credential recorded in trusted state. They
+	// stay zero in rollback mode.
+	LabUID uint32
+	LabGID uint32
+	Done   chan struct{}
+	Ready  atomic.Bool
 
 	historyMu   sync.Mutex
 	history     []byte
@@ -105,6 +138,16 @@ type Manager struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	nodes  map[string]*Node
+
+	// uidRegistry is nil when per-lab uids are disabled. uidFailure records a
+	// startup validation failure so every later start fails closed.
+	uidRegistry  *uidAllocator
+	uidFailureMu sync.Mutex
+	uidFailure   error
+
+	// uidProbe reports whether any live process holds a uid. It is nil in
+	// production (the agent scans /proc) and replaceable in tests.
+	uidProbe func(uint32) bool
 }
 
 func NewManager(cfg config.Config, logger *slog.Logger) *Manager {
@@ -116,13 +159,24 @@ func NewManager(cfg config.Config, logger *slog.Logger) *Manager {
 		}
 	}
 
-	return &Manager{
+	manager := &Manager{
 		cfg:    cfg,
 		net:    links,
 		docker: newDockerClient(cfg.DockerBinary),
 		logger: logger,
 		nodes:  map[string]*Node{},
 	}
+	if cfg.PerLabUID {
+		manager.uidRegistry = newUIDAllocator(stateRootFor(cfg), cfg.LabUIDFirst, cfg.LabUIDSlots)
+	}
+
+	return manager
+}
+
+// PrepareLabUIDs validates the per-lab uid registry at startup. It never stops
+// the agent: an invalid registry makes every later lab start fail closed.
+func (m *Manager) PrepareLabUIDs() error {
+	return m.prepareLabUIDs()
 }
 
 // Start validates a node spec and launches the matching engine.
@@ -140,7 +194,7 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 	if err := spec.Validate(m.cfg.ImageRoots()); err != nil {
 		return NodeInfo{}, err
 	}
-	if m.cfg.VMUID == 0 && !m.cfg.AllowRootVM {
+	if m.cfg.VMUID == 0 && !m.cfg.AllowRootVM && !m.cfg.PerLabUID {
 		return NodeInfo{}, errors.New("teralab-vm user is missing; refusing to run engines as root")
 	}
 
@@ -178,7 +232,8 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 		// file for the next reconcile instead.
 		if spec.Engine != "docker" {
 			_ = os.RemoveAll(runDir)
-		} else if _, statErr := os.Stat(filepath.Join(runDir, stateFileName)); statErr != nil {
+			m.removeStatePath(m.statePathFor(spec.ID, spec.LabID))
+		} else if _, statErr := os.Stat(m.statePathFor(spec.ID, spec.LabID)); statErr != nil {
 			_ = os.RemoveAll(runDir)
 		}
 
@@ -189,26 +244,91 @@ func (m *Manager) Start(spec Spec) (NodeInfo, error) {
 }
 
 func (m *Manager) prepareRunDir(spec Spec) (string, error) {
+	identity, err := m.labIdentityFor(spec)
+	if err != nil {
+		return "", err
+	}
 	runDir, err := m.runDir(spec)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(runDir, 0o750); err != nil {
-		return "", fmt.Errorf("create run directory: %w", err)
+	runRoot := filepath.Clean(m.runRoot())
+	if err := os.MkdirAll(runRoot, 0o750); err != nil {
+		return "", fmt.Errorf("create run root: %w", err)
 	}
-	if labDir := filepath.Dir(runDir); labDir != m.cfg.RunDir {
-		m.chown(labDir)
+	// The engine user owns (and can write) the lab and node directories, so it
+	// could have replaced either with a symlink. Create each level one at a
+	// time and refuse to continue when a component is a link or resolves
+	// outside the lab run root.
+	labRoot := filepath.Clean(m.labRunRoot(spec))
+	if err := m.ensureRealRunDir(runRoot, labRoot); err != nil {
+		return "", err
 	}
-	m.chown(runDir)
+	if err := m.ensureRealRunDir(labRoot, runDir); err != nil {
+		return "", err
+	}
+	if tmp := m.privateTmpDir(spec); tmp != "" {
+		if err := m.ensureRealRunDir(labRoot, tmp); err != nil {
+			return "", err
+		}
+	}
+	if err := m.ownLabRunTree(spec, identity); err != nil {
+		return "", err
+	}
 
 	return runDir, nil
 }
 
+// ensureRealRunDir creates one run-directory level below root when it is
+// absent, and otherwise requires it to be a real directory whose resolved path
+// stays inside root. It uses Lstat so a symlink planted by an engine user is
+// rejected instead of followed, and EvalSymlinks so an intermediate link that
+// escapes root is caught as well.
+func (m *Manager) ensureRealRunDir(root, path string) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if !pathWithinRoot(root, path) {
+		return fmt.Errorf("run directory %q is outside %q", path, root)
+	}
+
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if mkdirErr := os.Mkdir(path, 0o750); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+			return fmt.Errorf("create run directory %q: %w", path, mkdirErr)
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return fmt.Errorf("stat run directory %q: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("run directory %q is not a real directory", path)
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve run root %q: %w", root, err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolve run directory %q: %w", path, err)
+	}
+	if resolvedPath != resolvedRoot && !pathWithinRoot(resolvedRoot, resolvedPath) {
+		return fmt.Errorf("run directory %q resolves outside %q", path, root)
+	}
+
+	return nil
+}
+
 func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
+	identity, err := m.labIdentityFor(spec)
+	if err != nil {
+		return NodeInfo{}, err
+	}
 	overlay := ""
 	if spec.Image != "" {
 		overlay = filepath.Join(runDir, "overlay.qcow2")
-		if err := m.createOverlay(spec.Image, overlay); err != nil {
+		if err := m.createOverlay(identity, spec.Image, overlay); err != nil {
 			return NodeInfo{}, err
 		}
 	}
@@ -224,7 +344,7 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 	for index := 0; index < spec.Ethernet; index++ {
 		tap := spec.TapName(index)
 		bridge := spec.Networks[index]
-		if err := m.net.CreateTap(tap, bridge); err != nil {
+		if err := m.createLabTap(spec, identity, tap, bridge); err != nil {
 			m.cleanupTaps(taps)
 			return NodeInfo{}, err
 		}
@@ -285,11 +405,19 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 		m.cleanupTaps(taps)
 		return NodeInfo{}, err
 	}
+	if !m.cfg.QEMUSandbox {
+		m.logger.Warn(
+			"qemu seccomp sandbox disabled by configuration; the node runs as the VM user with a minimal environment",
+			"id", spec.ID,
+		)
+	}
+	args = append(args, qemuSandboxArgs(m.cfg.QEMUSandbox)...)
 	// One audit line per start: operators can see every parameter that reached
 	// QEMU, including template extras.
 	m.logger.Info("qemu command line", "id", spec.ID, "command", commandLine(m.cfg.QEMUBinary, args))
 
 	command := exec.Command(m.cfg.QEMUBinary, args...)
+	command.Env = engineEnvironment(engineEnv(m.engineHome(spec, runDir)), m.privateTmpDir(spec))
 	if tty != nil {
 		command.Stdin = tty
 		command.Stdout = tty
@@ -297,10 +425,16 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 		command.Stdout = logFile
 	}
 	command.Stderr = logFile
-	m.limitProcess(command)
-	m.chown(runDir)
+	identity.apply(command)
+	if err := m.ownLabRunTree(spec, identity); err != nil {
+		_ = logFile.Close()
+		_ = ptmx.Close()
+		_ = tty.Close()
+		m.cleanupTaps(taps)
+		return NodeInfo{}, err
+	}
 
-	if err := command.Start(); err != nil {
+	if err := engineSpawn(command); err != nil {
 		_ = logFile.Close()
 		_ = ptmx.Close()
 		_ = tty.Close()
@@ -311,6 +445,7 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 	_ = logFile.Close()
 
 	if vnc != nil {
+		m.ownLabSocket(identity, vnc.MonitorPath)
 		if err := m.setVNCPassword(vnc.MonitorPath, vncPassword); err != nil {
 			_ = command.Process.Kill()
 			_ = command.Wait()
@@ -339,6 +474,8 @@ func (m *Manager) startQEMU(spec Spec, runDir string) (NodeInfo, error) {
 		CgroupPath:  cgroupPath,
 		VNCPort:     vncPort,
 		VNCPassword: vncPassword,
+		LabUID:      identity.UID,
+		LabGID:      identity.GID,
 		State:       "running",
 		Started:     time.Now(),
 		Done:        make(chan struct{}),
@@ -374,13 +511,13 @@ func (m *Manager) Stop(id string) error {
 	pid := node.Cmd.Process.Pid
 	m.mu.Unlock()
 
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signalEngine(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("stop node %s: signal: %w", id, err)
 	}
 	select {
 	case <-node.Done:
 	case <-time.After(5 * time.Second):
-		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := signalEngine(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return fmt.Errorf("stop node %s: kill: %w", id, err)
 		}
 		select {
@@ -422,14 +559,15 @@ func (m *Manager) Wipe(id string) error {
 	delete(m.nodes, id)
 	m.mu.Unlock()
 
-	if node.StatePath != "" {
-		_ = os.Remove(node.StatePath)
+	m.removeStatePath(node.StatePath)
+	if !pathWithinRoot(m.runRoot(), filepath.Clean(node.RunDir)) {
+		return fmt.Errorf("refusing to remove run directory outside %s", m.runRoot())
 	}
 	if err := os.RemoveAll(node.RunDir); err != nil {
 		return fmt.Errorf("remove run directory: %w", err)
 	}
-	// Remove an empty per-lab directory without touching unrelated nodes.
-	_ = os.Remove(filepath.Dir(node.RunDir))
+	// Release the lab uid only once its subtree holds no node any more.
+	m.releaseNodeRunRoot(node.Spec)
 	m.logger.Info("node wiped", "id", id)
 
 	return nil
@@ -619,9 +757,8 @@ func (m *Manager) wait(node *Node) {
 		node.Taps = nil
 		m.removeCgroup(node.CgroupPath)
 		node.CgroupPath = ""
-		if node.StatePath != "" {
-			_ = os.Remove(node.StatePath)
-		}
+		m.removeStatePath(node.StatePath)
+		node.StatePath = ""
 		close(node.Done)
 	}
 	m.mu.Unlock()
@@ -737,7 +874,10 @@ func (m *Manager) saveNodeState(node *Node) {
 		Engine:  node.Spec.Engine,
 		Taps:    append([]string(nil), node.Taps...),
 		Cgroup:  node.CgroupPath,
+		RunDir:  node.RunDir,
 		Started: node.Started.UTC().Format(time.RFC3339),
+		UID:     node.LabUID,
+		GID:     node.LabGID,
 	}
 	if node.Spec.Engine == "docker" {
 		spec := node.Spec
@@ -750,27 +890,23 @@ func (m *Manager) saveNodeState(node *Node) {
 		state.Exe = node.Cmd.Path
 		if node.Cmd.Process != nil {
 			state.PID = node.Cmd.Process.Pid
+			state.StartTicks = processStartTicks(state.PID)
 		}
 	}
-	statePath := filepath.Join(node.RunDir, stateFileName)
-	if data, err := json.MarshalIndent(state, "", "  "); err == nil {
-		if err := os.WriteFile(statePath, data, 0o640); err == nil {
-			node.StatePath = statePath
+	statePath := m.statePathFor(node.Spec.ID, node.Spec.LabID)
+	if err := m.writeStateFile(statePath, state); err != nil {
+		if m.logger != nil {
+			m.logger.Error("cannot persist trusted node state", "id", node.Spec.ID, "path", statePath, "error", err)
 		}
+
+		return
 	}
+	node.StatePath = statePath
 }
 
 func (m *Manager) runDir(spec Spec) (string, error) {
-	base, err := filepath.Abs(m.cfg.RunDir)
-	if err != nil {
-		return "", err
-	}
-	parts := []string{base}
-	if spec.LabID != "" {
-		parts = append(parts, shortPathComponent(spec.LabID))
-	}
-	parts = append(parts, shortPathComponent(spec.ID))
-	target := filepath.Join(parts...)
+	base := m.runRoot()
+	target := m.runDirFor(spec.ID, spec.LabID)
 	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
 		return "", errors.New("run directory escapes the run root")
 	}
@@ -788,13 +924,89 @@ func shortPathComponent(value string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-func (m *Manager) createOverlay(image, overlay string) error {
-	command := exec.Command(m.cfg.QEMUImg, "create", "-f", "qcow2", "-F", "qcow2", "-b", image, overlay)
-	output, err := command.CombinedOutput()
+// qemuImgTimeout bounds every qemu-img invocation. It is generous enough for
+// a large sparse overlay but never leaves an untrusted image parser running.
+const qemuImgTimeout = 2 * time.Minute
+
+// maxQEMUImgOutput caps what an error message can carry back to the caller.
+const maxQEMUImgOutput = 64 << 10
+
+// ownLabSocket applies the socket mode/ownership for a socket the engine
+// creates during startup. A missing path is not an error.
+func (m *Manager) ownLabSocket(identity labIdentity, path string) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSocket == 0 {
+		return
+	}
+	_ = chmodFile(path, 0o660)
+	m.chownAs(identity, path)
+}
+
+// qemu-img runners and engine launchers are replaceable in tests. qemuImgRunner
+// is declared next to the command builder.
+var qemuImgRunner = func(command *exec.Cmd) ([]byte, error) {
+	output := &cappedBuffer{limit: maxQEMUImgOutput}
+	command.Stdout = output
+	command.Stderr = output
+	err := command.Run()
+
+	return output.Bytes(), err
+}
+
+// cappedBuffer keeps the first limit bytes and silently discards the rest, so
+// a hostile or verbose child cannot exhaust agent memory.
+type cappedBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (b *cappedBuffer) Write(data []byte) (int, error) {
+	remaining := b.limit - b.buffer.Len()
+	if remaining > 0 {
+		if len(data) > remaining {
+			_, _ = b.buffer.Write(data[:remaining])
+		} else {
+			_, _ = b.buffer.Write(data)
+		}
+	}
+
+	return len(data), nil
+}
+
+func (b *cappedBuffer) Bytes() []byte {
+	return b.buffer.Bytes()
+}
+
+// engineSpawn launches a prepared engine command. Tests replace it to inspect
+// the credential and argv without requiring root (a credential for an arbitrary
+// uid cannot be set by an unprivileged test process).
+var engineSpawn = func(command *exec.Cmd) error {
+	return command.Start()
+}
+
+// qemuImg runs qemu-img with the lab credential and a minimal environment.
+// The image store must be readable by that identity; a temporary upload is
+// staged by images.InspectAs before inspection.
+func (m *Manager) qemuImg(identity labIdentity, home string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), qemuImgTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, m.cfg.QEMUImg, args...)
+	command.Env = engineEnv(home)
+	identity.apply(command)
+	output, err := qemuImgRunner(command)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return output, fmt.Errorf("qemu-img timed out after %s", qemuImgTimeout)
+	}
+
+	return output, err
+}
+
+func (m *Manager) createOverlay(identity labIdentity, image, overlay string) error {
+	output, err := m.qemuImg(identity, filepath.Dir(overlay), "create", "-f", "qcow2", "-F", "qcow2", "-b", image, overlay)
 	if err != nil {
 		return fmt.Errorf("create overlay: %s: %w", strings.TrimSpace(string(output)), err)
 	}
-	m.chown(overlay)
+	m.chownAs(identity, overlay)
 
 	return nil
 }
@@ -808,6 +1020,10 @@ func (m *Manager) prepareExtraDisks(spec Spec, runDir string) ([]string, error) 
 	if len(spec.Disks) == 0 {
 		return nil, nil
 	}
+	identity, err := m.labIdentityFor(spec)
+	if err != nil {
+		return nil, err
+	}
 	for _, disk := range spec.Disks {
 		if !validDiskSlot(disk.Slot) {
 			return nil, fmt.Errorf("invalid disk slot %q", disk.Slot)
@@ -818,10 +1034,10 @@ func (m *Manager) prepareExtraDisks(spec Spec, runDir string) ([]string, error) 
 	for _, disk := range disks {
 		path := filepath.Join(runDir, "disk-"+disk.Slot+".qcow2")
 		if disk.Image != "" {
-			if err := m.createOverlay(disk.Image, path); err != nil {
+			if err := m.createOverlay(identity, disk.Image, path); err != nil {
 				return nil, err
 			}
-		} else if err := m.createGeneratedDisk(path, disk.SizeGB); err != nil {
+		} else if err := m.createGeneratedDisk(identity, path, disk.SizeGB); err != nil {
 			return nil, err
 		}
 		paths = append(paths, path)
@@ -833,18 +1049,17 @@ func (m *Manager) prepareExtraDisks(spec Spec, runDir string) ([]string, error) 
 // createGeneratedDisk creates a blank qcow2 file only when it is absent, so a
 // stop/start cycle keeps the guest's data. Validation bounds the size before
 // this runs; qemu-img still owns the actual sparse allocation.
-func (m *Manager) createGeneratedDisk(path string, sizeGB int) error {
+func (m *Manager) createGeneratedDisk(identity labIdentity, path string, sizeGB int) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat generated disk: %w", err)
 	}
-	command := exec.Command(m.cfg.QEMUImg, "create", "-f", "qcow2", path, strconv.Itoa(sizeGB)+"G")
-	output, err := command.CombinedOutput()
+	output, err := m.qemuImg(identity, filepath.Dir(path), "create", "-f", "qcow2", path, strconv.Itoa(sizeGB)+"G")
 	if err != nil {
 		return fmt.Errorf("create disk %s: %s: %w", filepath.Base(path), strings.TrimSpace(string(output)), err)
 	}
-	m.chown(path)
+	m.chownAs(identity, path)
 
 	return nil
 }
@@ -855,15 +1070,19 @@ func (m *Manager) cleanupTaps(taps []string) {
 	}
 }
 
-func (m *Manager) limitProcess(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if m.cfg.VMUID > 0 {
-		command.SysProcAttr.Credential = &syscall.Credential{
-			Uid:    m.cfg.VMUID,
-			Gid:    m.cfg.VMGID,
-			Groups: m.cfg.VMGroups,
-		}
+// signalEngine signals the process group only when pid is its group leader.
+// The agent always starts engines with Setpgid (or a fresh session through a
+// pty), so the group is TeraLab-owned; a process that is not a leader is
+// signalled individually instead of risking an unrelated group.
+func signalEngine(pid int, signal syscall.Signal) error {
+	if pid <= 0 {
+		return syscall.EINVAL
 	}
+	if group, err := syscall.Getpgid(pid); err == nil && group == pid {
+		return syscall.Kill(-pid, signal)
+	}
+
+	return syscall.Kill(pid, signal)
 }
 
 func (m *Manager) applyCgroup(pid int, spec Spec) (string, error) {
@@ -878,7 +1097,17 @@ func (m *Manager) applyCgroup(pid int, spec Spec) (string, error) {
 	}
 	_ = os.WriteFile(filepath.Join(base, "cgroup.subtree_control"), []byte("+cpu +memory"), 0o644)
 
-	child := filepath.Join(base, "node-"+spec.ID)
+	labDir := m.cgroupLabDir(spec.LabID)
+	if labDir != "" && filepath.Clean(labDir) != filepath.Clean(base) {
+		if err := os.MkdirAll(labDir, 0o755); err != nil {
+			return "", fmt.Errorf("create lab cgroup: %w", err)
+		}
+		// Controllers must be enabled in the lab parent for the node's
+		// memory.max/cpu.max files to exist.
+		_ = os.WriteFile(filepath.Join(labDir, "cgroup.subtree_control"), []byte("+cpu +memory"), 0o644)
+	}
+
+	child := m.cgroupNodePath(spec)
 	_ = os.Remove(child)
 	if err := os.Mkdir(child, 0o755); err != nil {
 		return "", fmt.Errorf("create node cgroup: %w", err)
@@ -904,11 +1133,33 @@ func (m *Manager) removeCgroup(path string) {
 	if path == "" {
 		return
 	}
+	root := m.cgroupRoot()
+	target, err := filepath.Abs(path)
+	if err != nil || root == "" || !pathWithinRoot(root, target) {
+		return
+	}
+	if !strings.HasPrefix(filepath.Base(target), "node-") {
+		return
+	}
+	// The node cgroup is either a direct child of the root (lab-less legacy) or
+	// a child of one lab cgroup. Anything deeper is not ours.
+	parent := filepath.Dir(target)
+	if parent != root && !(strings.HasPrefix(filepath.Base(parent), "lab-") && filepath.Dir(parent) == root) {
+		return
+	}
+	path = target
+	removed := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if err := os.Remove(path); err == nil {
-			return
+			removed = true
+			break
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	// Drop the now-empty lab cgroup so an idle lab leaves no kernel object. A
+	// failure means another node in the same lab still lives there.
+	if removed && parent != root {
+		_ = os.Remove(parent)
 	}
 }
 
@@ -970,11 +1221,4 @@ func (m *Manager) kvmAvailable() bool {
 	_, err := os.Stat("/dev/kvm")
 
 	return err == nil
-}
-
-func (m *Manager) chown(path string) {
-	if m.cfg.VMUID == 0 {
-		return
-	}
-	_ = os.Chown(path, int(m.cfg.VMUID), int(m.cfg.VMGID))
 }

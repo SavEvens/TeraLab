@@ -78,10 +78,14 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 			iourc,
 		)
 	}
+	identity, err := m.labIdentityFor(spec)
+	if err != nil {
+		return NodeInfo{}, err
+	}
 
 	appID := iolAppID(spec)
 	peerID := iolPeerID(appID)
-	l1Keepalive := m.iolImageSupportsL1(spec.Image)
+	l1Keepalive := m.iolImageSupportsL1(identity, spec.Image)
 	if !l1Keepalive {
 		m.logger.Info("iol image does not advertise layer-1 keepalives; interface state will not follow the topology",
 			"image", spec.Image, "node", spec.ID)
@@ -96,7 +100,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 	netmapLines := make([]string, 0, spec.Ethernet)
 	for index := 0; index < spec.Ethernet; index++ {
 		tap := spec.TapName(index)
-		if err := m.net.CreateTap(tap, spec.Networks[index]); err != nil {
+		if err := m.createLabTap(spec, identity, tap, spec.Networks[index]); err != nil {
 			m.cleanupTaps(taps)
 			return NodeInfo{}, err
 		}
@@ -105,7 +109,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		netmapLines = append(netmapLines, iolNetmapLine(appID, peerID, index))
 	}
 
-	relay, err := startIOLNetio(appID, peerID, int(m.cfg.VMUID), taps)
+	relay, err := startIOLNetio(appID, peerID, identity, taps)
 	if err != nil {
 		m.cleanupTaps(taps)
 		return NodeInfo{}, err
@@ -113,7 +117,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 	relays := []io.Closer{relay}
 	var l1 *iolL1Responder
 	if l1Keepalive {
-		l1, err = startIOLL1(appID, peerID, int(m.cfg.VMUID), linked)
+		l1, err = startIOLL1(appID, peerID, identity, linked)
 		if err != nil {
 			_ = relay.Close()
 			m.cleanupTaps(taps)
@@ -128,7 +132,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		m.cleanupTaps(taps)
 	}
 
-	if err := m.prepareIOLFiles(runDir, iourc, strings.Join(netmapLines, "\n")+"\n"); err != nil {
+	if err := m.prepareIOLFiles(identity, runDir, iourc, strings.Join(netmapLines, "\n")+"\n"); err != nil {
 		cleanup()
 		return NodeInfo{}, err
 	}
@@ -148,7 +152,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 			cleanup()
 			return NodeInfo{}, fmt.Errorf("write iol startup configuration: %w", err)
 		}
-		m.chown(filepath.Join(runDir, "startup-config"))
+		m.chownAs(identity, filepath.Join(runDir, "startup-config"))
 		args = append(args, "-c", "startup-config")
 	}
 
@@ -167,19 +171,26 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 
 	command := exec.Command(spec.Image, args...)
 	command.Dir = runDir
-	command.Env = []string{
+	command.Env = engineEnvironment([]string{
 		"PATH=/usr/local/bin:/usr/bin:/bin",
-		"HOME=" + runDir,
+		"HOME=" + m.engineHome(spec, runDir),
 		"IOURC=" + filepath.Join(runDir, "iourc"),
 		"LD_LIBRARY_PATH=" + filepath.Dir(spec.Image),
 		"TERM=vt100",
-	}
+	}, m.privateTmpDir(spec))
 	command.Stdin = tty
 	command.Stdout = tty
 	command.Stderr = logFile
-	m.limitProcess(command)
+	identity.apply(command)
+	if err := m.ownLabRunTree(spec, identity); err != nil {
+		_ = logFile.Close()
+		_ = ptmx.Close()
+		_ = tty.Close()
+		cleanup()
+		return NodeInfo{}, err
+	}
 
-	if err := command.Start(); err != nil {
+	if err := engineSpawn(command); err != nil {
 		_ = logFile.Close()
 		_ = ptmx.Close()
 		_ = tty.Close()
@@ -206,6 +217,8 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 		RunDir:      runDir,
 		Taps:        taps,
 		CgroupPath:  cgroupPath,
+		LabUID:      identity.UID,
+		LabGID:      identity.GID,
 		State:       "running",
 		Started:     time.Now(),
 		Done:        make(chan struct{}),
@@ -226,7 +239,7 @@ func (m *Manager) startIOL(spec Spec, runDir string) (NodeInfo, error) {
 }
 
 // prepareIOLFiles places the licence and interface map where IOL expects them.
-func (m *Manager) prepareIOLFiles(runDir, iourc, netmap string) error {
+func (m *Manager) prepareIOLFiles(identity labIdentity, runDir, iourc, netmap string) error {
 	licence, err := os.ReadFile(iourc)
 	if err != nil {
 		return fmt.Errorf("%w: cannot read iourc: %v", ErrEngineUnavailable, err)
@@ -235,13 +248,13 @@ func (m *Manager) prepareIOLFiles(runDir, iourc, netmap string) error {
 	if err := os.WriteFile(licencePath, licence, 0o640); err != nil {
 		return fmt.Errorf("write iol licence: %w", err)
 	}
-	m.chown(licencePath)
+	m.chownAs(identity, licencePath)
 
 	netmapPath := filepath.Join(runDir, "NETMAP")
 	if err := os.WriteFile(netmapPath, []byte(netmap), 0o640); err != nil {
 		return fmt.Errorf("write iol netmap: %w", err)
 	}
-	m.chown(netmapPath)
+	m.chownAs(identity, netmapPath)
 
 	return nil
 }

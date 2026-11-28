@@ -17,14 +17,53 @@ import (
 
 const Version = "0.1.0"
 
+// Per-lab uid pool defaults. UIDs at or above 200000 are outside the range
+// Debian reserves for real accounts, and the whole pool stays below 2^31 so it
+// is a valid Linux uid.
+const (
+	defaultLabUIDFirst uint32 = 200000
+	defaultLabUIDSlots        = 64
+	labUIDLimit        uint64 = 1 << 31
+)
+
+// validateLabUIDPool rejects a pool that would overlap system accounts or
+// overflow the Linux uid range. It runs even when per-lab uids are disabled so
+// an operator typo is reported immediately.
+func validateLabUIDPool(first uint32, slots int) error {
+	if slots < 1 {
+		return fmt.Errorf("TERALAB_LAB_UID_SLOTS must be at least 1, got %d", slots)
+	}
+	if first < defaultLabUIDFirst {
+		return fmt.Errorf(
+			"TERALAB_LAB_UID_FIRST must be at least %d, got %d",
+			defaultLabUIDFirst,
+			first,
+		)
+	}
+	last := uint64(first) + uint64(slots) - 1
+	if last >= labUIDLimit {
+		return fmt.Errorf(
+			"per-lab uid pool %d..%d is outside the Linux uid range below %d",
+			first,
+			last,
+			labUIDLimit,
+		)
+	}
+
+	return nil
+}
+
 type Config struct {
-	SocketPath      string
-	SocketGID       int
-	SocketMode      os.FileMode
-	ConsoleAddr     string
-	Secret          string
-	AllowedUIDs     map[uint32]bool
-	RunDir          string
+	SocketPath  string
+	SocketGID   int
+	SocketMode  os.FileMode
+	ConsoleAddr string
+	Secret      string
+	AllowedUIDs map[uint32]bool
+	RunDir      string
+	// StateDir holds the root-owned, agent-only node records used by
+	// reconciliation. It must never be writable by the engine user.
+	StateDir        string
 	ImagesDir       string
 	ImageExtraRoots []string
 	CgroupRoot      string
@@ -43,29 +82,69 @@ type Config struct {
 	VMUID              uint32
 	VMGID              uint32
 	VMGroups           []uint32
-	AllowRootVM        bool
-	DisableKVM         bool
+	// PerLabUID makes every lab run under its own numeric uid/gid taken from
+	// the slot pool (TERALAB_LAB_UID_FIRST + slot). The agent works without
+	// passwd entries; TERALAB_PER_LAB_UID=0 keeps the shared VMUser path.
+	PerLabUID bool
+	// LabUIDFirst is the first uid/gid of the per-lab pool.
+	LabUIDFirst uint32
+	// LabUIDSlots is the number of per-lab slots. Exhaustion fails closed.
+	LabUIDSlots int
+	// ImageGID is an optional shared image-store group added to every engine
+	// as a supplementary gid. 0 adds none.
+	ImageGID    uint32
+	AllowRootVM bool
+	DisableKVM  bool
+	// DisableDockerPull blocks docker pull from the agent. The demo profile
+	// sets it; images are pre-pulled by the operator.
+	DisableDockerPull bool
+	// QEMUSandbox adds QEMU's seccomp sandbox to every node. It is on by
+	// default and only disabled by an explicit operator decision.
+	QEMUSandbox bool
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		SocketPath:     env("TERALAB_AGENT_SOCKET", "/run/teralab/agent.sock"),
-		SocketMode:     os.FileMode(0o660),
-		ConsoleAddr:    env("TERALAB_AGENT_CONSOLE", "127.0.0.1:8091"),
-		RunDir:         env("TERALAB_RUN_DIR", "/var/lib/teralab/run"),
-		ImagesDir:      env("TERALAB_IMAGES_DIR", "/var/lib/teralab/images"),
-		CgroupRoot:     env("TERALAB_CGROUP_ROOT", "/sys/fs/cgroup/teralab.slice"),
-		DisableCgroups: envBool("TERALAB_DISABLE_CGROUPS", false),
-		QEMUBinary:     env("TERALAB_QEMU", "/usr/bin/qemu-system-x86_64"),
-		QEMUImg:        env("TERALAB_QEMU_IMG", "/usr/bin/qemu-img"),
-		VPCSBinary:     env("TERALAB_VPCS", "/usr/bin/vpcs"),
-		DynamipsBinary: env("TERALAB_DYNAMIPS", "/usr/bin/dynamips"),
-		DockerBinary:   env("TERALAB_DOCKER", "/usr/bin/docker"),
-		IOLIourc:       env("TERALAB_IOL_IOURC", "/etc/teralab/iourc"),
-		NetworkBackend: env("TERALAB_NETWORK_BACKEND", "auto"),
-		VMUser:         env("TERALAB_VM_USER", "teralab-vm"),
-		AllowRootVM:    envBool("TERALAB_ALLOW_ROOT_VM", false),
-		DisableKVM:     envBool("TERALAB_DISABLE_KVM", false),
+		SocketPath:        env("TERALAB_AGENT_SOCKET", "/run/teralab/agent.sock"),
+		SocketMode:        os.FileMode(0o660),
+		ConsoleAddr:       env("TERALAB_AGENT_CONSOLE", "127.0.0.1:8091"),
+		RunDir:            env("TERALAB_RUN_DIR", "/var/lib/teralab/run"),
+		StateDir:          env("TERALAB_STATE_DIR", "/var/lib/teralab/state"),
+		ImagesDir:         env("TERALAB_IMAGES_DIR", "/var/lib/teralab/images"),
+		CgroupRoot:        env("TERALAB_CGROUP_ROOT", "/sys/fs/cgroup/teralab.slice"),
+		DisableCgroups:    envBool("TERALAB_DISABLE_CGROUPS", false),
+		QEMUBinary:        env("TERALAB_QEMU", "/usr/bin/qemu-system-x86_64"),
+		QEMUImg:           env("TERALAB_QEMU_IMG", "/usr/bin/qemu-img"),
+		VPCSBinary:        env("TERALAB_VPCS", "/usr/bin/vpcs"),
+		DynamipsBinary:    env("TERALAB_DYNAMIPS", "/usr/bin/dynamips"),
+		DockerBinary:      env("TERALAB_DOCKER", "/usr/bin/docker"),
+		IOLIourc:          env("TERALAB_IOL_IOURC", "/etc/teralab/iourc"),
+		NetworkBackend:    env("TERALAB_NETWORK_BACKEND", "auto"),
+		VMUser:            env("TERALAB_VM_USER", "teralab-vm"),
+		PerLabUID:         envBool("TERALAB_PER_LAB_UID", true),
+		AllowRootVM:       envBool("TERALAB_ALLOW_ROOT_VM", false),
+		DisableKVM:        envBool("TERALAB_DISABLE_KVM", false),
+		DisableDockerPull: envBool("TERALAB_DISABLE_DOCKER_PULL", false),
+		QEMUSandbox:       envBool("TERALAB_QEMU_SANDBOX", true),
+	}
+
+	first, err := envUint32("TERALAB_LAB_UID_FIRST", defaultLabUIDFirst)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.LabUIDFirst = first
+	slots, err := envInt("TERALAB_LAB_UID_SLOTS", defaultLabUIDSlots)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.LabUIDSlots = slots
+	imageGID, err := envUint32("TERALAB_IMAGE_GID", 0)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ImageGID = imageGID
+	if err := validateLabUIDPool(cfg.LabUIDFirst, cfg.LabUIDSlots); err != nil {
+		return cfg, err
 	}
 
 	roots, err := imageExtraRoots()
@@ -206,6 +285,32 @@ func env(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func envUint32(key string, fallback uint32) (uint32, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: must be an unsigned 32-bit integer", key, value)
+	}
+
+	return uint32(parsed), nil
+}
+
+func envInt(key string, fallback int) (int, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: must be an integer", key, value)
+	}
+
+	return parsed, nil
 }
 
 func envBool(key string, fallback bool) bool {
