@@ -24,9 +24,9 @@ final class LabController
 {
     /**
      * Validate/apply carry a full YAML document in JSON; allow the 10 MB YAML
-     * cap plus JSON escaping overhead.
+     * cap plus JSON escaping overhead, but not an unbounded body.
      */
-    private const YAML_BODY_BYTES = 26214400;
+    private const YAML_BODY_BYTES = 12582912;
 
     public function __construct(
         private readonly LabRepository $labs,
@@ -52,6 +52,10 @@ final class LabController
             $labID = (string) ($lab['id'] ?? '');
             $lab['running_nodes'] = $running[$labID] ?? 0;
             $lab['running'] = $lab['running_nodes'] > 0;
+            // List rows carry the owner id (the same value as
+            // LabService::metadata()) so the UI can offer owner actions.
+            $lab['owner'] = $lab['attributes']['owner'] ?? null;
+            unset($lab['attributes'], $lab['extra_xml'], $lab['objects_extra'], $lab['extensions']);
         }
         unset($lab);
 
@@ -64,7 +68,7 @@ final class LabController
     public function show(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'user');
         $lab = $this->service->present($lab);
         $lab['lock'] = $this->locks->current((string) $lab['id']);
 
@@ -87,9 +91,8 @@ final class LabController
     public function save(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $labID = $args['id'] ?? '';
-        $this->access->assertLabAccess($user, $labID);
+        $authorized = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
+        $labID = (string) $authorized['id'];
         $body = Json::body($request);
         $revision = $body['revision'] ?? null;
         $lab = $this->service->save(
@@ -224,8 +227,7 @@ final class LabController
     public function apply(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         $body = Json::body($request, self::YAML_BODY_BYTES);
         $yaml = $body['yaml'] ?? null;
         if (!is_string($yaml)) {
@@ -319,7 +321,7 @@ final class LabController
     public function export(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'user');
         $export = $this->service->export((string) $lab['id']);
         $response->getBody()->write($export['xml']);
 
@@ -334,8 +336,7 @@ final class LabController
     public function delete(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'admin');
         $this->service->delete((string) $lab['id'], (string) $user['id']);
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.delete', (string) $lab['id'], 'success');
 
@@ -410,8 +411,7 @@ final class LabController
     public function start(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         // Reclaim demo capacity before the start so the floor check sees a
         // freshly swept host. LabService is not given the sweeper: that would
         // form a DI cycle (sweeper -> lab service), so the trigger lives here.
@@ -435,8 +435,7 @@ final class LabController
     public function stop(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         $jobID = $this->jobs->start('lab.stop', (string) $user['id'], ['lab_id' => $lab['id']]);
         try {
             $data = $this->service->stop((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
@@ -456,8 +455,7 @@ final class LabController
     public function wipe(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         $jobID = $this->jobs->start('lab.wipe', (string) $user['id'], ['lab_id' => $lab['id']]);
         try {
             $data = $this->service->wipe((string) $lab['id'], (string) $user['id'], $this->access->isAdmin($user));
@@ -477,7 +475,7 @@ final class LabController
     public function nodes(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'user');
 
         return Json::response($response, [
             'data' => $this->service->nodes((string) $lab['id']),
@@ -490,8 +488,7 @@ final class LabController
     public function duplicate(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         $copy = $this->service->duplicate((string) $lab['id'], (string) $user['id']);
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.duplicate', (string) $copy['id'], 'success');
 
@@ -504,8 +501,7 @@ final class LabController
     public function move(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         $body = Json::body($request);
         $folder = $body['folder'] ?? '';
         if (!is_string($folder)) {
@@ -523,7 +519,7 @@ final class LabController
     public function snapshots(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'user');
 
         return Json::response($response, ['data' => $this->service->snapshots((string) $lab['id'])]);
     }
@@ -534,8 +530,7 @@ final class LabController
     public function createSnapshot(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         $body = Json::body($request);
         $name = $body['name'] ?? ('Snapshot ' . gmdate('Y-m-d H:i'));
         if (!is_string($name)) {
@@ -553,8 +548,7 @@ final class LabController
     public function restoreSnapshot(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         $restored = $this->service->restoreSnapshot(
             (string) $lab['id'],
             $args['snapshot'] ?? '',
@@ -572,8 +566,7 @@ final class LabController
     public function deleteSnapshot(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
         $this->service->deleteSnapshot((string) $lab['id'], $args['snapshot'] ?? '');
         $this->audit->log((string) $user['id'], $this->ip($request), 'lab.snapshot.delete', (string) $lab['id'], 'success', ['snapshot' => $args['snapshot'] ?? '']);
 
@@ -585,10 +578,6 @@ final class LabController
      */
     public function nodeStart(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        // Same lazy housekeeping as a whole-lab start, so a guest node start
-        // also sees a freshly swept host before the memory-floor check.
-        $this->sweeper->sweepIfDue();
-
         return $this->nodeAction($request, $response, $args, 'start');
     }
 
@@ -614,8 +603,13 @@ final class LabController
     private function nodeAction(ServerRequestInterface $request, ResponseInterface $response, array $args, string $action): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->access->requireRole($user, 'editor');
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
+        if ($action === 'start') {
+            // Same lazy housekeeping as a whole-lab start, so a guest node
+            // start also sees a freshly swept host before the memory-floor
+            // check. Run it only after authorization.
+            $this->sweeper->sweepIfDue();
+        }
         $nodeID = $args['node'] ?? '';
         $isAdmin = $this->access->isAdmin($user);
         try {
@@ -644,13 +638,23 @@ final class LabController
     /**
      * @param array<string, string> $args
      */
+    public function nodeStatus(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'user');
+
+        return Json::response($response, [
+            'data' => $this->service->nodeStatus((string) $lab['id'], $args['node'] ?? ''),
+        ]);
+    }
+
+    /**
+     * @param array<string, string> $args
+     */
     public function permissions(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        if (!$this->access->isAdmin($user)) {
-            throw new HttpException(403, 'Administrator role required.');
-        }
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'admin');
 
         return Json::response($response, ['data' => $this->access->permissions((string) $lab['id'])]);
     }
@@ -661,10 +665,7 @@ final class LabController
     public function grant(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        if (!$this->access->isAdmin($user)) {
-            throw new HttpException(403, 'Administrator role required.');
-        }
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'admin');
         $body = Json::body($request);
         $username = $body['username'] ?? null;
         $role = $body['role'] ?? 'editor';
@@ -687,11 +688,8 @@ final class LabController
     public function revoke(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        if (!$this->access->isAdmin($user)) {
-            throw new HttpException(403, 'Administrator role required.');
-        }
-        $lab = $this->access->assertLabAccess($user, $args['id'] ?? '');
-        $target = $this->access->findUserByUsername((string) ($args['user'] ?? ''));
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'admin');
+        $target = $this->access->findUserByUsername((string) ($args['username'] ?? ''));
         if ($target === null) {
             throw new HttpException(404, 'User not found.');
         }

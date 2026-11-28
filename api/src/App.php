@@ -18,7 +18,9 @@ use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Auth\AuthService;
 use TeraLab\Api\Auth\PasswordPolicy;
 use TeraLab\Api\Auth\RateLimiter;
+use TeraLab\Api\Auth\SetupToken;
 use TeraLab\Api\Auth\TurnstileVerifier;
+use TeraLab\Api\Database\Bootstrap;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\Controllers\AuthController;
@@ -57,6 +59,7 @@ use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\DemoSweeper;
 use TeraLab\Api\System\HostMemory;
+use TeraLab\Api\System\MaintenanceService;
 use TeraLab\Api\System\SettingsService;
 use TeraLab\Api\Templates\TemplateRepository;
 
@@ -107,7 +110,8 @@ final class App
                 SettingsService $settings,
                 TemplateRepository $templates,
                 HostMemory $memory,
-            ): DemoGuard => new DemoGuard($pdo, $settings, new DemoPolicy(), $templates, $memory)
+                LabRepository $labs,
+            ): DemoGuard => new DemoGuard($pdo, $settings, new DemoPolicy(), $templates, $labs, $memory)
         );
         $container->set(
             DemoSweeper::class,
@@ -119,6 +123,7 @@ final class App
                 AuditLogger $audit,
                 HostMemory $memory,
                 LabRepository $repository,
+                MaintenanceService $maintenance,
             ): DemoSweeper => new DemoSweeper(
                 $pdo,
                 $settings,
@@ -128,7 +133,18 @@ final class App
                 $audit,
                 $memory,
                 $repository,
+                null,
+                $maintenance,
             )
+        );
+        $container->set(
+            MaintenanceService::class,
+            static fn (
+                PDO $pdo,
+                SettingsService $settings,
+                Config $config,
+                LabService $labs,
+            ): MaintenanceService => new MaintenanceService($pdo, $settings, $config, $labs)
         );
         $container->set(
             LabService::class,
@@ -142,6 +158,7 @@ final class App
                 SnapshotRepository $snapshots,
                 TemplateRepository $templates,
                 DemoGuard $demoGuard,
+                SettingsService $settings,
             ): LabService => new LabService(
                 $config,
                 $parser,
@@ -153,11 +170,22 @@ final class App
                 $templates,
                 new LabYamlCompiler($templates),
                 $demoGuard,
+                null,
+                null,
+                $settings,
             )
         );
         $container->set(PasswordPolicy::class, static fn (): PasswordPolicy => new PasswordPolicy());
         $container->set(RateLimiter::class, static fn (PDO $pdo): RateLimiter => new RateLimiter($pdo));
         $container->set(AuditLogger::class, static fn (PDO $pdo): AuditLogger => new AuditLogger($pdo));
+        $container->set(
+            SetupToken::class,
+            static fn (Config $config): SetupToken => new SetupToken($config->setupTokenFile)
+        );
+        $container->set(
+            SettingsService::class,
+            static fn (PDO $pdo, Config $config): SettingsService => new SettingsService($pdo, $config->environment)
+        );
         $turnstile = $this->turnstile;
         $container->set(
             TurnstileVerifier::class,
@@ -205,9 +233,16 @@ final class App
             )
         );
 
-        $container->get(Migrator::class)->migrate();
-        $container->get(JobService::class)->reconcile();
-        $timezone = $container->get(\TeraLab\Api\System\SettingsService::class)->string('timezone', 'UTC');
+        // Migrations are a bootstrap step, not request work: the marker records
+        // the code version and migration list so a normal request only reads a
+        // small file. Job reconciliation is interval-bounded for the same
+        // reason (one settings row, then a write at most every few minutes).
+        $bootstrap = new Bootstrap($config, $container->get(Migrator::class));
+        $bootstrap->ensureMigrated();
+        $container->get(JobService::class)->reconcileIfDue();
+        $settings = $container->get(\TeraLab\Api\System\SettingsService::class);
+        $legacyV1 = $settings->int('legacy_v1_enabled', 0) === 1;
+        $timezone = $settings->string('timezone', 'UTC');
         if (in_array($timezone, timezone_identifiers_list(), true)) {
             date_default_timezone_set($timezone);
         }
@@ -316,29 +351,19 @@ final class App
         $app->post('/api/v2/labs/{id}/permissions', fn ($request, $response, array $args) => $labs->grant($request, $response, $args))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
-        $app->delete('/api/v2/labs/{id}/permissions/{user}', fn ($request, $response, array $args) => $labs->revoke($request, $response, $args))
+        $app->delete('/api/v2/labs/{id}/permissions/{username}', fn ($request, $response, array $args) => $labs->revoke($request, $response, $args))
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
-        // Node lifecycle is delegated to the privileged Go agent.
+        // Node lifecycle is delegated to the privileged Go agent. The public
+        // contract is lab-scoped: the agent node id is always derived from an
+        // authorized lab+node pair, never accepted from the client.
         $nodes = $container->get(NodeController::class);
-        $app->post('/api/v2/nodes/start', fn ($request, $response) => $nodes->start($request, $response))
+        $app->post('/api/v2/labs/{id}/nodes/{node}/console', fn ($request, $response, array $args) => $nodes->console($request, $response, $args))
             ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
-        $app->post('/api/v2/nodes/stop', fn ($request, $response) => $nodes->stop($request, $response))
-            ->add($editorRole())
-            ->add($container->get(CsrfMiddleware::class))
-            ->add($container->get(AuthMiddleware::class));
-        $app->post('/api/v2/nodes/wipe', fn ($request, $response) => $nodes->wipe($request, $response))
-            ->add($editorRole())
-            ->add($container->get(CsrfMiddleware::class))
-            ->add($container->get(AuthMiddleware::class));
-        $app->get('/api/v2/nodes/status', fn ($request, $response) => $nodes->status($request, $response))
-            ->add($container->get(AuthMiddleware::class));
-        $app->post('/api/v2/nodes/console', fn ($request, $response) => $nodes->console($request, $response))
-            ->add($editorRole())
-            ->add($container->get(CsrfMiddleware::class))
+        $app->get('/api/v2/labs/{id}/nodes/{node}/status', fn ($request, $response, array $args) => $labs->nodeStatus($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
 
         $networks = $container->get(NetworkController::class);
@@ -354,23 +379,24 @@ final class App
         $images = $container->get(ImageController::class);
         $app->get('/api/v2/images', fn ($request, $response) => $images->index($request, $response))
             ->add($container->get(AuthMiddleware::class));
-        // Admin is enforced in the controller, after the demo guest check, so
-        // a guest receives the demo policy message rather than a role error.
+        // Catalogue mutations are admin-only: images are shared by every lab
+        // and a guest/editor must not change what other users can start.
         $app->post('/api/v2/images/import', fn ($request, $response) => $images->importLegacy($request, $response))
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->show($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/images', fn ($request, $response) => $images->upload($request, $response))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->delete($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->patch('/api/v2/images/{id}', fn ($request, $response, array $args) => $images->rename($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $templates = $container->get(TemplateController::class);
@@ -381,23 +407,23 @@ final class App
         $app->get('/api/v2/templates/{id}/export', fn ($request, $response, array $args) => $templates->export($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/templates/import', fn ($request, $response) => $templates->import($request, $response))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/templates/{id}/duplicate', fn ($request, $response, array $args) => $templates->duplicate($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->put('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->save($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/templates/{id}', fn ($request, $response, array $args) => $templates->delete($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->put('/api/v2/images/{id}/template', fn ($request, $response, array $args) => $images->mapTemplate($request, $response, $args))
-            ->add($editorRole())
+            ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
@@ -424,6 +450,10 @@ final class App
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/system/demo/status', fn ($request, $response) => $system->demoStatus($request, $response))
             ->add($adminRole())
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/system/maintenance', fn ($request, $response) => $system->maintenance($request, $response))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->get('/api/v2/system/backup', fn ($request, $response) => $system->backup($request, $response))
             ->add($adminRole())
@@ -460,6 +490,15 @@ final class App
             ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
+        // Legacy import lifecycle: count only, then clear every imported hash
+        // and its sessions so the account requires an administrator reset.
+        $app->get('/api/v2/users/legacy-hashes', fn ($request, $response) => $users->legacyHashCount($request, $response))
+            ->add($adminRole())
+            ->add($container->get(AuthMiddleware::class));
+        $app->post('/api/v2/users/legacy-hashes/clear', fn ($request, $response) => $users->clearLegacyHashes($request, $response))
+            ->add($adminRole())
+            ->add($container->get(CsrfMiddleware::class))
+            ->add($container->get(AuthMiddleware::class));
         $app->delete('/api/v2/users/{id}', fn ($request, $response, array $args) => $users->delete($request, $response, $args))
             ->add($adminRole())
             ->add($container->get(CsrfMiddleware::class))
@@ -470,7 +509,6 @@ final class App
         $app->get('/api/v2/jobs/{id}', fn ($request, $response, array $args) => $jobs->show($request, $response, $args))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/jobs/{id}/cancel', fn ($request, $response, array $args) => $jobs->cancel($request, $response, $args))
-            ->add($editorRole())
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
         $app->post('/api/v2/maintenance/reconcile', fn ($request, $response) => $engines->reconcile($request, $response))
@@ -478,37 +516,42 @@ final class App
             ->add($container->get(CsrfMiddleware::class))
             ->add($container->get(AuthMiddleware::class));
 
-        // Legacy v1 compatibility adapter. These routes keep the old UI and
-        // clients working while the v2 API becomes the supported surface.
-        $v1 = $container->get(V1Controller::class);
-        $v1Auth = $container->get(V1AuthMiddleware::class);
-        $app->post('/api/auth/login', fn ($request, $response) => $v1->login($request, $response));
-        $app->get('/api/auth/logout', fn ($request, $response) => $v1->logout($request, $response));
-        $app->get('/api/auth', fn ($request, $response) => $v1->auth($request, $response));
-        $app->get('/api/status', fn ($request, $response) => $v1->status($request, $response))
-            ->add($v1Auth);
-        $app->delete('/api/status', fn ($request, $response) => $v1->unsupported($request, $response))
-            ->add($v1Auth);
-        $app->get('/api/folders', fn ($request, $response) => $v1->folders($request, $response, ['path' => '']))
-            ->add($v1Auth);
-        $app->get('/api/folders/{path:.*}', fn ($request, $response, array $args) => $v1->folders($request, $response, $args))
-            ->add($v1Auth);
-        $app->get('/api/labs', fn ($request, $response) => $v1->labsIndex($request, $response))
-            ->add($v1Auth);
-        $app->get('/api/labs/{path:.*}/nodes/{node}/start', fn ($request, $response, array $args) => $v1->nodeStart($request, $response, $args))
-            ->add($v1Auth);
-        $app->get('/api/labs/{path:.*}/nodes/{node}/stop', fn ($request, $response, array $args) => $v1->nodeStop($request, $response, $args))
-            ->add($v1Auth);
-        $app->get('/api/labs/{path:.*}/nodes/{node}/wipe', fn ($request, $response, array $args) => $v1->nodeWipe($request, $response, $args))
-            ->add($v1Auth);
-        $app->get('/api/labs/{path:.*}', fn ($request, $response, array $args) => $v1->labShow($request, $response, $args))
-            ->add($v1Auth);
-        $app->post('/api/labs', fn ($request, $response) => $v1->unsupported($request, $response))
-            ->add($v1Auth);
-        $app->put('/api/labs/{path:.*}', fn ($request, $response) => $v1->unsupported($request, $response))
-            ->add($v1Auth);
-        $app->delete('/api/labs/{path:.*}', fn ($request, $response) => $v1->unsupported($request, $response))
-            ->add($v1Auth);
+        // Legacy v1 compatibility adapter. Disabled by default; when enabled it
+        // is read-only, access-filtered, and every state-changing request
+        // answers 405. Authenticated work belongs on the v2 lab-scoped routes.
+        if ($legacyV1) {
+            $v1 = $container->get(V1Controller::class);
+            $v1Auth = $container->get(V1AuthMiddleware::class);
+            $app->post('/api/auth/login', fn ($request, $response) => $v1->login($request, $response));
+            // GET logout is a documented CSRF exception: it only removes the
+            // caller's own session and changes no lab state.
+            $app->get('/api/auth/logout', fn ($request, $response) => $v1->logout($request, $response));
+            $app->get('/api/auth', fn ($request, $response) => $v1->auth($request, $response));
+            $app->get('/api/status', fn ($request, $response) => $v1->status($request, $response))
+                ->add($v1Auth);
+            $app->delete('/api/status', fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                ->add($v1Auth);
+            $app->get('/api/folders', fn ($request, $response) => $v1->folders($request, $response, ['path' => '']))
+                ->add($v1Auth);
+            $app->get('/api/folders/{path:.*}', fn ($request, $response, array $args) => $v1->folders($request, $response, $args))
+                ->add($v1Auth);
+            $app->get('/api/labs', fn ($request, $response) => $v1->labsIndex($request, $response))
+                ->add($v1Auth);
+            foreach (['start', 'stop', 'wipe'] as $action) {
+                $app->get('/api/labs/{path:.*}/nodes/{node}/' . $action, fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                    ->add($v1Auth);
+                $app->post('/api/labs/{path:.*}/nodes/{node}/' . $action, fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                    ->add($v1Auth);
+            }
+            $app->get('/api/labs/{path:.*}', fn ($request, $response, array $args) => $v1->labShow($request, $response, $args))
+                ->add($v1Auth);
+            $app->post('/api/labs', fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                ->add($v1Auth);
+            $app->put('/api/labs/{path:.*}', fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                ->add($v1Auth);
+            $app->delete('/api/labs/{path:.*}', fn ($request, $response) => $v1->methodNotAllowed($request, $response))
+                ->add($v1Auth);
+        }
 
         $app->add($container->get(SecurityHeadersMiddleware::class));
         $app->add($container->get(JsonErrorMiddleware::class));

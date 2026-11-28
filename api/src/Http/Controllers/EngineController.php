@@ -32,7 +32,7 @@ final class EngineController
 
     public function dockerImages(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
-        $this->access->user($request);
+        $this->access->requireRole($this->access->user($request), 'admin');
 
         try {
             $images = $this->agent->dockerImages();
@@ -47,7 +47,17 @@ final class EngineController
             );
         }
 
-        return Json::response($response, ['data' => $images]);
+        // The inspector only needs the container reference. Never expose agent
+        // host paths (or any other Docker-internal metadata) to the browser.
+        $references = [];
+        foreach ($images as $image) {
+            $reference = $image['reference'] ?? null;
+            if (is_string($reference) && $reference !== '') {
+                $references[] = ['reference' => $reference];
+            }
+        }
+
+        return Json::response($response, ['data' => $references]);
     }
 
     public function reconcile(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface

@@ -11,18 +11,25 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Auth\AccessService;
 use TeraLab\Api\Auth\AuditLogger;
+use TeraLab\Api\Auth\RateLimiter;
 use TeraLab\Api\Auth\TokenService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
 use TeraLab\Api\Http\RequestIp;
+use TeraLab\Api\Http\RouteId;
 use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\System\BackupService;
+use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\DemoSweeper;
+use TeraLab\Api\System\MaintenanceService;
 use TeraLab\Api\System\SettingsService;
 
 final class SystemController
 {
+    /** Guests are ephemeral and should need at most one API token. */
+    public const GUEST_MAX_TOKENS = 1;
+
     public function __construct(
         private readonly Config $config,
         private readonly PDO $pdo,
@@ -33,6 +40,8 @@ final class SystemController
         private readonly TokenService $tokens,
         private readonly AuditLogger $audit,
         private readonly DemoSweeper $sweeper,
+        private readonly RateLimiter $rateLimiter,
+        private readonly MaintenanceService $maintenance,
     ) {
     }
 
@@ -141,7 +150,8 @@ final class SystemController
 
         return $response
             ->withHeader('Content-Type', 'application/zip')
-            ->withHeader('Content-Disposition', 'attachment; filename="' . $backup['filename'] . '"');
+            ->withHeader('Content-Disposition', 'attachment; filename="' . $backup['filename'] . '"')
+            ->withHeader('Cache-Control', 'no-store');
     }
 
     public function restore(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
@@ -156,7 +166,26 @@ final class SystemController
         $result = $this->backup->restore($file);
         $this->audit->log((string) $user['id'], $this->address($request), 'system.restore', null, 'success', $result);
 
-        return Json::response($response, ['status' => 'success', 'data' => $result]);
+        return Json::response($response, ['status' => 'success', 'data' => $result])
+            ->withHeader('Cache-Control', 'no-store');
+    }
+
+    public function maintenance(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $user = $this->access->user($request);
+        $this->access->requireRole($user, 'admin');
+        $result = $this->maintenance->runNow();
+        $this->audit->log(
+            (string) $user['id'],
+            $this->address($request),
+            'system.maintenance',
+            null,
+            'success',
+            $result,
+        );
+
+        return Json::response($response, ['status' => 'success', 'data' => $result])
+            ->withHeader('Cache-Control', 'no-store');
     }
 
     public function tokens(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
@@ -169,6 +198,7 @@ final class SystemController
     public function createToken(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $user = $this->access->user($request);
+        $userId = (string) $user['id'];
         $body = Json::body($request);
         $name = $body['name'] ?? null;
         $scopes = $body['scopes'] ?? ['read', 'write'];
@@ -179,13 +209,36 @@ final class SystemController
         if (!is_array($scopes)) {
             throw new HttpException(422, 'scopes must be an array.');
         }
+
+        $guest = DemoPolicy::isGuest($user);
+        $cap = $guest
+            ? self::GUEST_MAX_TOKENS
+            : $this->settings->int('demo_max_tokens_per_user', 5);
+        if ($this->tokens->count($userId) >= $cap) {
+            throw new HttpException(
+                422,
+                $guest
+                    ? 'The demo allows one API token per guest; revoke it before creating another.'
+                    : 'At most ' . $cap . ' API tokens are kept per user; revoke one first.',
+            );
+        }
+        $address = $this->address($request);
+        $this->rateLimiter->assertCountBelow(
+            'token:' . $userId,
+            $address,
+            RateLimiter::TOKEN_MAX_PER_WINDOW,
+            RateLimiter::TOKEN_WINDOW_SECONDS,
+            RateLimiter::TOKEN_LIMIT_MESSAGE,
+        );
+        $this->rateLimiter->consume('token:' . $userId, $address);
+
         $token = $this->tokens->create(
-            (string) $user['id'],
+            $userId,
             $name,
             array_values(array_filter($scopes, 'is_string')),
             is_int($expiresIn) ? $expiresIn : null,
         );
-        $this->audit->log((string) $user['id'], $this->address($request), 'auth.token.create', (string) $token['id'], 'success');
+        $this->audit->log($userId, $address, 'auth.token.create', (string) $token['id'], 'success');
 
         return Json::response($response, ['status' => 'success', 'data' => $token], 201);
     }
@@ -196,7 +249,7 @@ final class SystemController
     public function revokeToken(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->access->user($request);
-        $this->tokens->revoke((string) $user['id'], $args['id'] ?? '');
+        $this->tokens->revoke((string) $user['id'], RouteId::token($args['id'] ?? ''));
         $this->audit->log((string) $user['id'], $this->address($request), 'auth.token.revoke', (string) ($args['id'] ?? ''), 'success');
 
         return Json::response($response, ['status' => 'success']);

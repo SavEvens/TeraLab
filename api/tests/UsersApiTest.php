@@ -17,9 +17,12 @@ use TeraLab\Api\App;
 use TeraLab\Api\Auth\PasswordPolicy;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class UsersApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private string $root;
@@ -39,6 +42,7 @@ final class UsersApiTest extends TestCase
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
         $config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($config);
         $agent = new AgentClient($config, function (string $method, string $path, array $payload): array {
             if ($path === '/v1/lab.ensure') {
                 return [200, '{"ok":true,"result":{"bridges":{"0":"tl-test-bridge-0"}}}'];
@@ -79,6 +83,7 @@ final class UsersApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->adminCookie = $this->cookie($setup);
@@ -545,6 +550,137 @@ final class UsersApiTest extends TestCase
         }
     }
 
+    public function testPasswordChangeRevokesApiTokensAndKeepsTheCurrentSession(): void
+    {
+        $created = $this->createUser([
+            'username' => 'token-changer',
+            'role' => 'user',
+            'password' => 'Teralab-Token-Old-2026!',
+        ]);
+        $id = (string) $created['user']['id'];
+        [$cookie, $csrf] = $this->login('token-changer', 'Teralab-Token-Old-2026!');
+
+        $tokenResponse = $this->request(
+            'POST',
+            '/api/v2/system/tokens',
+            ['name' => 'automation', 'scopes' => ['read']],
+            [],
+            $cookie,
+            $csrf,
+        );
+        self::assertSame(201, $tokenResponse->getStatusCode(), (string) $tokenResponse->getBody());
+        $bearer = (string) $this->json($tokenResponse)['data']['token'];
+
+        $authorized = $this->request('GET', '/api/v2/labs', [], ['Authorization' => 'Bearer ' . $bearer], '');
+        self::assertSame(200, $authorized->getStatusCode(), (string) $authorized->getBody());
+
+        $change = $this->request('POST', '/api/v2/auth/password', [
+            'current_password' => 'Teralab-Token-Old-2026!',
+            'new_password' => 'Teralab-Token-New-2026!',
+        ], [], $cookie, $csrf);
+        self::assertSame(200, $change->getStatusCode(), (string) $change->getBody());
+
+        // Every API token for the account is gone; the calling session survives
+        // because this is the documented self-service rule.
+        $revoked = $this->request('GET', '/api/v2/labs', [], ['Authorization' => 'Bearer ' . $bearer], '');
+        self::assertSame(401, $revoked->getStatusCode(), (string) $revoked->getBody());
+        self::assertSame(
+            0,
+            $this->countRows('api_tokens', $id),
+            'API tokens must be deleted with the password change'
+        );
+        self::assertSame(
+            200,
+            $this->request('GET', '/api/v2/auth/me', [], [], $cookie)->getStatusCode()
+        );
+    }
+
+    public function testAdminResetRevokesApiTokensAndSessions(): void
+    {
+        $created = $this->createUser([
+            'username' => 'token-reset',
+            'role' => 'user',
+            'password' => 'Teralab-Token-Old-2026!',
+        ]);
+        $id = (string) $created['user']['id'];
+        [$cookie, $csrf] = $this->login('token-reset', 'Teralab-Token-Old-2026!');
+
+        $tokenResponse = $this->request(
+            'POST',
+            '/api/v2/system/tokens',
+            ['name' => 'automation', 'scopes' => ['read']],
+            [],
+            $cookie,
+            $csrf,
+        );
+        self::assertSame(201, $tokenResponse->getStatusCode(), (string) $tokenResponse->getBody());
+        $bearer = (string) $this->json($tokenResponse)['data']['token'];
+
+        $reset = $this->request('POST', '/api/v2/users/' . $id . '/password', [
+            'password' => 'Teralab-Token-New-2026!',
+        ]);
+        self::assertSame(200, $reset->getStatusCode(), (string) $reset->getBody());
+
+        $revoked = $this->request('GET', '/api/v2/labs', [], ['Authorization' => 'Bearer ' . $bearer], '');
+        self::assertSame(401, $revoked->getStatusCode(), (string) $revoked->getBody());
+        self::assertSame(401, $this->request('GET', '/api/v2/auth/me', [], [], $cookie)->getStatusCode());
+        self::assertSame(0, $this->countRows('api_tokens', $id));
+        self::assertSame(0, $this->countRows('sessions', $id));
+    }
+
+    public function testAdminCanCountAndClearLegacyPasswordHashes(): void
+    {
+        $created = $this->createUser([
+            'username' => 'imported-user',
+            'role' => 'editor',
+            'password' => 'Teralab-Imported-2026!',
+        ]);
+        $id = (string) $created['user']['id'];
+        $update = $this->pdo->prepare(
+            'UPDATE users SET legacy_password_hash = :legacy WHERE id = :id'
+        );
+        $update->execute([':legacy' => hash('sha256', 'Legacy-Pass-2026!'), ':id' => $id]);
+
+        [$cookie, $csrf] = $this->login('imported-user', 'Teralab-Imported-2026!');
+        $tokenResponse = $this->request(
+            'POST',
+            '/api/v2/system/tokens',
+            ['name' => 'legacy-automation', 'scopes' => ['read']],
+            [],
+            $cookie,
+            $csrf,
+        );
+        self::assertSame(201, $tokenResponse->getStatusCode(), (string) $tokenResponse->getBody());
+        $bearer = (string) $this->json($tokenResponse)['data']['token'];
+
+        $count = $this->request('GET', '/api/v2/users/legacy-hashes');
+        self::assertSame(200, $count->getStatusCode(), (string) $count->getBody());
+        self::assertSame(1, $this->json($count)['data']['count']);
+
+        $clear = $this->request('POST', '/api/v2/users/legacy-hashes/clear');
+        self::assertSame(200, $clear->getStatusCode(), (string) $clear->getBody());
+        self::assertSame(1, $this->json($clear)['data']['cleared']);
+        self::assertGreaterThanOrEqual(1, $this->json($clear)['data']['sessions_revoked']);
+        self::assertSame(1, $this->json($clear)['data']['api_tokens_revoked']);
+
+        $legacy = $this->pdo->prepare('SELECT legacy_password_hash FROM users WHERE id = :id');
+        $legacy->execute([':id' => $id]);
+        self::assertNull($legacy->fetchColumn());
+        self::assertSame(401, $this->request('GET', '/api/v2/auth/me', [], [], $cookie)->getStatusCode());
+        self::assertSame(
+            401,
+            $this->request('GET', '/api/v2/labs', [], ['Authorization' => 'Bearer ' . $bearer], '')->getStatusCode()
+        );
+
+        // Clearing again is a harmless no-op and still audited.
+        $again = $this->request('POST', '/api/v2/users/legacy-hashes/clear');
+        self::assertSame(200, $again->getStatusCode(), (string) $again->getBody());
+        self::assertSame(0, $this->json($again)['data']['cleared']);
+
+        $actions = $this->pdo->query('SELECT action FROM audit_log')->fetchAll(PDO::FETCH_COLUMN);
+        self::assertContains('user.legacy_hashes.clear', $actions);
+    }
+
     /**
      * @param array<string, mixed> $body
      * @return array<string, mixed>
@@ -561,6 +697,14 @@ final class UsersApiTest extends TestCase
     {
         $statement = $this->pdo->prepare('SELECT COUNT(*) FROM audit_log WHERE action = :action');
         $statement->execute([':action' => $action]);
+
+        return (int) $statement->fetchColumn();
+    }
+
+    private function countRows(string $table, string $userId): int
+    {
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM ' . $table . ' WHERE user_id = :user_id');
+        $statement->execute([':user_id' => $userId]);
 
         return (int) $statement->fetchColumn();
     }

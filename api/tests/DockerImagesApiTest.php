@@ -18,9 +18,12 @@ use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class DockerImagesApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
     private const VIEWER_PASSWORD = 'Teralab-Viewer-2026!';
 
@@ -34,6 +37,7 @@ final class DockerImagesApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-docker-images-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installSetupToken(Config::forTests($this->root, $this->root . '/data'));
     }
 
     protected function tearDown(): void
@@ -51,7 +55,7 @@ final class DockerImagesApiTest extends TestCase
         self::assertSame([], $this->calls, 'an unauthenticated request must not reach the agent');
     }
 
-    public function testDockerImagesReturnsTheAgentListAsData(): void
+    public function testDockerImagesReturnsReferencesOnly(): void
     {
         $images = [
             [
@@ -59,6 +63,7 @@ final class DockerImagesApiTest extends TestCase
                 'id' => 'sha256:9f2d0c1a',
                 'size' => '158MB',
                 'created' => '2026-01-02T03:04:05Z',
+                'path' => '/var/lib/docker/overlay2/secret',
             ],
             [
                 'reference' => 'alpine:3.20',
@@ -73,7 +78,11 @@ final class DockerImagesApiTest extends TestCase
         $response = $this->request($app, 'GET', '/api/v2/docker/images', $cookie);
 
         self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
-        self::assertSame($images, $this->json($response)['data']);
+        self::assertSame([
+            ['reference' => 'frrouting/frr:v8.4.1'],
+            ['reference' => 'alpine:3.20'],
+        ], $this->json($response)['data']);
+        self::assertStringNotContainsString('/var/lib/docker', (string) $response->getBody());
         self::assertSame(
             [['method' => 'GET', 'path' => '/v1/docker/images', 'payload' => []]],
             $this->calls,
@@ -143,7 +152,7 @@ final class DockerImagesApiTest extends TestCase
         );
     }
 
-    public function testAnyAuthenticatedUserCanReadDockerImages(): void
+    public function testNonAdminCannotReadDockerImages(): void
     {
         $body = json_encode([
             'ok' => true,
@@ -164,11 +173,12 @@ final class DockerImagesApiTest extends TestCase
             'password' => self::VIEWER_PASSWORD,
         ]);
         self::assertSame(200, $login->getStatusCode(), (string) $login->getBody());
+        $this->calls = [];
 
         $response = $this->request($app, 'GET', '/api/v2/docker/images', $this->cookie($login));
 
-        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
-        self::assertCount(1, $this->json($response)['data']);
+        self::assertSame(403, $response->getStatusCode(), (string) $response->getBody());
+        self::assertSame([], $this->calls);
     }
 
     public function testAgentClientReadsTheImagesListAndToleratesAMissingOne(): void
@@ -255,6 +265,7 @@ final class DockerImagesApiTest extends TestCase
         $setup = $this->request($app, 'POST', '/api/v2/setup', null, [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
 

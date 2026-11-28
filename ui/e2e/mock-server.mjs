@@ -142,14 +142,28 @@ export function startMockServer(port = 8099) {
     demo_memory_floor_mb: 2048,
     demo_idle_wipe_minutes: 120,
     demo_sweep_interval: 300,
+    demo_max_labs_per_guest: 3,
+    demo_max_lab_bytes_per_guest: 20971520,
+    demo_max_snapshots_per_lab: 3,
+    demo_max_tokens_per_user: 5,
+    retention_login_attempts_days: 30,
+    retention_audit_log_days: 90,
+    retention_jobs_days: 30,
+    retention_jobs_max_rows: 1000,
+    maintenance_interval_seconds: 3600,
+    backup_max_archive_bytes: 2147483648,
+    backup_max_entries: 10000,
+    backup_max_uncompressed_bytes: 4294967296,
+    backup_max_database_bytes: 1073741824,
     turnstile_enabled: 0,
     turnstile_site_key: '3x00000000000000000000FF',
+    turnstile_hostname: '',
     turnstile_secret_key: '1x0000000000000000000000000000000AA'
   }
   let lab = {
     id: 'lab1',
     name: 'Editor Lab',
-    owner: 'admin',
+    owner: 'user1',
     path: 'Editor-Lab.unl',
     revision: 1,
     description: '',
@@ -358,7 +372,7 @@ export function startMockServer(port = 8099) {
             .map((id) => id.trim())
             .filter(Boolean)
         },
-        turnstile: { enabled: !!settings.turnstile_enabled, site_key: settings.turnstile_site_key }
+        turnstile: { enabled: !!settings.turnstile_enabled, site_key: settings.turnstile_site_key, test_keys: false }
       })
     }
     if (path === '/api/v2/version') return send(response, 200, { product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://github.com/SavEvens/TeraLab', components: [{ name: 'TeraLab', license: 'AGPL-3.0-or-later', separate: false }, { name: 'QEMU', license: 'GPL-2.0', separate: true }] })
@@ -551,7 +565,7 @@ export function startMockServer(port = 8099) {
       const created = {
         id: `newlab${createdLabs.length + 1}`,
         name,
-        owner: 'admin',
+        owner: 'user1',
         path: `${name.replace(/\s+/g, '-')}.unl`,
         revision: 1,
         format: 'teralab-2',
@@ -584,7 +598,7 @@ export function startMockServer(port = 8099) {
         const imported = {
           id: `yamllab${++yamlImportCount}`,
           name,
-          owner: 'admin',
+          owner: 'user1',
           path: `${name.replace(/\s+/g, '-')}.unl`,
           revision: 1,
           format: 'teralab-2',
@@ -781,11 +795,13 @@ export function startMockServer(port = 8099) {
         { id: 'frr', name: 'FRR Router', kind: 'docker', options: { docker: { image: 'frrouting/frr:v8.4.1' } }, defaults: { cpu: 1, ram: 256, ethernet: 1, console: 'telnet' }, icon: 'Router.png', source: 'builtin' }
       ] })
     }
-    // Locally pulled container images; docker nodes suggest these as they type.
+    // Locally pulled container images; administrator-only and reference-only.
     if (path === '/api/v2/docker/images' && request.method === 'GET') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       return send(response, 200, { data: [
-        { reference: 'frrouting/frr:v8.4.1', id: 'sha256:1111111111111111111111111111111111111111111111111111111111111111', size: '91.2MB', created: '2026-11-01T10:00:00Z' },
-        { reference: 'alpine:3.20', id: 'sha256:2222222222222222222222222222222222222222222222222222222222222222', size: '7.81MB', created: '2026-11-02T10:00:00Z' }
+        { reference: 'frrouting/frr:v8.4.1' },
+        { reference: 'alpine:3.20' }
       ] })
     }
     if (path === '/api/v2/labs/lab1/snapshots' && request.method === 'GET') return send(response, 200, { data: snapshots })
@@ -807,7 +823,20 @@ export function startMockServer(port = 8099) {
       states[decodeURIComponent(nodeId)] = action === 'start' ? 'running' : 'stopped'
       return send(response, 200, { status: 'success', data: { state: 'ok' } })
     }
+    const nodeConsoleMatch = /^\/api\/v2\/labs\/([^/]+)\/nodes\/([^/]+)\/console$/.exec(path)
+    if (request.method === 'POST' && nodeConsoleMatch) {
+      return send(response, 200, {
+        data: {
+          kind: 'telnet',
+          token: 'mock',
+          ws_path: `/ws/console?lab=${encodeURIComponent(nodeConsoleMatch[1])}&node=${encodeURIComponent(nodeConsoleMatch[2])}`,
+          expires_in: 300
+        }
+      })
+    }
     if (path === '/api/v2/system/host') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       return send(response, 200, { data: { load1: 0.2, load5: 0.1, load15: 0.1, cpu_usage_percent: 12.5, disk_free_bytes: 1000000, disk_total_bytes: 2000000, nodes: [], engines: [{ name: 'qemu', available: true, version: '10.0' }, { name: 'dynamips', available: false, version: '' }], interfaces: [{ name: 'eth0', up: true, mac: '00:11:22:33:44:55', addresses: ['192.0.2.10'] }, { name: 'eth1', up: false, mac: '00:11:22:33:44:56', addresses: [] }] } })
     }
     if (path === '/api/v2/system/settings' && request.method === 'GET') return send(response, 200, { data: settings })
@@ -823,7 +852,24 @@ export function startMockServer(port = 8099) {
           last_sweep_at: demo.lastSweepAt,
           mem_available_mb: demo.memAvailableMb,
           guests_active: users.filter((user) => user.guest).length,
-          demo_nodes_running: demo.nodesRunning
+          demo_nodes_running: demo.nodesRunning,
+          guest_labs: 2,
+          guest_lab_bytes: 1572864,
+          guest_snapshots: 1
+        }
+      })
+    }
+    if (path === '/api/v2/system/maintenance' && request.method === 'POST') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
+      return send(response, 200, {
+        data: {
+          sessions_deleted: 1,
+          login_attempts_deleted: 0,
+          audit_log_deleted: 2,
+          jobs_deleted: 0,
+          snapshots_deleted: 1,
+          trash_deleted: 0
         }
       })
     }
@@ -833,7 +879,10 @@ export function startMockServer(port = 8099) {
       demo.lastSweepAt = Math.floor(Date.now() / 1000)
       demo.memAvailableMb = 6144
       demo.nodesRunning = 0
-      lastDemoSweep = { guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, labs_failed: 0, mem_available_mb: demo.memAvailableMb }
+      lastDemoSweep = {
+        guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, labs_failed: 0,
+        mem_available_mb: demo.memAvailableMb, guest_files_removed: 4, snapshots_removed: 2
+      }
       return send(response, 200, { data: lastDemoSweep })
     }
     if (path === '/api/v2/system/logs') return send(response, 200, { data: { source: 'api', lines: ['mock log line'], size: 14, modified: 0 } })
@@ -850,6 +899,8 @@ export function startMockServer(port = 8099) {
     }
     if (path === '/api/v2/images' && request.method === 'GET') return send(response, 200, { data: images })
     if (path === '/api/v2/images' && request.method === 'POST') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       const image = {
         id: 'img1',
         kind: 'qemu',
@@ -889,6 +940,8 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { ok: true })
     }
     if (path.startsWith('/api/v2/images/') && request.method === 'PATCH') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       const input = await body(request)
       const id = decodeURIComponent(path.split('/').pop())
       const current = images.find((image) => image.id === id)
@@ -910,28 +963,55 @@ export function startMockServer(port = 8099) {
       return send(response, 200, { status: 'success', data: images.find((image) => image.id === id) })
     }
     if (path.startsWith('/api/v2/images/') && path.endsWith('/template') && request.method === 'PUT') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       const input = await body(request)
       images = images.map((image) => ({ ...image, template: input.template }))
       return send(response, 200, { status: 'success', data: images[0] })
     }
     if (path.startsWith('/api/v2/images/') && request.method === 'DELETE') {
+      const actor = requireAdmin(request, response)
+      if (!actor) return
       images = []
       return send(response, 200, { status: 'success' })
     }
     if (path === '/api/v2/engines') return send(response, 200, { data: [] })
-    if (path === '/api/v2/nodes/console') {
-      return send(response, 200, { data: { kind: 'telnet', ws_path: '/ws/console?token=mock', expires_in: 300 } })
-    }
     return send(response, 404, { message: 'not found' })
   })
 
-  const wss = new WebSocketServer({ server, path: '/ws' })
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    // The UI sends the console capability as `teralab.console.<token>` in
+    // Sec-WebSocket-Protocol. Echo it back: a browser aborts the handshake when
+    // it requested a subprotocol and the server selects none.
+    handleProtocols: (protocols) => {
+      for (const protocol of protocols) {
+        if (/^teralab\.console\.[A-Za-z0-9._~!#$%&'*+\-^`|]+$/.test(protocol)) return protocol
+      }
+      return false
+    },
+    // Query tokens are rejected so a regression that puts the capability back
+    // in the URL fails the E2E instead of silently passing.
+    verifyClient: (info, done) => {
+      const url = new URL(info.req.url || '/', 'http://127.0.0.1')
+      if (url.searchParams.has('token')) {
+        done(false, 401, 'query console tokens are not accepted')
+        return
+      }
+      done(true)
+    }
+  })
   // Record the frames each console connection sends so e2e can assert that the
   // telnet console no longer writes resize control JSON into the device stream.
   const wsMessages = []
-  wss.on('connection', (socket) => {
+  const wsUrls = []
+  const wsProtocols = []
+  wss.on('connection', (socket, request) => {
     const messages = []
     wsMessages.push(messages)
+    wsUrls.push(request.url)
+    wsProtocols.push(request.headers['sec-websocket-protocol'])
     socket.send('hello from mock console\r\n')
     socket.on('message', (message) => {
       messages.push(Buffer.isBuffer(message) ? message.toString('utf8') : String(message))
@@ -944,6 +1024,8 @@ export function startMockServer(port = 8099) {
       server,
       wss,
       wsMessages,
+      wsUrls,
+      wsProtocols,
       close: () => {
         for (const client of wss.clients) client.terminate()
         wss.close()

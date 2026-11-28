@@ -15,6 +15,54 @@ import (
 	"github.com/SavEvens/TeraLab/agent/internal/engine"
 )
 
+// The console endpoint must never carry the capability in the URL. The token
+// travels in Sec-WebSocket-Protocol; only the bare path is exposed so proxy
+// access logs and browser history cannot capture it.
+func TestConsoleWebSocketURLHasNoToken(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/ws", want: "ws://127.0.0.1:8091/ws"},
+		{path: "/vnc", want: "ws://127.0.0.1:8091/vnc"},
+		{path: "/tcp", want: "ws://127.0.0.1:8091/tcp"},
+	}
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			got := consoleWebSocketURL("127.0.0.1:8091", test.path)
+			if got != test.want {
+				t.Fatalf("consoleWebSocketURL = %q, want %q", got, test.want)
+			}
+			if strings.ContainsAny(got, "?#") {
+				t.Fatalf("console WebSocket URL must not carry a query or fragment: %q", got)
+			}
+		})
+	}
+}
+
+func TestValidConsoleUserID(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{name: "empty", id: "", want: true},
+		{name: "uuid", id: "3f2504e0-4f89-11d3-9a0c-0305e82c3301", want: true},
+		{name: "maximum length", id: strings.Repeat("u", 128), want: true},
+		{name: "too long", id: strings.Repeat("u", 129), want: false},
+		{name: "newline", id: "user\ninjected", want: false},
+		{name: "nul", id: "user\x00", want: false},
+		{name: "delete", id: "user\x7f", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validConsoleUserID(test.id); got != test.want {
+				t.Fatalf("validConsoleUserID(%q) = %v, want %v", test.id, got, test.want)
+			}
+		})
+	}
+}
+
 // Large payloads must carry Content-Length. Without it the Go server falls
 // back to chunked encoding, which the Unix-socket PHP client cannot decode.
 func TestWriteJSONSetsContentLengthForLargePayloads(t *testing.T) {

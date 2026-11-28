@@ -1,7 +1,145 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 TeraLab contributors -->
 
-# Upgrading to TeraLab v1.5.8
+# Upgrading TeraLab
+
+## v1.6-dev security release: service identities and file modes
+
+This release changes who runs the API and how the runtime state is owned. Plan
+a maintenance window: **stop the agent and the web tier before upgrading**.
+There is no live migration path in this document; the installer or the package
+applies the new ownership while the services are stopped.
+
+What changes:
+
+- The API no longer runs as `www-data`. A dedicated system group `teralab` and
+  system user `teralab-api` are created, and the new PHP-FPM pool
+  `/etc/php/8.4/fpm/pool.d/teralab.conf` runs as `teralab-api:teralab`. Apache
+  keeps its `www-data` workers but routes only the TeraLab vhost's PHP to
+  `/run/php/php8.4-fpm-teralab.sock`. The package now depends on `acl`; a
+  source install needs `setfacl`. A generated `php8.4-fpm.service` drop-in runs
+  `/usr/local/libexec/teralab/fpm-socket-acl`, which grants `www-data` a named
+  ACL on that socket without changing its `teralab-api:teralab` ownership or
+  adding `www-data` to the group. The same drop-in sets `UMask=0077`; php-fpm
+  has no per-pool umask, so this applies to every pool on that service.
+- The agent secret becomes `root:teralab 0640`, `/etc/teralab` becomes
+  `root:teralab 0750`, and the agent socket group becomes `teralab`.
+  `www-data` is removed from that group if an older install added it, and it
+  cannot read the secret or reach the agent socket.
+- First-run setup is operator-gated. The installer and the package `postinst`
+  generate `/etc/teralab/setup.token` once (`root:teralab 0640`, 32 random
+  bytes; never overwritten) and print it once together with the
+  `X-TeraLab-Setup-Token` header. The token may also be sent as the JSON field
+  `setup_token`; the header wins. The group read bit lets the `teralab-api`
+  PHP-FPM pool identity verify the token; `www-data` is not in `teralab`.
+  Setup attempts are limited to 10 per 15 minutes per address and 50 per 15
+  minutes globally. An existing install that upgrades gets a token on that
+  run; if an administrator account already exists, setup remains disabled and
+  the token is not needed.
+- The data matrix becomes: `/var/lib/teralab` `teralab-api:teralab 0750`;
+  the database and its WAL/SHM `0600`; `labs`/`logs` `0750`;
+  `backups`/`restore` `0700`; `images` directories `0755` with files in the new
+  `teralab-images` group (`0640`, `.bin` `0750`); `images/tmp` `2770`;
+  `run` `root:root 0711`; `state` `root:root 0700`.
+- The installed tree is forced to `root:root` with `chmod -R go-w`.
+- The root-executed firewall helper moves to
+  `/usr/local/libexec/teralab/teralab-firewall` (`root:root 0755`); the
+  `/opt/teralab/packaging/...` copy is source only.
+- A generated drop-in,
+  `/etc/systemd/system/teralab-agent.service.d/10-teralab-identity.conf`,
+  supplies the real `teralab-api` UID, `teralab-images` GID and `teralab`
+  socket group to the agent.
+- The packaged Apache configuration now sends browser-facing security headers
+  (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, a `Permissions-Policy` that denies camera,
+  microphone, geolocation, USB and payment, and a Content-Security-Policy) for
+  `/ui/`, `/themes`, `/images` and `/about.php`, and sets `ServerTokens Prod`,
+  `ServerSignature Off` and `TraceEnable Off` for the Apache instance.
+  `mod_headers` is now enabled by `apply-state.sh`. API responses keep their
+  own, stricter headers. See
+  [INSTALL.md § Response headers and CSP](INSTALL.md#response-headers-and-csp).
+  HSTS is not sent by Apache (it is set at the TLS edge); this release adds no
+  on-disk format change.
+- Console capabilities no longer travel in a URL. The API returns the console
+  path plus a 60-second token and the UI sends it as the WebSocket subprotocol
+  `teralab.console.<token>`; the gateway rejects a query token, a missing
+  `Origin`, and an origin outside the allowlist. Same-origin is the default,
+  `TERALAB_CONSOLE_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`)
+  overrides it, and the packaged Apache configuration now sets
+  `ProxyPreserveHost On` so the browser's `Host` reaches the agent. See
+  [INSTALL.md § Console tokens and WebSocket origin](INSTALL.md#console-tokens-and-websocket-origin).
+
+The full matrix is in
+[INSTALL.md § Service identities and file permissions](INSTALL.md#service-identities-and-file-permissions).
+
+`apply-state.sh` adds `teralab-api` to `teralab-images` as a supplementary
+group so the API can read and rewrite group-owned image files. Running FPM
+workers do not gain a new supplementary group until they are replaced: reload
+or restart `php8.4-fpm` after the membership is applied. The package `postinst`
+restarts it and a source `install.sh` reloads it; if you add the membership by
+hand, run `sudo systemctl reload php8.4-fpm`.
+
+The permission checker is not shipped in the `.deb` (the package contains no
+`scripts/` tree). Run `scripts/check-install-perms.sh` from a matching source
+checkout.
+
+### Upgrade a .deb install
+
+```sh
+# 1. Stop the services that write runtime state.
+sudo systemctl stop teralab-agent apache2 php8.4-fpm
+
+# 2. Back up configuration and data.
+sudo tar czf /var/backups/teralab-$(date +%F).tgz /etc/teralab /var/lib/teralab
+
+# 3. Install the new artifact. postinst applies the identity matrix and
+#    restarts the agent; it never deletes /var/lib/teralab.
+sudo apt-get install ./teralab_<new-version>_amd64.deb
+
+# 4. Verify.
+sudo scripts/check-install-perms.sh   # from a matching source checkout
+systemctl status teralab-agent php8.4-fpm
+curl -fsS http://127.0.0.1/api/v2/health
+curl -sI http://127.0.0.1/ui/ | grep -i content-security-policy
+```
+
+The last line must print the CSP; if it is empty, Apache reloaded an old copy of
+`/etc/apache2/conf-available/teralab.conf` (see *Conffile prompts*) or
+`mod_headers` is not enabled. Then open `/ui/` and confirm the browser console
+has no CSP violations, log in, and open a console.
+
+If `apt-get` reports that `php8.4-fpm` could not reload, inspect the pool with
+`php-fpm8.4 -t` and `journalctl -u php8.4-fpm`; do not leave Apache enabled
+against a missing socket.
+
+### Upgrade a source install
+
+```sh
+git fetch --tags
+git checkout <the release tag or branch>
+sudo systemctl stop teralab-agent apache2 php8.4-fpm
+sudo tar czf /var/backups/teralab-$(date +%F).tgz /etc/teralab /var/lib/teralab
+sudo packaging/teralab/install.sh
+sudo scripts/check-install-perms.sh   # from this source checkout
+```
+
+The source installer re-copies the tree, forces it to `root:root`, rewrites the
+pool and the generated agent drop-in, re-applies the data matrix, and then
+starts the services. Existing labs, images, the database, the agent secret and
+the setup token are preserved; if the token is missing, the installer creates
+it once and prints it (setup is already disabled when an administrator
+exists).
+
+### Rollback
+
+The mode/ownership changes are in place on disk. To roll back, stop the
+services, restore the `/etc/teralab` and `/var/lib/teralab` backup, check out
+the previous release and re-run its installer. An older tree expects
+`www-data`-owned state; re-run its installer (or `chown -R www-data:www-data`
+on the data root) after restoring. Forward-only database migrations still make
+the backup the reliable rollback path.
+
+## v1.5.8
 
 v1.5.8 is a patch release that changes the user interface only. It keeps `.unl`
 labs, the v1 and v2 API surface, and the `/var/lib/teralab` layout unchanged.
@@ -40,6 +178,14 @@ The package upgrades in place:
 - `/etc/teralab/agent.secret`, `/etc/teralab/config.php` and
   `/var/lib/teralab` (database, labs, images, run directories and logs) are
   not replaced or deleted.
+- If `/etc/teralab/setup.token` does not exist, `postinst` creates it
+  (`root:teralab 0640`) and prints it once with the setup URL and the
+  `X-TeraLab-Setup-Token` header. It is never overwritten. Send the token in
+  that header or in the JSON field `setup_token` (the header wins); setup is
+  limited to 10 attempts per 15 minutes per address and 50 per 15 minutes
+  globally. `/api/v2/setup` stays disabled once an administrator exists, so a
+  configured install does not need the token; read it later with
+  `sudo cat /etc/teralab/setup.token` if setup is still pending.
 - The agent is restarted so it runs the new binary; the agent is version-locked
   to the API, so the restart is required. On startup the agent reconciles its
   state: **running labs are stopped** (non-docker engines are killed and their
@@ -54,9 +200,10 @@ The package upgrades in place:
 
 ### Conffile prompts
 
-The Apache configuration, the three PHP upload-limit drop-ins, both systemd
-units, the logrotate configuration and `/usr/share/doc/teralab/copyright` are
-dpkg conffiles. dpkg asks only when you edited one of them:
+The Apache configuration, the three PHP upload-limit drop-ins, the
+`/etc/php/8.4/fpm/pool.d/teralab.conf` pool, both systemd units, the logrotate
+configuration and `/usr/share/doc/teralab/copyright` are dpkg conffiles. dpkg
+asks only when you edited one of them:
 
 - **Keep the local version** if the edit is intentional (custom Apache
   aliases, unit hardening). Re-check it afterwards against the packaged
@@ -66,8 +213,23 @@ dpkg conffiles. dpkg asks only when you edited one of them:
   delivered.
 
 The Apache configuration and both unit files must keep pointing at the install
-root (`/opt/teralab`). Do not accept a packaged conffile that changes that root
-unless you deliberately moved the install tree.
+root (`/opt/teralab`) and, for the firewall unit, at
+`/usr/local/libexec/teralab/teralab-firewall`. Do not accept a packaged
+conffile that changes those paths unless you deliberately moved the install
+tree or the helper. The TeraLab Apache configuration must also keep its
+directory-scoped `SetHandler` for
+`/run/php/php8.4-fpm-teralab.sock`; without it the API would use the shared
+pool. The generated identity drop-in is not a conffile and is rewritten by
+`apply-state.sh` on every run.
+
+This release's `teralab.conf` also adds the response headers and CSP described
+in [INSTALL.md § Response headers and CSP](INSTALL.md#response-headers-and-csp),
+the `ServerTokens`/`ServerSignature`/`TraceEnable` lines, and
+`ProxyPreserveHost On` before the `/ws/` proxies. If you keep a locally edited
+version, merge the `Header always set` block, `<LocationMatch>` section and
+`ProxyPreserveHost On` by hand; otherwise the UI keeps serving without the
+headers and the consoles fail the origin check. `apply-state.sh` enables
+`mod_headers` on both install paths, so no manual `a2enmod` is needed.
 
 For source installs, continue with the steps below.
 
@@ -91,7 +253,8 @@ sudo packaging/teralab/install.sh
 
 What is preserved:
 
-- `/etc/teralab/agent.secret` and any `config.php`;
+- `/etc/teralab/agent.secret`, `/etc/teralab/setup.token` and any
+  `config.php`;
 - `/var/lib/teralab/database.sdb` and its WAL files;
 - labs under `/var/lib/teralab/labs` and images under `images`;
 - run directories are recreated and reconciled by the agent.
@@ -121,7 +284,7 @@ with `--no-systemd`, or hosts whose firewall manager reloads the `FORWARD`
 chain, can apply the same rule manually:
 
 ```sh
-sudo /opt/teralab/packaging/teralab/teralab-firewall
+sudo /usr/local/libexec/teralab/teralab-firewall
 ```
 
 Until the rule is present, IP traffic between lab nodes is dropped (IPv4
@@ -255,16 +418,16 @@ sudo php /opt/teralab/packaging/teralab/import-legacy.php \
 ```
 
 The option defaults to `/opt/unetlab/addons`. When `--legacy-addons` is given,
-`--legacy-db` is optional. The CLI runs as root, so files that `www-data`
-cannot read still import; it prints a per-file summary and has no runtime
-limit.
+`--legacy-db` is optional. The CLI runs as root, so files that the API
+identity (`teralab-api`) cannot read still import; it prints a per-file
+summary and has no runtime limit.
 
 ### Permissions
 
-The API and UI path runs as `www-data`, which must be able to read the addons
-tree. The dry run flags unreadable files and does not import them. If the tree
-is not world-readable, either grant read access to `www-data` or use the CLI
-path above, which runs as root.
+The API and UI path runs as `teralab-api`, which must be able to read the
+addons tree. The dry run flags unreadable files and does not import them. If
+the tree is not world-readable, either grant read access to `teralab-api` or
+use the CLI path above, which runs as root.
 
 ### Licence files are never registered
 

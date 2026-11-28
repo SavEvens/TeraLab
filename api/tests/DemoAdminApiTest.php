@@ -18,9 +18,14 @@ use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\System\DemoSweeper;
 use TeraLab\Api\System\HostMemory;
+use TeraLab\Api\Tests\Support\SetupToken;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class DemoAdminApiTest extends TestCase
 {
+    use SetupToken;
+    use StaticAssets;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private const GUEST_PASSWORD = 'Teralab-Guest-2026!';
@@ -42,7 +47,9 @@ final class DemoAdminApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-demo-admin-api-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installStaticAssets($this->root);
         $config = $this->config();
+        $this->installSetupToken($config);
         $this->writeTemplate($config);
         $this->pdo = (new Database($config))->pdo();
         $this->app = (new App($config, $this->agent($config), null, $this->memory(4096)))->create();
@@ -50,6 +57,7 @@ final class DemoAdminApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->adminCookie = $this->cookie($setup);
@@ -83,11 +91,17 @@ final class DemoAdminApiTest extends TestCase
             'mem_available_mb',
             'guests_active',
             'demo_nodes_running',
+            'guest_labs',
+            'guest_lab_bytes',
+            'guest_snapshots',
         ], array_keys($statusData));
         self::assertNull($statusData['last_sweep_at']);
         self::assertSame(4096, $statusData['mem_available_mb']);
         self::assertSame(1, $statusData['guests_active']);
         self::assertSame(1, $statusData['demo_nodes_running']);
+        self::assertSame(1, $statusData['guest_labs']);
+        self::assertGreaterThan(0, $statusData['guest_lab_bytes']);
+        self::assertSame(0, $statusData['guest_snapshots']);
 
         $sweep = $this->request('POST', '/api/v2/system/demo/sweep');
         self::assertSame(200, $sweep->getStatusCode(), (string) $sweep->getBody());
@@ -97,6 +111,8 @@ final class DemoAdminApiTest extends TestCase
             'labs_wiped',
             'labs_failed',
             'nodes_reaped',
+            'guest_files_removed',
+            'snapshots_removed',
             'mem_available_mb',
         ], array_keys($summary));
         self::assertSame(0, $summary['guests_purged']);
@@ -321,6 +337,35 @@ final class DemoAdminApiTest extends TestCase
         $path = dirname(__DIR__) . '/templates/builtin/vpcs.yaml';
         self::assertFileExists($path);
         file_put_contents($directory . '/vpcs.yaml', (string) file_get_contents($path));
+    }
+
+    public function testBackupDownloadIsAdminOnlyAndNotCached(): void
+    {
+        if (!class_exists(\ZipArchive::class)) {
+            self::markTestSkipped('the zip extension is required for backups');
+        }
+
+        $guest = $this->request('GET', '/api/v2/system/backup', [], [], $this->guestCookie, null, '');
+        self::assertSame(403, $guest->getStatusCode());
+
+        $admin = $this->request('GET', '/api/v2/system/backup');
+        self::assertSame(200, $admin->getStatusCode(), (string) $admin->getBody());
+        self::assertSame('application/zip', $admin->getHeaderLine('Content-Type'));
+        self::assertSame('no-store', $admin->getHeaderLine('Cache-Control'));
+    }
+
+    public function testAdminMaintenanceRunsAndIsNotCached(): void
+    {
+        $guest = $this->request('POST', '/api/v2/system/maintenance', [], [], $this->guestCookie, null, $this->guestCsrf);
+        self::assertSame(403, $guest->getStatusCode());
+
+        $response = $this->request('POST', '/api/v2/system/maintenance');
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+        self::assertSame('no-store', $response->getHeaderLine('Cache-Control'));
+        $data = $this->json($response)['data'];
+        self::assertIsArray($data);
+        self::assertArrayHasKey('sessions_deleted', $data);
+        self::assertArrayHasKey('trash_deleted', $data);
     }
 
     /**

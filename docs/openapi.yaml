@@ -7,7 +7,14 @@ info:
   description: |
     JSON API for TeraLab lab orchestration. State-changing requests require a
     session cookie and the `X-CSRF-Token` header returned by setup, login,
-    guest entry, or `/auth/me`. Setup, login, and guest entry are public.
+    guest entry, or `/auth/me`. Login and guest entry are public. First-run
+    setup is public only until an administrator exists and requires the
+    one-time operator token from `/etc/teralab/setup.token`.
+
+    The legacy v1 adapter (`/api/auth`, `/api/status`, `/api/folders`,
+    `/api/labs`) is registered only when `legacy_v1_enabled=1` (default `0`).
+    When enabled it is read-only: node actions and lab mutations return 405,
+    and lab/folder reads are filtered by the same per-lab access rules as v2.
   license:
     name: AGPL-3.0-or-later
     identifier: AGPL-3.0-or-later
@@ -48,7 +55,20 @@ components:
         name: { type: string }
         type: { type: string, enum: [qemu, vpcs, iol, dynamips, text, picture] }
         template: { type: string }
-        image: { type: string, description: "Portable image reference (never a path)" }
+        icon:
+          type: string
+          description: |
+            Empty or an existing basename from `html/images/icons/` (names may
+            contain spaces, e.g. `Cisco ACS.png`). Paths, `..`, `/`, `\`,
+            URLs, control characters, and unknown names are rejected with 422.
+        image:
+          type: string
+          description: |
+            For engine nodes, a portable image-store reference (never a path).
+            For `type: picture`, only an empty value, a
+            `data:image/(png|jpeg|gif|webp|svg+xml);base64,` URI whose base64
+            payload is at most 512 KiB, or an existing `/images/` static file
+            is accepted. Other values return 422.
         iso: { type: string, description: "Portable image reference (never a path)" }
         console: { type: string, enum: [telnet, vnc] }
         cpu: { type: integer, minimum: 1 }
@@ -96,23 +116,36 @@ components:
     DockerImage:
       type: object
       description: |
-        A container image already pulled on the agent host, as displayed by
-        `docker image ls`. All values are display strings; the API never parses
-        them back into a reference or a byte count.
-      required: [reference, id, size, created]
+        A container image reference already pulled on the agent host. Only the
+        reference is exposed to the browser; local image ids, sizes, timestamps,
+        and Docker host paths are never returned.
+      required: [reference]
       properties:
         reference:
           type: string
           description: "Container reference (`repository:tag`) usable as a docker node image"
-        id:
-          type: string
-          description: "Local image id, for example `sha256:…`"
-        size:
-          type: string
-          description: "Human-readable size from docker, for example `158MB`"
-        created:
-          type: string
-          description: "Creation timestamp as reported by docker"
+    ConsoleSession:
+      type: object
+      required: [kind, token, expires_in, ws_path]
+      properties:
+        kind: { type: string, enum: [telnet, vnc] }
+        token: { type: string, description: "Short-lived console capability; plan 07 moves it out of the URL query" }
+        expires_in: { type: integer }
+        ws_path: { type: string, description: "WebSocket path, currently carrying the token as a query parameter" }
+        password: { type: string, description: "Generated VNC password when kind is vnc" }
+        port: { type: integer, description: "TCP proxy port when the agent returns one" }
+    NodeStatus:
+      type: object
+      description: Agent-reported state and resource usage for one lab node.
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        state: { type: string }
+        ready: { type: boolean }
+        memory_bytes: { type: integer }
+        cpu_usage_usec: { type: integer }
+        uptime_seconds: { type: integer }
+        last_activity: { type: integer, nullable: true }
     Lab:
       type: object
       required: [id, name, revision]
@@ -138,7 +171,9 @@ components:
           items:
             type: object
             properties:
-              type: { type: string }
+              type:
+                type: string
+                description: "e.g. image_unmapped, demo_limited, or picture_blocked"
               message: { type: string }
               node: { type: string }
               network: { type: string }
@@ -155,7 +190,10 @@ components:
           description: |
             For YAML labs: image_unmapped, image_missing, network_unsupported,
             or node_unsupported. A `.unl` import by a demo guest adds
-            demo_limited when a node's RAM was clamped to the demo cap.
+            demo_limited when a node's RAM was clamped to the demo cap. A
+            legacy picture node whose image is outside the current picture
+            policy adds picture_blocked; the value is preserved and the lab
+            remains readable.
         message: { type: string }
         node: { type: string, description: "Node name, when the warning is node-specific" }
         network: { type: string, description: "Network id, when the warning is network-specific" }
@@ -277,12 +315,19 @@ components:
               description: "Generated password, returned once; absent when the request supplied one"
     UserCreateRequest:
       type: object
+      description: |
+        `role` is required by this endpoint. The underlying `users` table
+        defaults to `user` only for rows inserted without a role; setup
+        explicitly creates the first administrator.
       required: [username, role]
       properties:
         username:
           type: string
           pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$'
-        role: { type: string, enum: [admin, editor, user] }
+        role:
+          type: string
+          enum: [admin, editor, user]
+          description: "Required here even though the table default is user"
         email: { type: string, format: email, nullable: true }
         name: { type: string, maxLength: 128, nullable: true }
         password:
@@ -332,6 +377,51 @@ components:
           required: [revoked]
           properties:
             revoked: { type: integer, minimum: 0 }
+    LegacyHashCountResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [count]
+          properties:
+            count:
+              type: integer
+              minimum: 0
+              description: "Accounts that still carry an imported legacy hash; usernames are never returned"
+    LegacyHashClearResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [cleared, sessions_revoked, api_tokens_revoked]
+          properties:
+            cleared: { type: integer, minimum: 0 }
+            sessions_revoked: { type: integer, minimum: 0 }
+            api_tokens_revoked: { type: integer, minimum: 0 }
+    MaintenanceResponse:
+      type: object
+      description: |
+        Admin-triggered retention cleanup summary. Counts are the rows removed
+        by this run; `trash_deleted` counts expired lab-trash entries. Job
+        reconciliation is separate and runs at bootstrap on its own interval,
+        not through this endpoint.
+      required: [status, data]
+      properties:
+        status: { type: string, enum: [success] }
+        data:
+          type: object
+          required:
+            [sessions_deleted, login_attempts_deleted, audit_log_deleted,
+             jobs_deleted, snapshots_deleted, trash_deleted]
+          properties:
+            sessions_deleted: { type: integer, minimum: 0 }
+            login_attempts_deleted: { type: integer, minimum: 0 }
+            audit_log_deleted: { type: integer, minimum: 0 }
+            jobs_deleted: { type: integer, minimum: 0 }
+            snapshots_deleted: { type: integer, minimum: 0 }
+            trash_deleted: { type: integer, minimum: 0 }
     UserDeleteRequest:
       type: object
       properties:
@@ -388,12 +478,18 @@ paths:
                           contains no secret.
                   turnstile:
                     type: object
-                    required: [enabled, site_key]
+                    required: [enabled, site_key, test_keys]
                     properties:
                       enabled: { type: boolean }
                       site_key:
                         type: string
                         description: "Public widget key; empty when it was cleared"
+                      test_keys:
+                        type: boolean
+                        description: |
+                          True when the gate is enabled with Cloudflare's
+                          public testing keys. The UI warns; the secret is
+                          never returned.
         '503': { description: Database unavailable }
   /api/v2/version:
     get:
@@ -405,14 +501,39 @@ paths:
   /api/v2/system/host:
     get:
       tags: [system]
-      summary: Host load, disk, nodes, and engine versions
+      summary: Host load, disk, nodes, and engine versions (admin)
+      description: |
+        Admin-only. Exposes host interfaces, MAC/IP addresses, node run
+        details, and engine versions.
       responses:
         '200': { description: Host status }
+        '403': { description: Administrator role required }
   /api/v2/setup:
     post:
       tags: [auth]
       summary: Create the initial administrator (one time)
+      description: |
+        Public only while no administrator exists; requires the one-time
+        operator token from `/etc/teralab/setup.token` (`0640 root:teralab`).
+        Send it in `X-TeraLab-Setup-Token` or as the JSON field `setup_token`;
+        the header wins. The token is compared constant-time and is never
+        stored, logged, or returned by the API.
+
+        Gate order: 409 when an administrator already exists; then the
+        per-address and global setup budgets (429 when exhausted); then the
+        token (403 when the file is missing/unreadable or the token is wrong,
+        401 when no token was supplied); then input validation (422). The
+        transactional re-check also refuses a previously completed setup
+        (`setup_complete` marker) with 409. A successful call returns the
+        login session shape, writes `auth.setup`, and attempts to remove the
+        token file.
       security: []
+      parameters:
+        - name: X-TeraLab-Setup-Token
+          in: header
+          required: false
+          schema: { type: string }
+          description: "One-time operator token; takes precedence over the body field"
       requestBody:
         required: true
         content:
@@ -421,12 +542,26 @@ paths:
               type: object
               required: [username, password]
               properties:
-                username: { type: string }
+                username:
+                  type: string
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$'
                 password: { type: string }
-                email: { type: string }
+                email:
+                  type: string
+                  format: email
+                  nullable: true
+                  maxLength: 254
+                  description: "Optional; trimmed, no control characters"
+                setup_token:
+                  type: string
+                  description: "Fallback for clients that cannot set the header; the header wins"
       responses:
-        '201': { description: Administrator created }
-        '409': { description: Setup already completed }
+        '201': { description: "Administrator created; session cookie, user, CSRF token, and lifetime" }
+        '401': { description: "The setup token is required" }
+        '403': { description: "Setup is not available or the token is wrong" }
+        '409': { description: "Setup has already been completed" }
+        '422': { description: "Invalid username, password, or email" }
+        '429': { description: "Setup attempt budget exhausted (10 per 15 minutes per address, 50 per 15 minutes globally)" }
   /api/v2/auth/login:
     post:
       tags: [auth]
@@ -532,7 +667,11 @@ paths:
   /api/v2/auth/password:
     post:
       tags: [auth]
-      summary: Change the current password and revoke other sessions
+      summary: Change the current password and revoke other credentials
+      description: |
+        Revokes every other session of the caller and every API token it owns;
+        the calling session is kept. The change also clears any imported legacy
+        hash for the account.
       requestBody:
         required: true
         content:
@@ -545,7 +684,9 @@ paths:
                 new_password: { type: string }
       responses:
         '200': { description: Password changed }
+        '401': { description: Authentication required }
         '403': { description: Current password incorrect }
+        '422': { description: "Missing fields or password does not meet the policy" }
   /api/v2/users:
     get:
       tags: [users]
@@ -641,7 +782,8 @@ paths:
       description: |
         Administrator only, with CSRF. Omit `password` to generate one. A
         generated password is returned once in `data.password`; an admin-typed
-        password is never echoed. All sessions of the target user are revoked.
+        password is never echoed. All sessions **and every API token** of the
+        target user are revoked, and any imported legacy hash is cleared.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -675,6 +817,39 @@ paths:
         '401': { description: Authentication required }
         '403': { description: Administrator role required }
         '404': { description: User not found }
+  /api/v2/users/legacy-hashes:
+    get:
+      tags: [users]
+      summary: Count accounts with an imported legacy password hash (admin)
+      description: |
+        Administrator only; read-only, so no CSRF header is needed. Returns
+        only a count; usernames are never disclosed. A successful login before
+        the legacy cutoff rehashes an imported hash with Argon2id.
+      responses:
+        '200':
+          description: Legacy hash count
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegacyHashCountResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+  /api/v2/users/legacy-hashes/clear:
+    post:
+      tags: [users]
+      summary: Clear every imported legacy hash (admin)
+      description: |
+        Administrator only, with CSRF. Clears every legacy hash in one
+        transaction and removes those accounts' sessions and API tokens; the
+        accounts then require an administrator password reset. Writes the
+        `user.legacy_hashes.clear` audit entry.
+      responses:
+        '200':
+          description: Cleared
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegacyHashClearResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
   /api/v2/labs:
     get:
       tags: [labs]
@@ -712,7 +887,7 @@ paths:
                 networks: { type: array, items: { type: object } }
       responses:
         '201': { description: Created }
-        '422': { description: "Validation error, link invariant, or guest demo limit (node count, template, or RAM)" }
+        '422': { description: "Validation error, link invariant, or guest demo limit (lab count, total lab bytes, node count, template, or RAM)" }
   /api/v2/labs/import:
     post:
       tags: [labs]
@@ -773,7 +948,7 @@ paths:
                         items: { $ref: '#/components/schemas/LabYamlWarning' }
         '403': { description: Editor role or CSRF required }
         '413': { description: Request body too large }
-        '422': { description: "Empty/oversized file, YAML compile error, compiled .unl over 10 MB, or a guest demo node-count/template violation; ambiguous XML+YAML failures include both messages" }
+        '422': { description: "Empty/oversized file, YAML compile error, compiled .unl over 10 MB, or a guest demo violation (lab count, lab bytes, node count, or template); ambiguous XML+YAML failures include both messages" }
   /api/v2/labs/validate:
     post:
       tags: [labs]
@@ -838,7 +1013,7 @@ paths:
       responses:
         '200': { description: Saved }
         '409': { description: Revision conflict or running-lab lock }
-        '422': { description: "Validation error, link invariant, or guest demo limit when nodes are sent" }
+        '422': { description: "Validation error, link invariant, or a guest demo limit (lab bytes, node count, template, or RAM) when nodes are sent" }
     delete:
       tags: [labs]
       summary: Move a stopped lab to trash
@@ -884,7 +1059,7 @@ paths:
         '403': { description: "Editor role, CSRF, or lab access denied" }
         '404': { description: Lab not found }
         '409': { description: "A node is running or the supplied revision is stale" }
-        '422': { description: "Missing/non-string yaml, bad filename/revision type, YAML compile error, compiled .unl over 10 MB, or a guest demo limit" }
+        '422': { description: "Missing/non-string yaml, bad filename/revision type, YAML compile error, compiled .unl over 10 MB, or a guest demo limit (lab bytes, node count, template, or RAM)" }
   /api/v2/labs/{id}/export:
     get:
       tags: [labs]
@@ -943,7 +1118,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '201': { description: Duplicated }
-        '422': { description: "Guest demo limit on the source lab's nodes" }
+        '422': { description: "Guest demo limit on the source lab's nodes or total lab bytes, or the per-guest lab-count cap" }
   /api/v2/labs/{id}/nodes:
     get:
       tags: [nodes]
@@ -994,62 +1169,6 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Restored }
-  /api/v2/nodes/start:
-    post:
-      tags: [nodes]
-      summary: Start an agent node by id
-      description: |
-        Raw agent route. A demo guest is refused before the body is parsed;
-        guests start nodes through
-        `POST /api/v2/labs/{id}/nodes/{node}/start` instead, which re-checks
-        the demo caps. `stop`, `wipe`, `status`, and `console` are unchanged.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [id]
-              properties:
-                id: { type: string }
-      responses:
-        '200': { description: Running }
-        '403': { description: "Editor role required, or a demo guest (use the lab node-start route)" }
-  /api/v2/nodes/stop:
-    post:
-      tags: [nodes]
-      summary: Stop an agent node by id
-      responses:
-        '200': { description: Stopped }
-  /api/v2/nodes/wipe:
-    post:
-      tags: [nodes]
-      summary: Wipe an agent node by id
-      responses:
-        '200': { description: Wiped }
-  /api/v2/nodes/status:
-    get:
-      tags: [nodes]
-      summary: Agent node state and resource usage
-      parameters:
-        - { name: id, in: query, required: true, schema: { type: string } }
-      responses:
-        '200': { description: Node status }
-  /api/v2/nodes/console:
-    post:
-      tags: [nodes]
-      summary: Issue a short-lived console token
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [node_id]
-              properties:
-                node_id: { type: string }
-      responses:
-        '200': { description: Console kind; token; and WebSocket path }
   /api/v2/templates:
     get:
       tags: [templates]
@@ -1059,7 +1178,13 @@ paths:
   /api/v2/templates/import:
     post:
       tags: [templates]
-      summary: Import a YAML template
+      summary: Import a YAML template (admin)
+      description: |
+        Administrator only. The uploaded YAML must declare `schema: 1` and a
+        matching `id`. `icon` must be empty or an existing basename in
+        `html/images/icons/` (for example `Router.png` or `Cisco ACS.png`);
+        paths, `..`, URLs, control characters, and unknown names return 422.
+        A built-in template id is reserved and returns 409.
       requestBody:
         required: true
         content:
@@ -1071,7 +1196,9 @@ paths:
                 file: { type: string, format: binary }
       responses:
         '201': { description: Imported }
-        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '409': { description: "Built-in template IDs are reserved." }
+        '422': { description: "Invalid YAML, template id, or icon" }
   /api/v2/templates/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -1082,16 +1209,37 @@ paths:
         '200': { description: Template }
     put:
       tags: [templates]
-      summary: Create or update a custom template
+      summary: Create or update a custom template (admin)
+      description: |
+        Administrator only. The body is `{"yaml": "..."}`. The YAML must
+        declare `schema: 1` and an `id` that matches the route. `icon` must be
+        empty or an existing basename in `html/images/icons/`; paths, `..`,
+        URLs, control characters, and unknown names return 422. Built-in ids
+        are reserved and return 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [yaml]
+              properties:
+                yaml: { type: string, description: "Template YAML document" }
       responses:
         '200': { description: Saved }
-        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '409': { description: "Built-in template IDs are reserved." }
+        '422': { description: "Invalid YAML, template id, or icon" }
     delete:
       tags: [templates]
-      summary: Delete a custom template
+      summary: Delete a custom template (admin)
+      description: |
+        Administrator only. Only a custom template can be removed; a built-in
+        id returns 409 and is never deleted.
       responses:
         '200': { description: Deleted }
-        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '409': { description: "Built-in template IDs are reserved." }
   /api/v2/templates/{id}/export:
     get:
       tags: [templates]
@@ -1103,22 +1251,27 @@ paths:
   /api/v2/templates/{id}/duplicate:
     post:
       tags: [templates]
-      summary: Duplicate a template
+      summary: Duplicate a template (admin)
+      description: |
+        Administrator only. Duplicating a built-in template is allowed and
+        creates a non-reserved `<id>-copy` custom template; it never
+        overwrites the built-in.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Duplicated }
-        '403': { description: "Editor role or CSRF required, or a demo guest (template changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '404': { description: Template not found }
   /api/v2/docker/images:
     get:
       tags: [images]
-      summary: List locally pulled Docker images
+      summary: List locally pulled Docker image references (admin)
       description: |
-        Read-only suggestions for the node Inspector. Docker images already
-        present on the agent host are returned with their reference, local id,
-        display size and creation time; dangling images are skipped and
-        duplicate references are merged. The API never pulls, inspects or
-        deletes a container image, and the image store is not involved.
+        Admin-only, read-only suggestions for the node Inspector. Only
+        container references are returned; local ids, display sizes, creation
+        times, and Docker host paths are never exposed. The API never pulls,
+        inspects or deletes a container image, and the image store is not
+        involved.
       responses:
         '200':
           description: Locally pulled container images, sorted by reference
@@ -1131,6 +1284,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/DockerImage' }
         '401': { description: Authentication required }
+        '403': { description: Administrator role required }
         '502': { description: "Docker is unavailable, the agent cannot be reached, or the agent returned an invalid image list" }
   /api/v2/images:
     get:
@@ -1149,7 +1303,11 @@ paths:
                     items: { $ref: '#/components/schemas/Image' }
     post:
       tags: [images]
-      summary: Upload an image with kind and optional name
+      summary: Upload an image with kind and optional name (admin)
+      description: |
+        Administrator only. The optional `name` is a display name: it is
+        trimmed, limited to 128 bytes, and must not contain control characters
+        (422 otherwise).
       requestBody:
         required: true
         content:
@@ -1159,11 +1317,11 @@ paths:
               required: [kind, file]
               properties:
                 kind: { type: string, enum: [qemu, iso, iol, dynamips] }
-                name: { type: string }
+                name: { type: string, description: "Display name, max 128 bytes, no control characters" }
                 file: { type: string, format: binary }
       responses:
         '201': { description: Stored }
-        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
         '422': { description: Validation error }
   /api/v2/images/import:
     post:
@@ -1175,9 +1333,9 @@ paths:
         inside the image store for each selected file and registers it with
         `external = 1`; nothing is copied and the source tree is never
         modified. Licence files (`iourc`, `licence`, `license`) are never
-        registered. A demo guest is refused first with the demo policy
-        message; the admin role is enforced in the controller, so non-guests
-        get the same admin-only result as before.
+        registered. The route requires the administrator role; every
+        non-admin, including a demo guest, receives 403
+        `Insufficient permissions.`
       requestBody:
         required: true
         content:
@@ -1204,7 +1362,7 @@ paths:
       responses:
         '200': { description: Dry-run entries or import results }
         '401': { description: Authentication required }
-        '403': { description: "Administrator role required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role required; editors, users, and demo guests are read-only" }
         '422': { description: Invalid root or request body }
   /api/v2/images/{id}:
     parameters:
@@ -1223,48 +1381,59 @@ paths:
                   data: { $ref: '#/components/schemas/Image' }
     patch:
       tags: [images]
-      summary: Rename an image (name and/or portable reference)
+      summary: Rename an image (name and/or portable reference) (admin)
+      description: |
+        Administrator only. The display name is trimmed, limited to 128 bytes,
+        and must not contain control characters (422 otherwise).
       responses:
         '200': { description: Renamed }
-        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
         '409': { description: Reference already in use }
+        '422': { description: Invalid display name or portable reference }
     delete:
       tags: [images]
-      summary: Delete an unreferenced image
+      summary: Delete an unreferenced image (admin)
       responses:
         '200': { description: Deleted }
-        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '409': { description: "Image is referenced by a lab or a running node" }
   /api/v2/images/{id}/template:
     put:
       tags: [images]
-      summary: Map an image to a template
+      summary: Map an image to a template (admin)
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Mapped }
-        '403': { description: "Editor role or CSRF required, or a demo guest (image changes are disabled)" }
+        '403': { description: "Administrator role or CSRF required; editors, users, and demo guests are read-only" }
+        '404': { description: Image or template not found }
   /api/v2/jobs:
     get:
       tags: [jobs]
       summary: List recent jobs
+      description: Admins see every job; other users see only jobs they created.
       responses:
         '200': { description: Jobs }
   /api/v2/jobs/{id}:
     get:
       tags: [jobs]
       summary: Job state and progress
+      description: Admins may read any job; other users only their own.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Job }
+        '403': { description: Job belongs to another user }
   /api/v2/jobs/{id}/cancel:
     post:
       tags: [jobs]
       summary: Cancel a queued job
+      description: Admins may cancel any job; other users only their own.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Cancelled }
+        '403': { description: Job belongs to another user or CSRF is missing }
         '409': { description: Job cannot be cancelled safely }
   /api/v2/labs/{id}/snapshots:
     parameters:
@@ -1277,8 +1446,14 @@ paths:
     post:
       tags: [labs]
       summary: Create a topology/config snapshot
+      description: |
+        Enforces `demo_max_snapshots_per_lab` and the per-lab snapshot byte
+        budget (`demo_max_lab_bytes_per_guest` when creating the snapshot).
+        These caps apply to every account. Exceeding either answers 422 before
+        the snapshot is written.
       responses:
         '201': { description: Snapshot created }
+        '422': { description: "Missing name, snapshot count cap, or snapshot byte budget" }
   /api/v2/labs/{id}/snapshots/{snapshot}/restore:
     post:
       tags: [labs]
@@ -1330,11 +1505,63 @@ paths:
     post:
       tags: [nodes]
       summary: Wipe one lab node
+      description: |
+        Requires the effective `edit` role on the canonical lab and
+        `X-CSRF-Token`. The agent node id is derived from the authorized
+        lab+node pair.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: node, in: path, required: true, schema: { type: string } }
       responses:
         '200': { description: Wiped }
+        '403': { description: "Lab edit role or CSRF required" }
+  /api/v2/labs/{id}/nodes/{node}/console:
+    post:
+      tags: [nodes]
+      summary: Issue a short-lived console token for one lab node
+      description: |
+        Requires the effective `edit` role on the canonical lab and
+        `X-CSRF-Token`. The client sends no agent node id: the server resolves
+        the node inside the authorized lab and derives the agent id.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: node, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Console kind, token, and WebSocket path
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ConsoleSession' }
+        '403': { description: "Lab edit role or CSRF required" }
+        '404': { description: Lab or node not found }
+        '502': { description: The agent did not return a console token }
+  /api/v2/labs/{id}/nodes/{node}/status:
+    get:
+      tags: [nodes]
+      summary: Agent state and resource usage for one lab node
+      description: |
+        Requires the effective `read` role on the canonical lab. The agent
+        node id is derived from the authorized lab+node pair. Prefer
+        `GET /api/v2/labs/{id}/nodes` when the whole lab is needed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: node, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Node status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/NodeStatus' }
+        '403': { description: "Lab read role required" }
+        '404': { description: Lab or node not found }
   /api/v2/system/status:
     get:
       tags: [system]
@@ -1353,13 +1580,116 @@ paths:
     get:
       tags: [system]
       summary: Read runtime settings
+      description: |
+        Any authenticated user. Returns the built-in defaults overlaid by the
+        stored values, including `turnstile_hostname` (lower-cased; empty
+        disables the siteverify hostname check).
       responses:
         '200': { description: Settings }
     put:
       tags: [system]
       summary: Update runtime settings (admin)
+      description: |
+        Administrator only, with CSRF. Accepts any subset of the settings
+        keys, including `turnstile_hostname` (lower-cased hostname, or `""` to
+        disable the check), the guest caps, the retention windows, and the
+        backup/restore limits; unknown keys are ignored.
+
+        Production guard: in the `production` environment, enabling
+        `turnstile_enabled` with an empty or Cloudflare-test secret, or an
+        empty or Cloudflare-test site key, is rejected with 422. Set both real
+        keys first. Non-production environments and
+        `TERALAB_ALLOW_TURNSTILE_TEST_KEYS=1` may use the public test keys for
+        local testing. `GET /api/v2/health` reports `turnstile.test_keys`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              properties:
+                turnstile_hostname:
+                  type: string
+                  description: "Optional siteverify hostname, lower-cased; empty disables the check"
+                demo_max_labs_per_guest:
+                  type: integer
+                  default: 3
+                  minimum: 1
+                  maximum: 20
+                  description: "Lab files per guest account"
+                demo_max_lab_bytes_per_guest:
+                  type: integer
+                  default: 20971520
+                  minimum: 1048576
+                  maximum: 268435456
+                  description: "Total compiled `.unl` bytes per guest; also the per-lab snapshot byte budget"
+                demo_max_snapshots_per_lab:
+                  type: integer
+                  default: 3
+                  minimum: 1
+                  maximum: 20
+                  description: "Snapshots kept per lab"
+                demo_max_tokens_per_user:
+                  type: integer
+                  default: 5
+                  minimum: 1
+                  maximum: 50
+                  description: "API tokens per non-guest account; guests are fixed at 1"
+                retention_login_attempts_days:
+                  type: integer
+                  default: 30
+                  minimum: 1
+                  maximum: 3650
+                retention_audit_log_days:
+                  type: integer
+                  default: 90
+                  minimum: 1
+                  maximum: 3650
+                retention_jobs_days:
+                  type: integer
+                  default: 30
+                  minimum: 1
+                  maximum: 3650
+                retention_jobs_max_rows:
+                  type: integer
+                  default: 1000
+                  minimum: 100
+                  maximum: 1000000
+                  description: "Terminal jobs kept, newest first"
+                maintenance_interval_seconds:
+                  type: integer
+                  default: 3600
+                  minimum: 60
+                  maximum: 86400
+                  description: "Seconds between lazy retention runs on the demo sweep"
+                backup_max_archive_bytes:
+                  type: integer
+                  default: 2147483648
+                  minimum: 1048576
+                  maximum: 10737418240
+                  description: "Uploaded restore archive size limit"
+                backup_max_entries:
+                  type: integer
+                  default: 10000
+                  minimum: 1
+                  maximum: 1000000
+                backup_max_uncompressed_bytes:
+                  type: integer
+                  default: 4294967296
+                  minimum: 1048576
+                  maximum: 42949672960
+                backup_max_database_bytes:
+                  type: integer
+                  default: 1073741824
+                  minimum: 1048576
+                  maximum: 10737418240
+                  description: "`database.sdb` entry size limit"
       responses:
         '200': { description: Updated }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '422': { description: "Invalid value, including the production Turnstile test-key guard" }
   /api/v2/system/demo/status:
     get:
       tags: [system]
@@ -1381,7 +1711,10 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [last_sweep_at, mem_available_mb, guests_active, demo_nodes_running]
+                    required:
+                      [last_sweep_at, mem_available_mb, guests_active,
+                       demo_nodes_running, guest_labs, guest_lab_bytes,
+                       guest_snapshots]
                     properties:
                       last_sweep_at:
                         type: integer
@@ -1399,6 +1732,18 @@ paths:
                         type: integer
                         minimum: 0
                         description: "Nodes currently running in guest-owned labs"
+                      guest_labs:
+                        type: integer
+                        minimum: 0
+                        description: "Guest-owned `.unl` files (trash excluded)"
+                      guest_lab_bytes:
+                        type: integer
+                        minimum: 0
+                        description: "Total on-disk size of guest-owned lab files"
+                      guest_snapshots:
+                        type: integer
+                        minimum: 0
+                        description: "Snapshot rows belonging to guest-owned labs"
         '403': { description: Administrator role required }
   /api/v2/system/demo/sweep:
     post:
@@ -1427,7 +1772,9 @@ paths:
                   status: { type: string, enum: [success] }
                   data:
                     type: object
-                    required: [guests_purged, labs_wiped, labs_failed, nodes_reaped, mem_available_mb]
+                    required:
+                      [guests_purged, labs_wiped, labs_failed, nodes_reaped,
+                       guest_files_removed, snapshots_removed, mem_available_mb]
                     properties:
                       guests_purged: { type: integer, minimum: 0 }
                       labs_wiped:
@@ -1442,21 +1789,77 @@ paths:
                         type: integer
                         minimum: 0
                         description: "Guest nodes stopped by the memory reaper"
+                      guest_files_removed:
+                        type: integer
+                        minimum: 0
+                        description: "Deleted guest `.unl` files plus trash entries"
+                      snapshots_removed:
+                        type: integer
+                        minimum: 0
+                        description: "Deleted snapshot rows"
                       mem_available_mb:
                         type: integer
                         nullable: true
                         description: "Host MemAvailable after the sweep; null when it cannot be read"
         '403': { description: Administrator role or invalid CSRF token }
+  /api/v2/system/maintenance:
+    post:
+      tags: [system]
+      summary: Run retention cleanup now (admin)
+      description: |
+        Administrator only, with CSRF. Runs the retention cleanup immediately:
+        expired/idle sessions, login attempts and audit rows past their
+        retention windows, terminal jobs past `retention_jobs_days` or beyond
+        `retention_jobs_max_rows`, snapshots beyond
+        `demo_max_snapshots_per_lab` per lab, and expired lab-trash entries.
+        Active `queued`/`running` jobs are never removed. Job reconciliation is
+        a separate bootstrap step and is not part of this call. The response is
+        `Cache-Control: no-store`; the action is audited as
+        `system.maintenance`.
+      responses:
+        '200':
+          description: Retention cleanup summary
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MaintenanceResponse' }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role or invalid CSRF token }
   /api/v2/system/backup:
     get:
       tags: [system]
       summary: Download a backup archive (admin)
+      description: |
+        Administrator only. Returns a zip containing `database.sdb`,
+        `labs/*.unl`, `templates/*.yaml`, `settings.json`, and `images.json`.
+        The response is `Cache-Control: no-store`; the archive contains
+        settings and image metadata, so it must not be cached.
       responses:
-        '200': { description: Zip backup }
+        '200':
+          description: Zip backup
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role required }
+        '500': { description: "Zip extension unavailable or the archive cannot be read" }
   /api/v2/system/restore:
     post:
       tags: [system]
       summary: Restore labs, templates, settings, and image metadata (admin)
+      description: |
+        Administrator only, with CSRF. The response is `Cache-Control:
+        no-store`. Before extracting anything, the uploaded zip is validated
+        against `backup_max_archive_bytes`, `backup_max_entries`,
+        `backup_max_uncompressed_bytes`, and `backup_max_database_bytes`; an
+        entry above its cap answers 413, and an unsafe path or nested archive
+        answers 422. A rejected archive writes no labs, templates, settings, or
+        staged database.
       requestBody:
         required: true
         content:
@@ -1467,7 +1870,16 @@ paths:
               properties:
                 file: { type: string, format: binary }
       responses:
-        '200': { description: Restore result }
+        '200':
+          description: Restore result
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+        '400': { description: The upload did not complete }
+        '401': { description: Authentication required }
+        '403': { description: Administrator role or invalid CSRF token }
+        '413': { description: "Archive, entry count, uncompressed size, or database entry exceeds its configured limit" }
+        '422': { description: "Invalid zip, unsafe path, nested archive, or missing file field" }
   /api/v2/system/tokens:
     get:
       tags: [system]
@@ -1477,8 +1889,18 @@ paths:
     post:
       tags: [system]
       summary: Create an API token
+      description: |
+        The caller may hold at most `demo_max_tokens_per_user` tokens (default
+        5); a demo guest is fixed at one regardless of the setting. Exceeding
+        the cap answers 422. Minting is also limited to 10 attempts per user
+        and client address in 15 minutes; the next attempt answers 429
+        `Too many API token requests. Try again later.`
       responses:
         '201': { description: Token created; plaintext returned once }
+        '401': { description: Authentication required }
+        '403': { description: Invalid CSRF token }
+        '422': { description: "Missing/invalid name or scopes, or the per-user token cap" }
+        '429': { description: "Token-creation budget exhausted (10 per 15 minutes per user and address)" }
   /api/v2/system/tokens/{id}:
     delete:
       tags: [system]

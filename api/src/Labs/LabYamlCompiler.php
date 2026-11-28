@@ -9,6 +9,8 @@ namespace TeraLab\Api\Labs;
 use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Policy\IconPolicy;
+use TeraLab\Api\Policy\PicturePolicy;
 use TeraLab\Api\Templates\TemplateRepository;
 
 /**
@@ -23,10 +25,14 @@ use TeraLab\Api\Templates\TemplateRepository;
 final class LabYamlCompiler
 {
     public const MAX_YAML_BYTES = 10485760;
-    public const MAX_CONFIG_BYTES = 1048576;
-    public const MAX_NODES = 64;
-    public const MAX_NETWORKS = 64;
-    public const MAX_PORTS = 16;
+    public const MAX_CONFIG_BYTES = LabLimits::MAX_CONFIG_BYTES;
+    public const MAX_NODES = LabLimits::MAX_NODES;
+    public const MAX_NETWORKS = LabLimits::MAX_NETWORKS;
+    public const MAX_PORTS = LabLimits::MAX_INTERFACES;
+
+    /** Bounds for anchors/aliases and nesting in authored YAML. */
+    public const MAX_YAML_DEPTH = 32;
+    public const MAX_YAML_ALIASES = 128;
 
     private const TOP_LEVEL = [
         'schema', 'name', 'author', 'description', 'body', 'tags',
@@ -51,8 +57,15 @@ final class LabYamlCompiler
     public function __construct(
         private readonly TemplateRepository $templates,
         private readonly LabYamlLayout $layout = new LabYamlLayout(),
+        ?IconPolicy $icons = null,
+        ?PicturePolicy $pictures = null,
     ) {
+        $this->icons = $icons ?? new IconPolicy($templates->root());
+        $this->pictures = $pictures ?? new PicturePolicy($templates->root());
     }
+
+    private readonly IconPolicy $icons;
+    private readonly PicturePolicy $pictures;
 
     /**
      * @return array{
@@ -81,8 +94,13 @@ final class LabYamlCompiler
 
         $name = LabService::labName($document['name'] ?? null);
         $author = $this->optionalText($document, 'author', 'author');
-        $description = $this->optionalText($document, 'description', 'description') ?? '';
-        $body = $this->optionalText($document, 'body', 'body') ?? '';
+        $description = $this->boundedText(
+            $document,
+            'description',
+            'description',
+            LabLimits::MAX_DESCRIPTION_BYTES,
+        ) ?? '';
+        $body = $this->boundedText($document, 'body', 'body', LabLimits::MAX_BODY_BYTES) ?? '';
         $tags = $this->tagList($document['tags'] ?? null);
 
         // Every one of these values ends up in an XML attribute or text node.
@@ -172,7 +190,7 @@ final class LabYamlCompiler
         // The full source is stored in the extensions marker, so it must be
         // representable in XML even when a control character sits in a comment.
         // Field-specific checks above already name the offending field.
-        if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $yaml) === 1
+        if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $yaml) === 1
             || str_contains($yaml, "\u{FFFE}")
             || str_contains($yaml, "\u{FFFF}")
         ) {
@@ -215,7 +233,7 @@ final class LabYamlCompiler
     private function parse(string $yaml): array
     {
         try {
-            $parsed = Yaml::parse($yaml);
+            $parsed = Yaml::parse($yaml, 0, self::MAX_YAML_DEPTH, self::MAX_YAML_ALIASES);
         } catch (ParseException $exception) {
             $line = $exception->getParsedLine();
             $prefix = $line > 0 ? 'Invalid YAML at line ' . $line . ': ' : 'Invalid YAML: ';
@@ -242,6 +260,22 @@ final class LabYamlCompiler
         }
 
         return $document[$key];
+    }
+
+    /**
+     * @param array<string, mixed> $document
+     */
+    private function boundedText(array $document, string $key, string $label, int $maxBytes): ?string
+    {
+        $value = $this->optionalText($document, $key, $label);
+        if ($value !== null && strlen($value) > $maxBytes) {
+            throw new HttpException(
+                422,
+                ucfirst($label) . ' is larger than ' . intdiv($maxBytes, 1024) . ' KiB.',
+            );
+        }
+
+        return $value;
     }
 
     /**
@@ -404,9 +438,10 @@ final class LabYamlCompiler
             if (!is_string($body['icon'])) {
                 throw new HttpException(422, $context . ': icon must be text.');
             }
-            if (trim($body['icon']) !== '') {
-                $this->assertXmlSafe(trim($body['icon']), 'Network "' . $key . '" icon');
-                $attributes['icon'] = trim($body['icon']);
+            $icon = $this->icons->validate($body['icon'], $context . ' icon');
+            if ($icon !== '') {
+                $this->assertXmlSafe($icon, $context . ' icon');
+                $attributes['icon'] = $icon;
             }
         }
 
@@ -571,6 +606,10 @@ final class LabYamlCompiler
         $this->assertXmlSafe($image, $context . ': image');
         $this->assertXmlSafe($console, $context . ': console');
         $this->assertXmlSafe($icon, $context . ': icon');
+        $icon = $this->icons->validate($icon, $context . ': icon');
+        if ($kind === 'picture') {
+            $image = $this->pictures->validate($image, $context . ': image');
+        }
 
         $config = '';
         if (array_key_exists('config', $body) && $body['config'] !== null) {
@@ -579,10 +618,16 @@ final class LabYamlCompiler
             }
             $config = $body['config'];
             if (strlen($config) > self::MAX_CONFIG_BYTES) {
-                throw new HttpException(422, $context . ': config is larger than 1 MB.');
+                throw new HttpException(
+                    422,
+                    $context . ': config is larger than ' . intdiv(self::MAX_CONFIG_BYTES, 1024) . ' KiB.',
+                );
             }
             if ($config !== '' && preg_match('//u', $config) !== 1) {
                 throw new HttpException(422, $context . ': config must be UTF-8 text.');
+            }
+            if ($config !== '') {
+                $this->assertXmlSafe($config, $context . ': config');
             }
         }
 
@@ -979,7 +1024,7 @@ final class LabYamlCompiler
         if (preg_match('//u', $value) !== 1) {
             throw new HttpException(422, $context . ' must be valid UTF-8.');
         }
-        if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $value) === 1) {
+        if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $value) === 1) {
             throw new HttpException(
                 422,
                 $context . ' contains control characters that cannot be stored in the lab file.'
@@ -997,7 +1042,7 @@ final class LabYamlCompiler
     {
         return trim($key) !== ''
             && strlen($key) <= 64
-            && preg_match('/[\x00-\x1f]/', $key) !== 1
+            && preg_match('/[\x00-\x1f\x7f]/', $key) !== 1
             && $key === trim($key);
     }
 }

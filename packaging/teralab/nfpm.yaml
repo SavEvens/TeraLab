@@ -22,6 +22,7 @@ description: >-
   QEMU, IOL, Dynamips and VPCS nodes through an unprivileged agent, with a
   SQLite-backed PHP API and a Vue user interface served by Apache and PHP-FPM.
 depends:
+  - acl
   - apache2
   - php8.4-fpm
   - php8.4-cli
@@ -67,6 +68,31 @@ contents:
       owner: root
       group: root
       mode: 0644
+  - src: dist/stage/etc/php/8.4/fpm/pool.d/teralab.conf
+    dst: /etc/php/8.4/fpm/pool.d/teralab.conf
+    type: config
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - dst: /usr/local/libexec/teralab
+    type: dir
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - src: dist/stage/usr/local/libexec/teralab/teralab-firewall
+    dst: /usr/local/libexec/teralab/teralab-firewall
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - src: dist/stage/usr/local/libexec/teralab/fpm-socket-acl
+    dst: /usr/local/libexec/teralab/fpm-socket-acl
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
   - src: dist/stage/etc/systemd/system/teralab-agent.service
     dst: /etc/systemd/system/teralab-agent.service
     type: config

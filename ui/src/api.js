@@ -42,8 +42,8 @@ export function setCsrf(token) {
   csrfToken = token || ''
 }
 
-async function request(path, { method = 'GET', body, raw = false } = {}) {
-  const headers = { Accept: 'application/json' }
+async function request(path, { method = 'GET', body, raw = false, headers: extraHeaders } = {}) {
+  const headers = { Accept: 'application/json', ...(extraHeaders || {}) }
   if (csrfToken) headers['X-CSRF-Token'] = csrfToken
   let payload = body
   if (body !== undefined && !(body instanceof FormData)) {
@@ -80,7 +80,14 @@ async function request(path, { method = 'GET', body, raw = false } = {}) {
 export const api = {
   health: () => request('/health'),
   version: () => request('/version'),
-  setup: (payload) => request('/setup', { method: 'POST', body: payload }),
+  // The operator token is sent in the header the API treats as authoritative
+  // and repeated in the JSON body so either accepted contract works. It is
+  // never persisted by the client.
+  setup: (payload, setupToken = '') => request('/setup', {
+    method: 'POST',
+    body: setupToken ? { ...payload, setup_token: setupToken } : payload,
+    headers: setupToken ? { 'X-TeraLab-Setup-Token': setupToken } : {}
+  }),
   login: (payload) => request('/auth/login', { method: 'POST', body: payload }),
   guest: (payload) => request('/auth/guest', { method: 'POST', body: payload }),
   logout: () => request('/auth/logout', { method: 'POST' }),
@@ -114,6 +121,7 @@ export const api = {
   labNodeStart: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/start`, { method: 'POST' }),
   labNodeStop: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/stop`, { method: 'POST' }),
   labNodeWipe: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/wipe`, { method: 'POST' }),
+  labNodeConsole: (id, node) => request(`/labs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/console`, { method: 'POST' }),
   snapshots: (id) => request(`/labs/${encodeURIComponent(id)}/snapshots`),
   createSnapshot: (id, name) => request(`/labs/${encodeURIComponent(id)}/snapshots`, { method: 'POST', body: { name } }),
   restoreSnapshot: (id, snapshot) => request(`/labs/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(snapshot)}/restore`, { method: 'POST' }),
@@ -123,6 +131,7 @@ export const api = {
   saveSettings: (payload) => request('/system/settings', { method: 'PUT', body: payload }),
   demoStatus: () => request('/system/demo/status'),
   demoSweep: () => request('/system/demo/sweep', { method: 'POST' }),
+  maintenance: () => request('/system/maintenance', { method: 'POST' }),
   logs: (source) => request(`/system/logs?source=${encodeURIComponent(source)}`),
   tokens: () => request('/system/tokens'),
   createToken: (payload) => request('/system/tokens', { method: 'POST', body: payload }),
@@ -155,15 +164,44 @@ export const api = {
   setImageReference: (id, reference) => request(`/images/${encodeURIComponent(id)}`, { method: 'PATCH', body: { reference } }),
   mapImageTemplate: (id, template) => request(`/images/${encodeURIComponent(id)}/template`, { method: 'PUT', body: { template } }),
   engines: () => request('/engines'),
-  job: (id) => request(`/jobs/${encodeURIComponent(id)}`),
-  console: (nodeId) => request('/nodes/console', { method: 'POST', body: { node_id: nodeId } }),
-  nodeStart: (id) => request('/nodes/start', { method: 'POST', body: { id } }),
-  nodeStop: (id) => request('/nodes/stop', { method: 'POST', body: { id } }),
-  nodeWipe: (id) => request('/nodes/wipe', { method: 'POST', body: { id } })
+  job: (id) => request(`/jobs/${encodeURIComponent(id)}`)
 }
 
 export function wsUrl(path) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   if (/^wss?:\/\//.test(path)) return path
   return `${protocol}//${window.location.host}${path}`
+}
+
+// Console capabilities travel in the WebSocket subprotocol handshake, never in
+// the URL: query strings are written to Apache and agent access logs, while
+// the Sec-WebSocket-Protocol header is not. The agent accepts
+// `teralab.console.<token>` and rejects a query token.
+export const CONSOLE_PROTOCOL_PREFIX = 'teralab.console.'
+// A WebSocket subprotocol must be an HTTP token (RFC 6455 / RFC 7230). The
+// agent issues hex capabilities; anything else is refused here so a malformed
+// value cannot throw inside the WebSocket constructor.
+const CONSOLE_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
+const CONSOLE_TOKEN_QUERY = /^(?:access_?|auth_?)?token$/i
+
+export function consoleSubprotocol(token) {
+  if (typeof token !== 'string' || token === '' || !CONSOLE_TOKEN_PATTERN.test(token)) return ''
+  return `${CONSOLE_PROTOCOL_PREFIX}${token}`
+}
+
+// Defensive fallback for an older API that still embeds the capability in
+// `ws_path`: drop token query parameters before the path reaches a URL.
+export function consoleWsPath(path) {
+  if (typeof path !== 'string' || path === '') return ''
+  try {
+    const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+    const url = new URL(path, base)
+    for (const key of [...url.searchParams.keys()]) {
+      if (CONSOLE_TOKEN_QUERY.test(key)) url.searchParams.delete(key)
+    }
+    if (/^wss?:\/\//i.test(path)) return url.toString()
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    return path
+  }
 }

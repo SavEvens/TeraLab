@@ -20,11 +20,9 @@ use TeraLab\Api\Labs\LabService;
  */
 final class UserService
 {
-    private const USERNAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$/';
+    private const USERNAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}\z/';
 
     private const ROLES = ['admin', 'editor', 'user'];
-
-    private const MAX_EMAIL_LENGTH = 254;
 
     private const MAX_NAME_LENGTH = 128;
 
@@ -234,6 +232,10 @@ final class UserService
             ]);
             $revoke = $this->pdo->prepare('DELETE FROM sessions WHERE user_id = :user_id');
             $revoke->execute([':user_id' => $targetId]);
+            // A new password must invalidate every credential, including
+            // bearer tokens minted before the reset.
+            $tokens = $this->pdo->prepare('DELETE FROM api_tokens WHERE user_id = :user_id');
+            $tokens->execute([':user_id' => $targetId]);
         });
 
         $this->audit->log($actorId, $ip, 'user.password.reset', (string) $target['id'], 'success', [
@@ -255,6 +257,81 @@ final class UserService
         ]);
 
         return $revoked;
+    }
+
+    /**
+     * Number of accounts that still carry an imported, unsalted legacy hash.
+     * Only the count leaves the service: the administrator never receives a
+     * bulk list of affected usernames.
+     */
+    public function legacyHashCount(): int
+    {
+        $statement = $this->pdo->query(
+            'SELECT COUNT(*) FROM users WHERE legacy_password_hash IS NOT NULL'
+        );
+        if ($statement === false) {
+            return 0;
+        }
+        $count = (int) $statement->fetchColumn();
+        $statement->closeCursor();
+
+        return $count;
+    }
+
+    /**
+     * Retire every imported legacy hash.
+     *
+     * Clearing the hash leaves the user's Argon2id hash (a random value that
+     * nobody knows) in place, so the account can no longer be used until an
+     * administrator resets its password. Existing sessions and API tokens are
+     * removed in the same transaction so a stolen credential cannot outlive
+     * the decision.
+     *
+     * @return array{cleared: int, sessions_revoked: int, api_tokens_revoked: int}
+     */
+    public function clearLegacyHashes(string $actorId, string $ip): array
+    {
+        $cleared = 0;
+        $sessions = 0;
+        $tokens = 0;
+        $this->transaction(function () use (&$cleared, &$sessions, &$tokens): void {
+            $rows = $this->pdo->query(
+                'SELECT id FROM users WHERE legacy_password_hash IS NOT NULL'
+            );
+            $ids = $rows === false ? [] : $rows->fetchAll(PDO::FETCH_COLUMN);
+            if ($rows instanceof \PDOStatement) {
+                $rows->closeCursor();
+            }
+
+            $session = $this->pdo->prepare('DELETE FROM sessions WHERE user_id = :user_id');
+            $token = $this->pdo->prepare('DELETE FROM api_tokens WHERE user_id = :user_id');
+            $clear = $this->pdo->prepare(
+                'UPDATE users SET legacy_password_hash = NULL, updated_at = :updated_at WHERE id = :id'
+            );
+            foreach ($ids as $id) {
+                if (!is_string($id)) {
+                    continue;
+                }
+                $session->execute([':user_id' => $id]);
+                $sessions += $session->rowCount();
+                $token->execute([':user_id' => $id]);
+                $tokens += $token->rowCount();
+                $clear->execute([':updated_at' => time(), ':id' => $id]);
+                $cleared += $clear->rowCount();
+            }
+        });
+
+        $this->audit->log($actorId, $ip, 'user.legacy_hashes.clear', null, 'success', [
+            'cleared' => $cleared,
+            'sessions_revoked' => $sessions,
+            'api_tokens_revoked' => $tokens,
+        ]);
+
+        return [
+            'cleared' => $cleared,
+            'sessions_revoked' => $sessions,
+            'api_tokens_revoked' => $tokens,
+        ];
     }
 
     /**
@@ -485,21 +562,7 @@ final class UserService
 
     private function email(mixed $value): ?string
     {
-        if ($value === null || $value === '') {
-            return null;
-        }
-        if (!is_string($value)) {
-            throw new HttpException(422, 'email must be a string.', ['email' => ['Invalid email address.']]);
-        }
-        $value = trim($value);
-        if ($value === '') {
-            return null;
-        }
-        if (strlen($value) > self::MAX_EMAIL_LENGTH || filter_var($value, FILTER_VALIDATE_EMAIL) === false) {
-            throw new HttpException(422, 'Invalid email address.', ['email' => ['Invalid email address.']]);
-        }
-
-        return $value;
+        return EmailValidator::validate($value);
     }
 
     private function name(mixed $value): ?string

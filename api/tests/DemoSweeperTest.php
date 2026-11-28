@@ -85,6 +85,7 @@ final class DemoSweeperTest extends TestCase
             $this->agent,
             new LabLocks($this->pdo),
             new ImageReferences($this->pdo, $this->config),
+            new \TeraLab\Api\Snapshots\SnapshotRepository($this->pdo),
         );
         $this->audit = new AuditLogger($this->pdo);
         $this->repository = new LabRepository($this->config->labsDir, new UnlParser());
@@ -110,6 +111,8 @@ final class DemoSweeperTest extends TestCase
             'labs_wiped' => 1,
             'labs_failed' => 0,
             'nodes_reaped' => 0,
+            'guest_files_removed' => 1,
+            'snapshots_removed' => 0,
             'mem_available_mb' => 4096,
         ], $summary);
         self::assertSame(0, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
@@ -119,8 +122,8 @@ final class DemoSweeperTest extends TestCase
             $this->agentNodeID($labID, '2'),
         ], $this->stops);
         self::assertSame($this->stops, $this->wipes);
-        // Stop/wipe only: lab files are never deleted by the sweeper.
-        self::assertFileExists($this->config->labsDir . '/' . (string) $lab['path']);
+        // A purged guest is ephemeral: its lab file is removed after the wipe.
+        self::assertFileDoesNotExist($this->config->labsDir . '/' . (string) $lab['path']);
         self::assertSame(self::NOW, $this->lastSweepAt());
 
         $audit = $this->auditRows('demo.sweep');
@@ -128,6 +131,9 @@ final class DemoSweeperTest extends TestCase
         self::assertSame($guest, $audit[0]['target']);
         self::assertSame('ttl', $audit[0]['details']['reason']);
         self::assertSame($guest, $audit[0]['details']['guest']);
+        self::assertSame(1, $audit[0]['details']['guest_files_removed']);
+        self::assertSame([$labID], $audit[0]['details']['lab_ids']);
+        self::assertSame(0, $audit[0]['details']['snapshots_removed']);
     }
 
     public function testIdlePurgeUsesTheLatestSessionBeat(): void
@@ -535,10 +541,105 @@ final class DemoSweeperTest extends TestCase
             'mem_available_mb' => 3072,
             'guests_active' => 1,
             'demo_nodes_running' => 1,
+            'guest_labs' => 1,
+            'guest_lab_bytes' => $this->sweeper->status()['guest_lab_bytes'],
+            'guest_snapshots' => 0,
         ], $this->sweeper->status());
+        self::assertGreaterThan(0, $this->sweeper->status()['guest_lab_bytes']);
 
         $this->setLastSweep(self::NOW - 90);
         self::assertSame(self::NOW - 90, $this->sweeper->status()['last_sweep_at']);
+    }
+
+    public function testPurgeRemovesGuestFilesButPreservesEditorLabsAndPermissions(): void
+    {
+        $guest = $this->insertUser('guest-files', 'editor', 1, self::NOW - 10);
+        $this->insertSession($guest, self::NOW - 5);
+        $editor = $this->insertUser('editor-files', 'editor', 0, -1);
+        $guestLab = $this->createLab('Guest Files', $guest, ['1']);
+        $editorLab = $this->createLab('Editor Files', $editor, ['1']);
+        $this->insertPermission((string) $guestLab['id'], $editor, 'editor');
+        $this->insertPermission((string) $editorLab['id'], $guest, 'editor');
+        $this->insertSnapshot((string) $guestLab['id'], 'guest-snapshot', self::NOW - 60);
+        $trashToken = $this->insertTrashEntry($guest, self::NOW - 30);
+
+        $summary = $this->sweeper->sweepNow();
+
+        self::assertSame(1, $summary['guests_purged']);
+        self::assertSame(2, $summary['guest_files_removed']);
+        self::assertFileDoesNotExist($this->config->labsDir . '/' . (string) $guestLab['path']);
+        self::assertFileExists($this->config->labsDir . '/' . (string) $editorLab['path']);
+        self::assertFileDoesNotExist(
+            $this->config->labsDir . '/.trash/' . $trashToken . '.unl'
+        );
+        self::assertFileDoesNotExist(
+            $this->config->labsDir . '/.trash/' . $trashToken . '.json'
+        );
+        self::assertSame(0, $this->snapshotCount((string) $guestLab['id']));
+        // The guest's own permission row is removed with the identity, but a
+        // permission granted to another account is preserved.
+        $permissions = $this->pdo->query('SELECT lab_id, user_id, role FROM permissions')->fetchAll(PDO::FETCH_ASSOC);
+        self::assertCount(1, $permissions);
+        self::assertSame((string) $guestLab['id'], (string) $permissions[0]['lab_id']);
+        self::assertSame($editor, (string) $permissions[0]['user_id']);
+
+        $editorRows = $this->pdo->prepare('SELECT COUNT(*) FROM users WHERE id = :id');
+        $editorRows->execute([':id' => $editor]);
+        self::assertSame(1, (int) $editorRows->fetchColumn());
+
+        $audit = $this->auditRows('demo.sweep');
+        self::assertCount(1, $audit);
+        self::assertSame([$guestLab['id']], $audit[0]['details']['lab_ids']);
+        self::assertSame(2, $audit[0]['details']['guest_files_removed']);
+        self::assertSame(1, $audit[0]['details']['snapshots_removed']);
+    }
+
+    public function testRunningGuestNodeIsStoppedBeforeItsLabFileIsRemoved(): void
+    {
+        $guest = $this->insertUser('guest-stop-first', 'editor', 1, self::NOW - 10);
+        $this->insertSession($guest, self::NOW - 5);
+        $lab = $this->createLab('Guest Stop First', $guest, ['1']);
+        $labFile = $this->config->labsDir . '/' . (string) $lab['path'];
+        $this->agentNodes = [
+            $this->runningNode((string) $lab['id'], '1', self::NOW - 300, self::NOW - 60),
+        ];
+        $this->onStop = function () use ($labFile): void {
+            self::assertFileExists($labFile, 'the lab file must survive until the node is stopped');
+        };
+
+        $summary = $this->sweeper->sweepNow();
+
+        self::assertCount(1, $this->stops);
+        self::assertSame(1, $summary['guests_purged']);
+        self::assertFileDoesNotExist($labFile);
+    }
+
+    public function testFailedFileRemovalKeepsTheGuestForTheNextSweep(): void
+    {
+        $guest = $this->insertUser('guest-file-retry', 'editor', 1, self::NOW - 10);
+        $this->insertSession($guest, self::NOW - 5);
+        $lab = $this->createLab('Guest File Retry', $guest, ['1']);
+        $labFile = $this->config->labsDir . '/' . (string) $lab['path'];
+        chmod($this->config->labsDir, 0550);
+        try {
+            $failed = $this->sweeper->sweepNow();
+        } finally {
+            chmod($this->config->labsDir, 0770);
+        }
+
+        self::assertSame(0, $failed['guests_purged']);
+        self::assertSame(1, $failed['labs_failed']);
+        self::assertFileExists($labFile);
+        self::assertSame(1, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
+        $failure = $this->auditRows('demo.sweep');
+        self::assertCount(1, $failure);
+        self::assertSame('failed', $failure[0]['result']);
+        self::assertSame([$lab['id']], $failure[0]['details']['lab_ids']);
+
+        $retry = $this->sweeper->sweepNow();
+        self::assertSame(1, $retry['guests_purged']);
+        self::assertFileDoesNotExist($labFile);
+        self::assertSame(0, (int) $this->pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
     }
 
     public function testSweepBookkeepingKeyIsNotASettingsDefault(): void
@@ -714,6 +815,67 @@ final class DemoSweeperTest extends TestCase
             ':last_seen_at' => $lastSeen,
             ':expires_at' => self::NOW + 3600,
         ]);
+    }
+
+    private function insertSnapshot(string $labID, string $name, int $createdAt): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO lab_snapshots (id, lab_id, name, revision, xml, created_by, created_at) '
+            . 'VALUES (:id, :lab_id, :name, 1, :xml, NULL, :created_at)'
+        );
+        $statement->execute([
+            ':id' => bin2hex(random_bytes(16)),
+            ':lab_id' => $labID,
+            ':name' => $name,
+            ':xml' => '<lab id="' . $labID . '"/>',
+            ':created_at' => $createdAt,
+        ]);
+    }
+
+    private function snapshotCount(string $labID): int
+    {
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM lab_snapshots WHERE lab_id = :lab_id');
+        $statement->execute([':lab_id' => $labID]);
+
+        return (int) $statement->fetchColumn();
+    }
+
+    private function insertPermission(string $labID, string $userId, string $role): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO permissions (lab_id, user_id, role, created_at) VALUES (:lab_id, :user_id, :role, :created)'
+        );
+        $statement->execute([
+            ':lab_id' => $labID,
+            ':user_id' => $userId,
+            ':role' => $role,
+            ':created' => self::NOW,
+        ]);
+    }
+
+    private function insertTrashEntry(string $userId, int $deletedAt): string
+    {
+        $directory = $this->config->labsDir . '/.trash';
+        if (!is_dir($directory)) {
+            mkdir($directory, 0770, true);
+        }
+        $token = bin2hex(random_bytes(8));
+        file_put_contents(
+            $directory . '/' . $token . '.unl',
+            '<lab name="Trashed" id="trashed-' . $token . '" version="1"><topology><nodes/><networks/></topology></lab>'
+        );
+        file_put_contents(
+            $directory . '/' . $token . '.json',
+            json_encode([
+                'id' => 'trashed-' . $token,
+                'name' => 'Trashed',
+                'original_path' => 'Trashed.unl',
+                'deleted_by' => $userId,
+                'deleted_at' => $deletedAt,
+            ], JSON_THROW_ON_ERROR)
+        );
+
+        return $token;
     }
 
     private function setMemAvailable(int $megabytes): void

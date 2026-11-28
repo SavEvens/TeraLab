@@ -169,6 +169,89 @@ CHILD;
         self::assertSame(0, $status, 'the second writer must commit cleanly');
     }
 
+    public function testConcurrentRequestBurstDoesNotSurfaceDatabaseLocked(): void
+    {
+        if (!function_exists('proc_open')) {
+            self::markTestSkipped('proc_open is required for the burst writer test');
+        }
+        $config = Config::forTests($this->root, $this->root . '/data');
+        $pdo = (new Database($config))->pdo();
+        $pdo->exec('CREATE TABLE burst (id INTEGER PRIMARY KEY AUTOINCREMENT, worker INTEGER NOT NULL, sequence INTEGER NOT NULL)');
+
+        $workers = 4;
+        $perWorker = 20;
+        $autoload = dirname(__DIR__) . '/vendor/autoload.php';
+        $code = <<<'CHILD'
+require getenv('TERALAB_BURST_AUTOLOAD');
+$root = getenv('TERALAB_BURST_ROOT');
+$worker = (int) getenv('TERALAB_BURST_WORKER');
+$perWorker = (int) getenv('TERALAB_BURST_COUNT');
+$config = TeraLab\Api\Config::forTests($root, $root . '/data');
+$pdo = (new TeraLab\Api\Database\Database($config))->pdo();
+$statement = $pdo->prepare('INSERT INTO burst (worker, sequence) VALUES (:worker, :sequence)');
+for ($sequence = 0; $sequence < $perWorker; $sequence++) {
+    TeraLab\Api\Database\BusyRetry::retry(
+        static function () use ($statement, $worker, $sequence): void {
+            $statement->execute([':worker' => $worker, ':sequence' => $sequence]);
+        },
+        20,
+        50,
+    );
+}
+CHILD;
+
+        $processes = [];
+        try {
+            for ($worker = 0; $worker < $workers; $worker++) {
+                $env = getenv();
+                $env['TERALAB_BURST_AUTOLOAD'] = $autoload;
+                $env['TERALAB_BURST_ROOT'] = $this->root;
+                $env['TERALAB_BURST_WORKER'] = (string) $worker;
+                $env['TERALAB_BURST_COUNT'] = (string) $perWorker;
+                $process = proc_open(
+                    [PHP_BINARY, '-d', 'display_errors=0', '-r', $code],
+                    [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                    $pipes,
+                    null,
+                    $env,
+                );
+                self::assertIsResource($process);
+                $processes[] = ['process' => $process, 'pipes' => $pipes];
+            }
+
+            foreach ($processes as $entry) {
+                $stdout = (string) stream_get_contents($entry['pipes'][1]);
+                $stderr = (string) stream_get_contents($entry['pipes'][2]);
+                foreach ([1, 2] as $index) {
+                    if (is_resource($entry['pipes'][$index])) {
+                        fclose($entry['pipes'][$index]);
+                    }
+                }
+                $status = proc_close($entry['process']);
+                self::assertSame(0, $status, 'burst worker failed: ' . $stdout . $stderr);
+                self::assertStringNotContainsString('database is locked', $stderr);
+                self::assertStringNotContainsString('database table is locked', $stderr);
+            }
+        } finally {
+            foreach ($processes as $entry) {
+                if (is_resource($entry['process'])) {
+                    foreach ($entry['pipes'] as $pipe) {
+                        if (is_resource($pipe)) {
+                            fclose($pipe);
+                        }
+                    }
+                    proc_terminate($entry['process']);
+                    proc_close($entry['process']);
+                }
+            }
+        }
+
+        self::assertSame(
+            $workers * $perWorker,
+            (int) $pdo->query('SELECT COUNT(*) FROM burst')->fetchColumn()
+        );
+    }
+
     private function remove(string $directory): void
     {
         if (!is_dir($directory)) {

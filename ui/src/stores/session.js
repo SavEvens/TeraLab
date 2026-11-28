@@ -45,8 +45,8 @@ export async function guestLogin(turnstileToken = '') {
   return applySession(await api.guest(payload))
 }
 
-export async function setup(username, password, email) {
-  return applySession(await api.setup({ username, password, email }))
+export async function setup(username, password, email, setupToken = '') {
+  return applySession(await api.setup({ username, password, email }, setupToken))
 }
 
 export async function logout() {

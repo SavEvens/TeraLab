@@ -14,6 +14,7 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Labs\LabLocks;
+use TeraLab\Api\Labs\LabRepository;
 use TeraLab\Api\Labs\LabService;
 use TeraLab\Api\Labs\UnlParser;
 use TeraLab\Api\Image\ImageReferences;
@@ -23,9 +24,12 @@ use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\SettingsService;
 use TeraLab\Api\Templates\TemplateRepository;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class LabServiceTest extends TestCase
 {
+    use StaticAssets;
+
     private string $root;
     private Config $config;
     private UnlParser $parser;
@@ -60,6 +64,7 @@ final class LabServiceTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-labsvc-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installStaticAssets($this->root);
         $this->config = Config::forTests($this->root, $this->root . '/data');
         $this->parser = new UnlParser();
         $this->writer = new UnlWriter();
@@ -102,6 +107,124 @@ final class LabServiceTest extends TestCase
             self::fail('expected a revision conflict');
         } catch (HttpException $exception) {
             self::assertSame(409, $exception->status);
+        }
+    }
+
+    public function testTopologyCountCapsAreEnforcedAtMaxAndMaxPlusOne(): void
+    {
+        $service = $this->service();
+
+        $nodes = [];
+        for ($index = 0; $index < LabService::MAX_NODES; $index++) {
+            $nodes[] = $this->node((string) ($index + 1), 'N' . ($index + 1), 'vpcs', '', []);
+        }
+        $max = $service->create(['name' => 'Max nodes', 'nodes' => $nodes]);
+        self::assertCount(LabService::MAX_NODES, $max['node_list']);
+        $nodes[] = $this->node((string) (LabService::MAX_NODES + 1), 'N-over', 'vpcs', '', []);
+        try {
+            $service->create(['name' => 'Too many nodes', 'nodes' => $nodes]);
+            self::fail('max+1 nodes must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('At most 64 nodes', $exception->getMessage());
+        }
+
+        $networks = [];
+        for ($index = 0; $index < LabService::MAX_NETWORKS; $index++) {
+            $networks[] = ['id' => (string) $index, 'name' => 'Net-' . $index];
+        }
+        // Empty networks are pruned, but the request itself is accepted.
+        $service->create(['name' => 'Max networks', 'networks' => $networks, 'nodes' => []]);
+        $networks[] = ['id' => (string) LabService::MAX_NETWORKS, 'name' => 'Net-over'];
+        try {
+            $service->create(['name' => 'Too many networks', 'networks' => $networks, 'nodes' => []]);
+            self::fail('max+1 networks must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('At most 64 networks', $exception->getMessage());
+        }
+
+        $interfaces = [];
+        for ($index = 0; $index < LabService::MAX_INTERFACES; $index++) {
+            $interfaces[] = ['id' => $index, 'name' => 'eth' . $index, 'network_id' => ''];
+        }
+        $node = $this->node('1', 'PC1', 'vpcs', '', []);
+        $node['interfaces'] = $interfaces;
+        $service->create(['name' => 'Max interfaces', 'nodes' => [$node]]);
+        $interfaces[] = ['id' => LabService::MAX_INTERFACES, 'name' => 'eth-over', 'network_id' => ''];
+        $node['interfaces'] = $interfaces;
+        try {
+            $service->create(['name' => 'Too many interfaces', 'nodes' => [$node]]);
+            self::fail('max+1 interfaces must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('more than 16 interfaces', $exception->getMessage());
+        }
+    }
+
+    public function testLabelsAndTextFieldsAreBoundedAndControlFree(): void
+    {
+        $service = $this->service();
+        $name128 = str_repeat('a', LabService::MAX_NAME_BYTES);
+        $node = $this->node('1', $name128, 'vpcs', '', []);
+        $lab = $service->create(['name' => $name128, 'nodes' => [$node]]);
+        self::assertSame($name128, $lab['name']);
+        self::assertSame($name128, $lab['node_list'][0]['name']);
+
+        foreach ([
+            ['name' => str_repeat('b', LabService::MAX_NAME_BYTES + 1), 'nodes' => []],
+            ['name' => "bad\nlab", 'nodes' => []],
+            ['name' => 'Bad node', 'nodes' => [$this->node('1', str_repeat('b', 129), 'vpcs', '', [])]],
+            ['name' => 'Bad node control', 'nodes' => [$this->node('1', "bad\nname", 'vpcs', '', [])]],
+            ['name' => 'Bad network', 'networks' => [['id' => '0', 'name' => str_repeat('c', 129)]], 'nodes' => []],
+            ['name' => 'Bad network control', 'networks' => [['id' => '0', 'name' => "bad\tname"]], 'nodes' => []],
+        ] as $payload) {
+            try {
+                $service->create($payload);
+                self::fail('expected rejection for ' . var_export($payload['name'], true));
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+
+        $description = str_repeat('d', LabService::MAX_DESCRIPTION_BYTES);
+        $body = str_repeat('e', LabService::MAX_BODY_BYTES);
+        $accepted = $service->create(['name' => 'Max text', 'description' => $description, 'body' => $body]);
+        self::assertSame($description, $accepted['description']);
+        self::assertSame($body, $accepted['body']);
+
+        foreach ([
+            ['description' => $description . 'x'],
+            ['body' => $body . 'x'],
+            ['description' => "bad\x00text"],
+            ['body' => "bad\x7ftext"],
+        ] as $payload) {
+            try {
+                $service->create(['name' => 'Bad text', 'nodes' => []] + $payload);
+                self::fail('expected rejection for an over-cap or control-bearing text field');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+    }
+
+    public function testNodeConfigIsBoundedAndControlFree(): void
+    {
+        $service = $this->service();
+        $config = str_repeat('c', LabService::MAX_CONFIG_BYTES);
+        $node = $this->node('1', 'PC1', 'vpcs', '', []);
+        $node['config'] = $config;
+        $lab = $service->create(['name' => 'Max config', 'nodes' => [$node]]);
+        self::assertSame($config, $lab['node_list'][0]['config']);
+
+        foreach ([$config . 'x', "hostname PC1\x00\n"] as $bad) {
+            $node['config'] = $bad;
+            try {
+                $service->create(['name' => 'Bad config', 'nodes' => [$node]]);
+                self::fail('expected rejection for an invalid config');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
         }
     }
 
@@ -1205,6 +1328,124 @@ final class LabServiceTest extends TestCase
         self::assertSame(['node_unsupported'], $byNode['SW1'] ?? []);
     }
 
+    public function testSnapshotNamesAreBoundedAndControlFree(): void
+    {
+        $service = $this->service(null, new SnapshotRepository($this->pdo));
+        $lab = $service->create(['name' => 'Snapshot Names', 'nodes' => []]);
+        $max = str_repeat('s', LabService::MAX_NAME_BYTES);
+        $snapshot = $service->createSnapshot((string) $lab['id'], $max, null);
+        self::assertSame($max, $snapshot['name']);
+
+        foreach ([str_repeat('s', LabService::MAX_NAME_BYTES + 1), "bad\nname", "bad\x7fname"] as $name) {
+            try {
+                $service->createSnapshot((string) $lab['id'], $name, null);
+                self::fail('expected rejection for a snapshot name');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+
+        try {
+            $service->deleteSnapshot((string) $lab['id'], 'not-a-snapshot');
+            self::fail('expected rejection for a malformed snapshot id');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+        }
+    }
+
+    public function testGuestLabByteCapRejectsBeforeWritingForCreateImportAndApply(): void
+    {
+        $settings = new SettingsService($this->pdo);
+        $settings->update(['demo_max_lab_bytes_per_guest' => 1048576]);
+        $this->template('vpcs', "schema: 1\nid: vpcs\nname: Vpcs\nkind: vpcs\n");
+        $guest = $this->insertUser('guest-bytes', 'editor', 1, time() + 600);
+        $service = $this->service($this->demoGuard(), new SnapshotRepository($this->pdo));
+        $fragment = str_repeat('f', 65520);
+        $node = $this->node('1', 'PC1', 'vpcs', '', []);
+        $node['template'] = 'vpcs';
+        $node['extra_xml'] = array_fill(0, 20, '<x>' . $fragment . '</x>');
+
+        try {
+            $service->create(['name' => 'Too Big', 'nodes' => [$node]], 'guest', $guest);
+            self::fail('an over-cap create must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('bytes of lab data', $exception->getMessage());
+        }
+        self::assertSame([], glob($this->config->labsDir . '/*.unl') ?: []);
+
+        $padding = str_repeat("# padding padding padding padding\n", 40000);
+        $yaml = "schema: 1\nname: Too Big YAML\nnodes:\n  PC1:\n    template: vpcs\n" . $padding;
+        try {
+            $service->importYaml($yaml, 'too-big.yaml', null, $guest);
+            self::fail('an over-cap YAML import must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('bytes of lab data', $exception->getMessage());
+        }
+        self::assertSame([], glob($this->config->labsDir . '/*.unl') ?: []);
+
+        $lab = $service->create(['name' => 'Apply Target', 'nodes' => []], 'guest', $guest);
+        $path = $this->config->labsDir . '/' . (string) $lab['path'];
+        $before = (string) file_get_contents($path);
+        try {
+            $service->applyYaml(
+                (string) $lab['id'],
+                "schema: 1\nname: Apply Target\nnodes:\n  PC1:\n    template: vpcs\n" . $padding,
+                null,
+                null,
+                $guest,
+                false,
+            );
+            self::fail('an over-cap YAML apply must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('bytes of lab data', $exception->getMessage());
+        }
+        self::assertSame($before, (string) file_get_contents($path));
+    }
+
+    public function testSnapshotCountAndByteCaps(): void
+    {
+        $settings = new SettingsService($this->pdo);
+        $settings->update(['demo_max_snapshots_per_lab' => 2]);
+        $service = $this->service(null, new SnapshotRepository($this->pdo));
+        $lab = $service->create(['name' => 'Snapshot Caps', 'nodes' => []]);
+
+        $service->createSnapshot((string) $lab['id'], 'one', null);
+        $service->createSnapshot((string) $lab['id'], 'two', null);
+        try {
+            $service->createSnapshot((string) $lab['id'], 'three', null);
+            self::fail('the third snapshot must exceed the cap of two');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('At most 2 snapshots', $exception->getMessage());
+        }
+
+        $settings->update([
+            'demo_max_snapshots_per_lab' => 10,
+            'demo_max_lab_bytes_per_guest' => 1048576,
+        ]);
+        foreach ($service->snapshots((string) $lab['id']) as $snapshot) {
+            $service->deleteSnapshot((string) $lab['id'], (string) $snapshot['id']);
+        }
+        $nodes = [];
+        for ($index = 1; $index <= 12; $index++) {
+            $node = $this->node((string) $index, 'N' . $index, 'vpcs', '', []);
+            $node['config'] = str_repeat('c', 60000);
+            $nodes[] = $node;
+        }
+        $fat = $service->create(['name' => 'Fat Lab', 'nodes' => $nodes], 'guest', null);
+        $service->createSnapshot((string) $fat['id'], 'first', null);
+        try {
+            $service->createSnapshot((string) $fat['id'], 'second', null);
+            self::fail('the second snapshot must exceed the byte budget');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('byte demo limit', $exception->getMessage());
+        }
+    }
+
     private function demoGuard(): DemoGuard
     {
         return new DemoGuard(
@@ -1212,6 +1453,7 @@ final class LabServiceTest extends TestCase
             new SettingsService($this->pdo),
             new DemoPolicy(),
             new TemplateRepository($this->config),
+            new LabRepository($this->config->labsDir, new UnlParser()),
         );
     }
 
@@ -1303,6 +1545,77 @@ final class LabServiceTest extends TestCase
             self::fail('cannot create the image directory');
         }
         file_put_contents($path, "QFI\xfb" . str_repeat("\0", 32));
+    }
+
+    /**
+     * Picture policy: unsafe writes are rejected; legacy external URLs remain
+     * readable with a warning and are rejected only on save.
+     */
+    public function testPictureNodesUseThePicturePolicyAndLegacyValuesStayReadable(): void
+    {
+        $service = $this->service();
+        $picture = static fn (string $image): array => [
+            'id' => '1',
+            'name' => 'Diagram',
+            'type' => 'picture',
+            'image' => $image,
+            'interfaces' => [],
+        ];
+
+        foreach ([
+            'javascript:alert(1)',
+            '//evil.example/topology.png',
+            '/api/v2/labs',
+            'http://example.test/topology.png',
+            'https://example.test/topology.png',
+            'file:///etc/passwd',
+            '/images/does-not-exist.png',
+        ] as $image) {
+            try {
+                $service->create(['name' => 'Bad picture', 'nodes' => [$picture($image)]]);
+                self::fail('expected rejection: ' . $image);
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status, $image);
+            }
+        }
+
+        $static = $service->create([
+            'name' => 'Static picture',
+            'nodes' => [$picture('/images/lan-segment.png')],
+        ]);
+        self::assertSame('Static picture', $static['name']);
+
+        $dataUri = 'data:image/png;base64,' . base64_encode("\x89PNG\r\n\x1a\n");
+        $service->create(['name' => 'Data picture', 'nodes' => [$picture($dataUri)]]);
+
+        // A legacy lab with an external picture remains readable, is preserved,
+        // and is reported as blocked until it is edited.
+        $legacy = [
+            'id' => 'legacy-picture',
+            'name' => 'Legacy picture',
+            'revision' => 1,
+            'node_list' => [[
+                'id' => '1',
+                'name' => 'Diagram',
+                'type' => 'picture',
+                'image' => 'https://example.test/topology.png',
+                'interfaces' => [],
+            ]],
+            'network_list' => [],
+        ];
+        $path = $this->config->labsDir . '/legacy-picture.unl';
+        file_put_contents($path, $this->writer->write($legacy));
+        $presented = $service->present($this->parser->parse($path));
+        self::assertSame('https://example.test/topology.png', $presented['node_list'][0]['image']);
+        self::assertContains('picture_blocked', array_column($presented['warnings'], 'type'));
+
+        try {
+            $service->save('legacy-picture', ['nodes' => [$picture('https://example.test/topology.png')]], null);
+            self::fail('saving an unsafe picture must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+        }
+        self::assertSame('https://example.test/topology.png', $this->parser->parse($path)['node_list'][0]['image']);
     }
 
     /**
@@ -1410,6 +1723,7 @@ final class LabServiceTest extends TestCase
             new ImageReferences($this->pdo, $this->config),
             snapshots: $snapshots,
             demoGuard: $demoGuard,
+            settings: new SettingsService($this->pdo),
         );
     }
 

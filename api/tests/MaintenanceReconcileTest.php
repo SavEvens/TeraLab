@@ -14,9 +14,11 @@ use Slim\Psr7\Factory\StreamFactory;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class MaintenanceReconcileTest extends TestCase
 {
+    use SetupToken;
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private string $root;
@@ -35,6 +37,7 @@ final class MaintenanceReconcileTest extends TestCase
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
         $this->config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($this->config);
 
         $agent = new AgentClient($this->config, function (string $method, string $path, array $payload): array {
             $this->calls[] = ['method' => $method, 'path' => $path, 'payload' => $payload];
@@ -49,6 +52,7 @@ final class MaintenanceReconcileTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         $this->cookie = $this->cookie($setup);
         $this->csrf = (string) $this->json($setup)['csrf_token'];

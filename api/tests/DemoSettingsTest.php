@@ -15,6 +15,7 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Psr7\Factory\StreamFactory;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
+use TeraLab\Api\Auth\RateLimiter;
 use TeraLab\Api\Auth\TokenService;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
@@ -22,9 +23,12 @@ use TeraLab\Api\Database\Migrator;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\System\DemoPolicy;
 use TeraLab\Api\System\SettingsService;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class DemoSettingsTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private const OTHER_PASSWORD = 'Teralab-Editor-2026!';
@@ -44,6 +48,7 @@ final class DemoSettingsTest extends TestCase
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
         $this->config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($this->config);
         $agent = new AgentClient(
             $this->config,
             static fn (string $method, string $path, array $payload): array => [200, '{"ok":true,"result":{}}']
@@ -55,6 +60,7 @@ final class DemoSettingsTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->adminCookie = $this->cookie($setup);
@@ -76,14 +82,28 @@ final class DemoSettingsTest extends TestCase
         self::assertSame(48, $all['demo_guest_ttl_hours']);
         self::assertSame(6, $all['demo_guest_idle_hours']);
         self::assertSame(5, $all['demo_max_nodes_per_lab']);
+        self::assertSame(3, $all['demo_max_labs_per_guest']);
+        self::assertSame(20971520, $all['demo_max_lab_bytes_per_guest']);
+        self::assertSame(3, $all['demo_max_snapshots_per_lab']);
+        self::assertSame(5, $all['demo_max_tokens_per_user']);
         self::assertSame('vpcs', $all['demo_allowed_templates']);
         self::assertSame(1024, $all['demo_max_ram_per_node']);
         self::assertSame(2048, $all['demo_memory_floor_mb']);
         self::assertSame(120, $all['demo_idle_wipe_minutes']);
         self::assertSame(300, $all['demo_sweep_interval']);
+        self::assertSame(30, $all['retention_login_attempts_days']);
+        self::assertSame(90, $all['retention_audit_log_days']);
+        self::assertSame(30, $all['retention_jobs_days']);
+        self::assertSame(1000, $all['retention_jobs_max_rows']);
+        self::assertSame(3600, $all['maintenance_interval_seconds']);
+        self::assertSame(2147483648, $all['backup_max_archive_bytes']);
+        self::assertSame(10000, $all['backup_max_entries']);
+        self::assertSame(4294967296, $all['backup_max_uncompressed_bytes']);
+        self::assertSame(1073741824, $all['backup_max_database_bytes']);
         self::assertSame(0, $all['turnstile_enabled']);
         self::assertSame('3x00000000000000000000FF', $all['turnstile_site_key']);
         self::assertSame('1x0000000000000000000000000000000AA', $all['turnstile_secret_key']);
+        self::assertSame(0, $all['legacy_v1_enabled']);
 
         // Existing keys keep their defaults, types, and helper behaviour.
         self::assertSame('UTC', $all['timezone']);
@@ -97,6 +117,12 @@ final class DemoSettingsTest extends TestCase
     #[DataProvider('integerBounds')]
     public function testIntegerSettingBounds(string $key, int $min, int $max): void
     {
+        if ($key === 'turnstile_enabled') {
+            $this->settings->update([
+                'turnstile_site_key' => 'site-key-for-tests',
+                'turnstile_secret_key' => 'secret-key-for-tests',
+            ]);
+        }
         $this->settings->update([$key => $min]);
         self::assertSame($min, $this->settings->int($key, -999));
 
@@ -120,11 +146,25 @@ final class DemoSettingsTest extends TestCase
         yield 'demo_guest_ttl_hours' => ['demo_guest_ttl_hours', 1, 720];
         yield 'demo_guest_idle_hours' => ['demo_guest_idle_hours', 1, 72];
         yield 'demo_max_nodes_per_lab' => ['demo_max_nodes_per_lab', 1, 16];
+        yield 'demo_max_labs_per_guest' => ['demo_max_labs_per_guest', 1, 20];
+        yield 'demo_max_lab_bytes_per_guest' => ['demo_max_lab_bytes_per_guest', 1048576, 268435456];
+        yield 'demo_max_snapshots_per_lab' => ['demo_max_snapshots_per_lab', 1, 20];
+        yield 'demo_max_tokens_per_user' => ['demo_max_tokens_per_user', 1, 50];
         yield 'demo_max_ram_per_node' => ['demo_max_ram_per_node', 64, 4096];
         yield 'demo_memory_floor_mb' => ['demo_memory_floor_mb', 256, 65536];
         yield 'demo_idle_wipe_minutes' => ['demo_idle_wipe_minutes', 15, 1440];
         yield 'demo_sweep_interval' => ['demo_sweep_interval', 60, 3600];
+        yield 'retention_login_attempts_days' => ['retention_login_attempts_days', 1, 3650];
+        yield 'retention_audit_log_days' => ['retention_audit_log_days', 1, 3650];
+        yield 'retention_jobs_days' => ['retention_jobs_days', 1, 3650];
+        yield 'retention_jobs_max_rows' => ['retention_jobs_max_rows', 100, 1000000];
+        yield 'maintenance_interval_seconds' => ['maintenance_interval_seconds', 60, 86400];
+        yield 'backup_max_archive_bytes' => ['backup_max_archive_bytes', 1048576, 10737418240];
+        yield 'backup_max_entries' => ['backup_max_entries', 1, 1000000];
+        yield 'backup_max_uncompressed_bytes' => ['backup_max_uncompressed_bytes', 1048576, 42949672960];
+        yield 'backup_max_database_bytes' => ['backup_max_database_bytes', 1048576, 10737418240];
         yield 'turnstile_enabled' => ['turnstile_enabled', 0, 1];
+        yield 'legacy_v1_enabled' => ['legacy_v1_enabled', 0, 1];
         // Pre-existing keys must keep their bounds too.
         yield 'session_ttl' => ['session_ttl', 300, 86400];
         yield 'max_upload_bytes' => ['max_upload_bytes', 1048576, 10737418240];
@@ -132,7 +172,13 @@ final class DemoSettingsTest extends TestCase
 
     public function testBooleanSettingsRejectOtherValues(): void
     {
-        foreach (['demo_enabled', 'turnstile_enabled'] as $key) {
+        // The Turnstile switch cannot be enabled with Cloudflare's public test
+        // keys in production; give it real-looking keys before toggling it.
+        $this->settings->update([
+            'turnstile_site_key' => 'site-key-for-tests',
+            'turnstile_secret_key' => 'secret-key-for-tests',
+        ]);
+        foreach (['demo_enabled', 'turnstile_enabled', 'legacy_v1_enabled'] as $key) {
             $values = $this->settings->update([$key => 1]);
             self::assertSame(1, $values[$key]);
             $values = $this->settings->update([$key => true]);
@@ -227,6 +273,100 @@ final class DemoSettingsTest extends TestCase
         self::assertSame(
             '1x0000000000000000000000000000000AA',
             SettingsService::DEFAULTS['turnstile_secret_key']
+        );
+    }
+
+    public function testProductionRejectsShippedTurnstileTestKeys(): void
+    {
+        $production = new SettingsService($this->pdo);
+
+        try {
+            $production->update(['turnstile_enabled' => 1]);
+            self::fail('Turnstile was enabled with the shipped test secret in production.');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('turnstile_secret_key', $exception->getMessage());
+        }
+        self::assertSame(0, $production->int('turnstile_enabled', 0));
+
+        // A real key pair may be enabled.
+        $production->update([
+            'turnstile_site_key' => 'real-site-key',
+            'turnstile_secret_key' => 'real-secret-key',
+        ]);
+        self::assertSame(1, $production->update(['turnstile_enabled' => 1])['turnstile_enabled']);
+
+        // Swapping back to a test key while enabled is refused.
+        foreach ([
+            'turnstile_secret_key' => '1x0000000000000000000000000000000AA',
+            'turnstile_site_key' => '3x00000000000000000000FF',
+        ] as $key => $value) {
+            try {
+                $production->update([$key => $value]);
+                self::fail($key . ' accepted a Cloudflare test key in production.');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+        self::assertSame('real-secret-key', $production->string('turnstile_secret_key', ''));
+
+        // The explicit test escape hatch is environment-gated, not implicit.
+        putenv('TERALAB_ALLOW_TURNSTILE_TEST_KEYS=1');
+        try {
+            $production->update([
+                'turnstile_secret_key' => '1x0000000000000000000000000000000AA',
+            ]);
+            self::assertSame(
+                '1x0000000000000000000000000000000AA',
+                $production->string('turnstile_secret_key', '')
+            );
+        } finally {
+            putenv('TERALAB_ALLOW_TURNSTILE_TEST_KEYS');
+        }
+    }
+
+    public function testNonProductionAllowsShippedTurnstileTestKeys(): void
+    {
+        $test = new SettingsService($this->pdo, 'test');
+        $values = $test->update(['turnstile_enabled' => 1]);
+
+        self::assertSame(1, $values['turnstile_enabled']);
+    }
+
+    public function testTurnstileHostnameIsValidated(): void
+    {
+        $values = $this->settings->update(['turnstile_hostname' => 'Demo.Example.Test']);
+        self::assertSame('demo.example.test', $values['turnstile_hostname']);
+        self::assertSame('', $this->settings->update(['turnstile_hostname' => ''])['turnstile_hostname']);
+
+        foreach (['http://demo.example.test', 'demo.example.test/path', 'has space.test', str_repeat('a', 254)] as $bad) {
+            try {
+                $this->settings->update(['turnstile_hostname' => $bad]);
+                self::fail('turnstile_hostname accepted ' . $bad);
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+    }
+
+    public function testHealthFlagsShippedTurnstileTestKeysWithoutLeakingTheSecret(): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at) '
+            . 'ON CONFLICT(key) DO UPDATE SET value = :value, updated_at = :updated_at'
+        );
+        $statement->execute([':key' => 'turnstile_enabled', ':value' => '1', ':updated_at' => time()]);
+
+        $response = $this->request('GET', '/api/v2/health');
+        self::assertSame(200, $response->getStatusCode());
+        $turnstile = $this->json($response)['turnstile'];
+        self::assertIsArray($turnstile);
+        self::assertTrue($turnstile['enabled']);
+        self::assertTrue($turnstile['test_keys']);
+        self::assertArrayNotHasKey('secret_key', $turnstile);
+        self::assertStringNotContainsString(
+            '1x0000000000000000000000000000000AA',
+            (string) $response->getBody()
         );
     }
 
@@ -509,6 +649,40 @@ final class DemoSettingsTest extends TestCase
 
         $indexes = array_column($pdo->query('PRAGMA index_list(users)')->fetchAll(), 'name');
         self::assertContains('users_guest', $indexes);
+    }
+
+    public function testTokenCountCapAndGuestLowestCap(): void
+    {
+        $this->settings->update(['demo_max_tokens_per_user' => 2]);
+        self::assertSame(201, $this->request('POST', '/api/v2/system/tokens', ['name' => 'one'])->getStatusCode());
+        self::assertSame(201, $this->request('POST', '/api/v2/system/tokens', ['name' => 'two'])->getStatusCode());
+        $blocked = $this->request('POST', '/api/v2/system/tokens', ['name' => 'three']);
+        self::assertSame(422, $blocked->getStatusCode());
+        self::assertStringContainsString('At most 2 API tokens', (string) $blocked->getBody());
+
+        $expiration = time() + 3600;
+        $this->insertUser('guest-token-cap', 'guest-token-cap', 1, $expiration);
+        [$cookie, $csrf] = $this->login('guest-token-cap', self::OTHER_PASSWORD);
+        $first = $this->request('POST', '/api/v2/system/tokens', ['name' => 'guest-one'], [], $cookie, $csrf);
+        self::assertSame(201, $first->getStatusCode(), (string) $first->getBody());
+        $second = $this->request('POST', '/api/v2/system/tokens', ['name' => 'guest-two'], [], $cookie, $csrf);
+        self::assertSame(422, $second->getStatusCode());
+        self::assertSame(
+            'The demo allows one API token per guest; revoke it before creating another.',
+            $this->json($second)['message'],
+        );
+    }
+
+    public function testTokenCreationIsRateLimitedPerUserAndAddress(): void
+    {
+        $this->settings->update(['demo_max_tokens_per_user' => 50]);
+        for ($index = 1; $index <= RateLimiter::TOKEN_MAX_PER_WINDOW; $index++) {
+            $response = $this->request('POST', '/api/v2/system/tokens', ['name' => 'token-' . $index]);
+            self::assertSame(201, $response->getStatusCode(), (string) $response->getBody());
+        }
+        $blocked = $this->request('POST', '/api/v2/system/tokens', ['name' => 'token-over']);
+        self::assertSame(429, $blocked->getStatusCode());
+        self::assertSame(RateLimiter::TOKEN_LIMIT_MESSAGE, $this->json($blocked)['message']);
     }
 
     /**

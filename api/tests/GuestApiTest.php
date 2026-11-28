@@ -19,14 +19,19 @@ use TeraLab\Api\Auth\TurnstileVerifier;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
 use TeraLab\Api\System\SettingsService;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class GuestApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private const REMOTE_IP = '127.0.0.1';
 
     private string $root;
+    private Config $config;
+    private \Closure $turnstileTransport;
     /** @var SlimApp<\DI\Container> */
     private SlimApp $app;
     private PDO $pdo;
@@ -39,22 +44,46 @@ final class GuestApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-guest-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
-        $config = Config::forTests($this->root, $this->root . '/data');
+        $this->config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($this->config);
 
-        $transport = function (string $url, array $form): array {
+        $this->turnstileTransport = function (string $url, array $form): array {
             self::assertSame(TurnstileVerifier::ENDPOINT, $url);
             $this->turnstileCalls[] = $form;
 
             return match ($form['response']) {
-                'valid-token' => ['success' => true],
+                'valid-token' => ['success' => true, 'action' => 'login'],
+                'valid-guest-token' => ['success' => true, 'action' => 'guest'],
                 'unavailable-token' => throw new RuntimeException('siteverify timeout'),
                 default => ['success' => false, 'error-codes' => ['invalid-input-response']],
             };
         };
 
-        $this->app = (new App($config, null, new TurnstileVerifier($transport)))->create();
-        $this->pdo = (new Database($config))->pdo();
-        $this->settings = new SettingsService($this->pdo);
+        $this->app = $this->createApp();
+        $this->pdo = (new Database($this->config))->pdo();
+        $this->settings = new SettingsService($this->pdo, 'test');
+    }
+
+    /**
+     * @return SlimApp<\DI\Container>
+     */
+    private function createApp(): SlimApp
+    {
+        return (new App($this->config, null, new TurnstileVerifier($this->turnstileTransport)))->create();
+    }
+
+    private function enableLegacyV1(): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at) '
+            . 'ON CONFLICT(key) DO UPDATE SET value = :value, updated_at = :updated_at'
+        );
+        $statement->execute([
+            ':key' => 'legacy_v1_enabled',
+            ':value' => '1',
+            ':updated_at' => time(),
+        ]);
+        $this->app = $this->createApp();
     }
 
     protected function tearDown(): void
@@ -204,7 +233,7 @@ final class GuestApiTest extends TestCase
         $accepted = $this->request(
             'POST',
             '/api/v2/auth/guest',
-            ['cf-turnstile-response' => 'valid-token']
+            ['cf-turnstile-response' => 'valid-guest-token']
         );
         self::assertSame(200, $accepted->getStatusCode(), (string) $accepted->getBody());
         self::assertSame(1, $this->guestCount());
@@ -212,13 +241,17 @@ final class GuestApiTest extends TestCase
 
     public function testCaptchaTokenMayArriveInTheHeader(): void
     {
-        $this->settings->update(['demo_enabled' => 1, 'turnstile_enabled' => 1]);
+        $this->settings->update([
+            'demo_enabled' => 1,
+            'turnstile_enabled' => 1,
+            'turnstile_secret_key' => 'header-test-secret',
+        ]);
 
         $response = $this->request(
             'POST',
             '/api/v2/auth/guest',
             [],
-            ['CF-Turnstile-Response' => 'valid-token']
+            ['CF-Turnstile-Response' => 'valid-guest-token']
         );
 
         self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
@@ -284,6 +317,7 @@ final class GuestApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
 
@@ -291,6 +325,7 @@ final class GuestApiTest extends TestCase
             'turnstile_enabled' => 1,
             'turnstile_secret_key' => 'budget-test-secret',
         ]);
+        $this->enableLegacyV1();
         $credentials = ['username' => 'admin', 'password' => self::PASSWORD];
 
         for ($attempt = 1; $attempt <= RateLimiter::CAPTCHA_MAX_ATTEMPTS; $attempt++) {
@@ -320,7 +355,11 @@ final class GuestApiTest extends TestCase
 
     public function testGuestCaptchaAttemptsUseTheSameAddressBudget(): void
     {
-        $this->settings->update(['demo_enabled' => 1, 'turnstile_enabled' => 1]);
+        $this->settings->update([
+            'demo_enabled' => 1,
+            'turnstile_enabled' => 1,
+            'turnstile_secret_key' => 'guest-budget-secret',
+        ]);
 
         for ($attempt = 1; $attempt <= RateLimiter::CAPTCHA_MAX_ATTEMPTS; $attempt++) {
             $response = $this->request('POST', '/api/v2/auth/guest', [
@@ -411,6 +450,7 @@ final class GuestApiTest extends TestCase
         );
         self::assertFalse($default['turnstile']['enabled']);
         self::assertSame('3x00000000000000000000FF', $default['turnstile']['site_key']);
+        self::assertFalse($default['turnstile']['test_keys']);
 
         $this->settings->update([
             'demo_enabled' => 1,
@@ -427,9 +467,40 @@ final class GuestApiTest extends TestCase
             ['enabled' => true, 'landing' => 'demo', 'templates' => ['vpcs']],
             $payload['demo']
         );
-        self::assertSame(['enabled' => true, 'site_key' => 'site-key-for-tests'], $payload['turnstile']);
+        self::assertSame(
+            ['enabled' => true, 'site_key' => 'site-key-for-tests', 'test_keys' => false],
+            $payload['turnstile']
+        );
         self::assertArrayNotHasKey('turnstile_secret_key', $payload);
         self::assertStringNotContainsString('top-secret-value', (string) $response->getBody());
+    }
+
+    public function testCaptchaTokenCannotBeReusedAcrossActions(): void
+    {
+        $this->settings->update([
+            'demo_enabled' => 1,
+            'turnstile_enabled' => 1,
+            'turnstile_secret_key' => 'cross-action-secret',
+        ]);
+
+        // The 'valid-token' fake is minted with action=login.
+        $guest = $this->request(
+            'POST',
+            '/api/v2/auth/guest',
+            ['cf-turnstile-response' => 'valid-token']
+        );
+        self::assertSame(422, $guest->getStatusCode(), (string) $guest->getBody());
+        self::assertSame(TurnstileVerifier::INVALID_MESSAGE, $this->json($guest)['message']);
+        self::assertSame(0, $this->guestCount());
+
+        // And 'valid-guest-token' is minted with action=guest.
+        $login = $this->request('POST', '/api/v2/auth/login', [
+            'username' => 'nobody',
+            'password' => 'Wrong-Password-2026!',
+            'cf-turnstile-response' => 'valid-guest-token',
+        ]);
+        self::assertSame(422, $login->getStatusCode(), (string) $login->getBody());
+        self::assertSame(TurnstileVerifier::INVALID_MESSAGE, $this->json($login)['message']);
     }
 
     public function testLoginRequiresCaptchaWhenTurnstileIsEnabled(): void
@@ -437,6 +508,7 @@ final class GuestApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
 
@@ -444,6 +516,7 @@ final class GuestApiTest extends TestCase
             'turnstile_enabled' => 1,
             'turnstile_secret_key' => 'login-test-secret',
         ]);
+        $this->enableLegacyV1();
 
         $credentials = ['username' => 'admin', 'password' => self::PASSWORD];
 

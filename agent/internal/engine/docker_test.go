@@ -84,6 +84,7 @@ func newDockerTestManagerWithLogger(t *testing.T, binary string, logger *slog.Lo
 	t.Helper()
 	cfg := config.Config{
 		RunDir:         t.TempDir(),
+		StateDir:       t.TempDir(),
 		ImagesDir:      t.TempDir(),
 		CgroupRoot:     t.TempDir(),
 		DisableCgroups: true,
@@ -468,14 +469,18 @@ esac`
 	binary, logPath := fakeDocker(t, body)
 	manager := newDockerTestManager(t, binary)
 	spec := dockerTestSpec(t)
+	runDir := manager.runDirFor(spec.ID, spec.LabID)
+	if err := os.MkdirAll(runDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
 
-	if _, err := manager.startDocker(spec, t.TempDir()); err != nil {
+	if _, err := manager.startDocker(spec, runDir); err != nil {
 		t.Fatalf("start docker: %v", err)
 	}
 	if err := manager.Stop(spec.ID); err != nil {
 		t.Fatalf("stop docker: %v", err)
 	}
-	statePath := filepath.Join(manager.nodes[spec.ID].RunDir, stateFileName)
+	statePath := manager.statePathFor(spec.ID, spec.LabID)
 	if _, err := os.Stat(statePath); err != nil {
 		t.Fatalf("stop must preserve the state file: %v", err)
 	}
@@ -487,7 +492,7 @@ esac`
 		t.Fatalf("stop must not remove the container: %v", calls)
 	}
 
-	runDir := manager.nodes[spec.ID].RunDir
+	runDir = manager.nodes[spec.ID].RunDir
 	wipeCallsStart := len(dockerCalls(t, logPath))
 	if err := manager.Wipe(spec.ID); err != nil {
 		t.Fatalf("wipe docker: %v", err)
@@ -504,7 +509,7 @@ esac`
 	}
 }
 
-func writeDockerStateFile(t *testing.T, runRoot, labID, nodeID, containerID string) string {
+func writeDockerStateFile(t *testing.T, manager *Manager, labID, nodeID, containerID string) string {
 	t.Helper()
 	spec := Spec{
 		ID:       nodeID,
@@ -516,26 +521,23 @@ func writeDockerStateFile(t *testing.T, runRoot, labID, nodeID, containerID stri
 		Docker:   &DockerOptions{Pull: boolPointer(false)},
 	}
 	spec.Normalize()
+	runDir := manager.runDirFor(nodeID, labID)
+	if err := os.MkdirAll(runDir, 0o750); err != nil {
+		t.Fatalf("create docker run dir: %v", err)
+	}
 	state := nodeState{
 		ID:          nodeID,
 		LabID:       labID,
 		Engine:      "docker",
+		RunDir:      runDir,
 		ContainerID: containerID,
 		Image:       spec.Image,
 		Docker:      spec.Docker,
 		Spec:        &spec,
 		Started:     time.Now().UTC().Format(time.RFC3339),
 	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal docker state: %v", err)
-	}
-	dir := filepath.Join(runRoot, shortPathComponent(labID), shortPathComponent(nodeID))
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		t.Fatalf("create docker run dir: %v", err)
-	}
-	path := filepath.Join(dir, stateFileName)
-	if err := os.WriteFile(path, data, 0o640); err != nil {
+	path := manager.statePathFor(nodeID, labID)
+	if err := manager.writeStateFile(path, state); err != nil {
 		t.Fatalf("write docker state: %v", err)
 	}
 
@@ -577,9 +579,8 @@ esac`
 	manager.net.SysClassNet = t.TempDir()
 	manager.net.Run = func(name string, args ...string) ([]byte, error) { return nil, nil }
 
-	runRoot := manager.cfg.RunDir
-	keepState := writeDockerStateFile(t, runRoot, "lab-keep", "keep", "cidkeep")
-	goneState := writeDockerStateFile(t, runRoot, "lab-gone", "gone", "cidgone")
+	keepState := writeDockerStateFile(t, manager, "lab-keep", "keep", "cidkeep")
+	goneState := writeDockerStateFile(t, manager, "lab-gone", "gone", "cidgone")
 	_ = goneState
 	writeDockerInspect(t, dataDir, "cidkeep", "keep", "lab-keep", true)
 	writeDockerInspect(t, dataDir, "cidgone", "gone", "lab-gone", true)
@@ -649,7 +650,7 @@ esac`
 	t.Setenv("FAKE_DOCKER_DATA", dataDir)
 	manager := newDockerTestManager(t, binary)
 	manager.net.SysClassNet = t.TempDir()
-	writeDockerStateFile(t, manager.cfg.RunDir, "lab-keep", "keep", "cidkeep")
+	writeDockerStateFile(t, manager, "lab-keep", "keep", "cidkeep")
 	writeDockerInspect(t, dataDir, "cidkeep", "keep", "lab-keep", true)
 
 	if _, err := manager.Reconcile(nil); err != nil {
@@ -916,7 +917,7 @@ ps) echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;
 esac`
 	binary, _ := fakeDocker(t, body)
 	manager := newDockerTestManager(t, binary)
-	statePath := writeDockerStateFile(t, manager.cfg.RunDir, "lab-keep", "keep", "cidkeep")
+	statePath := writeDockerStateFile(t, manager, "lab-keep", "keep", "cidkeep")
 
 	result, err := manager.Reconcile(nil)
 	if err != nil {

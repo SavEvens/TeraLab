@@ -16,14 +16,21 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Labs\LabService;
+use TeraLab\Api\Tests\Support\SetupToken;
+use TeraLab\Api\Tests\Support\StaticAssets;
 
 final class LabApiTest extends TestCase
 {
+    use SetupToken;
+    use StaticAssets;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private string $root;
     /** @var SlimApp<\DI\Container> */
     private SlimApp $app;
+    private AgentClient $agent;
     private string $cookie = '';
     private string $csrf = '';
     private \PDO $pdo;
@@ -42,7 +49,9 @@ final class LabApiTest extends TestCase
         $this->root = sys_get_temp_dir() . '/teralab-labapi-' . bin2hex(random_bytes(6));
         mkdir($this->root . '/labs', 0770, true);
         mkdir($this->root . '/data', 0770, true);
+        $this->installStaticAssets($this->root);
         $config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($config);
         $agent = new AgentClient($config, function (string $method, string $path, array $payload): array {
             $this->calls[] = ['path' => $path, 'payload' => $payload];
             if ($path === '/v1/lab.ensure') {
@@ -82,11 +91,13 @@ final class LabApiTest extends TestCase
         });
 
         $this->pdo = (new Database($config))->pdo();
+        $this->agent = $agent;
         $this->app = (new App($config, $agent))->create();
         $this->registerImage('base.qcow2');
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         $this->cookie = $this->cookie($setup);
         $this->csrf = (string) $this->json($setup)['csrf_token'];
@@ -97,7 +108,7 @@ final class LabApiTest extends TestCase
         $this->remove($this->root);
     }
 
-    public function testCreateStartExportImportAndV1NodeLifecycle(): void
+    public function testCreateStartExportImportAndLabScopedNodeLifecycle(): void
     {
         $create = $this->request('POST', '/api/v2/labs', [
             'name' => 'API Lab',
@@ -135,7 +146,14 @@ final class LabApiTest extends TestCase
         self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
         self::assertNotSame($lab['id'], $this->json($import)['data']['id']);
 
-        // Legacy v1 core routes: login, auth, labs, node start/stop/wipe.
+        // Lab-scoped node lifecycle replaces the removed raw agent routes.
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/stop')->getStatusCode());
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/start')->getStatusCode());
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/stop')->getStatusCode());
+        self::assertSame(200, $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/nodes/1/wipe')->getStatusCode());
+
+        // Legacy v1 is opt-in and read-only when enabled.
+        $this->enableLegacyV1();
         $login = $this->request('POST', '/api/auth/login', [
             'username' => 'admin',
             'password' => self::PASSWORD,
@@ -152,15 +170,9 @@ final class LabApiTest extends TestCase
         self::assertNotEmpty($this->json($labs)['data']);
 
         $path = (string) $lab['path'];
-        $v1Start = $this->request('GET', '/api/labs/' . $path . '/nodes/1/start', [], [], $v1Cookie);
-        self::assertSame(200, $v1Start->getStatusCode(), (string) $v1Start->getBody());
-        self::assertSame('success', $this->json($v1Start)['status']);
-
-        $v1Stop = $this->request('GET', '/api/labs/' . $path . '/nodes/1/stop', [], [], $v1Cookie);
-        self::assertSame(200, $v1Stop->getStatusCode());
-
-        $v1Wipe = $this->request('GET', '/api/labs/' . $path . '/nodes/1/wipe', [], [], $v1Cookie);
-        self::assertSame(200, $v1Wipe->getStatusCode());
+        self::assertSame(405, $this->request('GET', '/api/labs/' . $path . '/nodes/1/start', [], [], $v1Cookie)->getStatusCode());
+        self::assertSame(405, $this->request('GET', '/api/labs/' . $path . '/nodes/1/stop', [], [], $v1Cookie)->getStatusCode());
+        self::assertSame(405, $this->request('GET', '/api/labs/' . $path . '/nodes/1/wipe', [], [], $v1Cookie)->getStatusCode());
     }
 
     public function testSaveIncrementsRevisionAndRejectsStaleWrites(): void
@@ -215,6 +227,10 @@ final class LabApiTest extends TestCase
         $row = $this->labRow($list, (string) $lab['id']);
         self::assertFalse($row['running']);
         self::assertSame(0, $row['running_nodes']);
+        // The UI offers owner actions from this field; it must be the user id.
+        $adminID = (string) $this->pdo->query("SELECT id FROM users WHERE username = 'admin'")->fetchColumn();
+        self::assertSame($adminID, $row['owner']);
+        self::assertArrayNotHasKey('attributes', $row);
 
         $this->runningNodes = [
             ['id' => 'a-1', 'lab_id' => $lab['id'], 'state' => 'running'],
@@ -535,24 +551,40 @@ final class LabApiTest extends TestCase
     {
         $this->writeBuiltinTemplate('vpcs');
 
-        // Just under the YAML cap, but the serialized .unl crosses 10 MB.
-        $description = str_repeat('x', 10485500);
+        $description = str_repeat('x', 65537);
         $oversized = "schema: 1\nname: Oversized\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n"
             . "description: |\n  " . $description . "\n";
-        self::assertLessThanOrEqual(10485760, strlen($oversized));
 
         $response = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($oversized, 'oversized.yaml'));
         self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
-        self::assertStringContainsString('10 MB .unl limit', (string) $this->json($response)['message']);
+        self::assertStringContainsString('Description is larger than 64 KiB', (string) $this->json($response)['message']);
         self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
         self::assertSame([], glob($this->root . '/labs/.lab-*') ?: []);
 
-        $bigConfig = str_repeat('a', 1048577);
+        $bigConfig = str_repeat('a', 65537);
         $configYaml = "schema: 1\nname: Big config\ndefaults: {template: vpcs}\nnodes:\n  PC1:\n"
             . "    config: \"" . $bigConfig . "\"\n";
         $configResponse = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($configYaml, 'config.yaml'));
         self::assertSame(422, $configResponse->getStatusCode(), (string) $configResponse->getBody());
-        self::assertStringContainsString('larger than 1 MB', (string) $this->json($configResponse)['message']);
+        self::assertStringContainsString('larger than 64 KiB', (string) $this->json($configResponse)['message']);
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+
+        // A YAML document under the 10 MB input cap can still compile to a
+        // .unl over the 10 MB stored-format cap because the source text is
+        // embedded for provenance.
+        $bloated = "schema: 1\nname: Bloated\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n"
+            . str_repeat("# padding padding padding padding\n", 300000);
+        self::assertLessThanOrEqual(10485760, strlen($bloated));
+        $bloatedResponse = $this->request(
+            'POST',
+            '/api/v2/labs/import',
+            [],
+            [],
+            null,
+            $this->upload($bloated, 'bloated.yaml'),
+        );
+        self::assertSame(422, $bloatedResponse->getStatusCode(), (string) $bloatedResponse->getBody());
+        self::assertStringContainsString('10 MB .unl limit', (string) $this->json($bloatedResponse)['message']);
         self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
 
         $normal = "schema: 1\nname: Apply Guard\ndefaults: {template: vpcs}\nnodes: {PC1: {}}\n";
@@ -567,7 +599,7 @@ final class LabApiTest extends TestCase
             'revision' => 1,
         ]);
         self::assertSame(422, $apply->getStatusCode(), (string) $apply->getBody());
-        self::assertStringContainsString('10 MB .unl limit', (string) $this->json($apply)['message']);
+        self::assertStringContainsString('Description is larger than 64 KiB', (string) $this->json($apply)['message']);
 
         $show = $this->json($this->request('GET', '/api/v2/labs/' . $lab['id']))['data'];
         self::assertSame(1, $show['revision']);
@@ -650,6 +682,86 @@ final class LabApiTest extends TestCase
         self::assertLessThanOrEqual(32, strlen($stored));
     }
 
+    public function testUnlImportRejectsOverCapTopology(): void
+    {
+        $nodes = '';
+        for ($index = 1; $index <= LabService::MAX_NODES + 1; $index++) {
+            $nodes .= '<node id="' . $index . '" name="N' . $index . '" type="vpcs" />';
+        }
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<lab name="Too Many Nodes" id="too-many" version="1"><topology><nodes>'
+            . $nodes
+            . '</nodes><networks /></topology></lab>';
+
+        $response = $this->request('POST', '/api/v2/labs/import', [], [], null, $this->upload($xml, 'too-many.unl'));
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('At most 64 nodes', (string) $this->json($response)['message']);
+        self::assertSame([], glob($this->root . '/labs/*.unl') ?: []);
+    }
+
+    public function testRouteIdsAndNodeReferencesAreShapeChecked(): void
+    {
+        $lab = $this->createLab('Route shape');
+        $overlong = str_repeat('a', 65);
+
+        self::assertSame(422, $this->request('GET', '/api/v2/labs/' . $overlong)->getStatusCode());
+        self::assertSame(422, $this->request('POST', '/api/v2/labs/' . $overlong . '/start')->getStatusCode());
+        self::assertSame(
+            422,
+            $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes/' . str_repeat('n', 129) . '/status')->getStatusCode(),
+        );
+        self::assertSame(422, $this->request('GET', '/api/v2/templates/' . $overlong)->getStatusCode());
+        self::assertSame(422, $this->request('GET', '/api/v2/images/' . $overlong)->getStatusCode());
+        self::assertSame(
+            422,
+            $this->request('POST', '/api/v2/labs/' . $lab['id'] . '/snapshots/not-a-snapshot/restore', [])->getStatusCode(),
+        );
+
+        $huge = $this->request('POST', '/api/v2/labs', ['name' => str_repeat('x', 200000)]);
+        self::assertSame(422, $huge->getStatusCode(), (string) $huge->getBody());
+        self::assertLessThan(512, strlen((string) $this->json($huge)['message']));
+    }
+
+    public function testIconAndPicturePoliciesApplyOnCreateAndSave(): void
+    {
+        $badIcon = $this->request('POST', '/api/v2/labs', [
+            'name' => 'Bad icon',
+            'nodes' => [[
+                'id' => '1',
+                'name' => 'PC1',
+                'type' => 'vpcs',
+                'icon' => '../../../api/v2/labs',
+                'interfaces' => [],
+            ]],
+        ]);
+        self::assertSame(422, $badIcon->getStatusCode(), (string) $badIcon->getBody());
+
+        $badPicture = $this->request('POST', '/api/v2/labs', [
+            'name' => 'Bad picture',
+            'nodes' => [[
+                'id' => '1',
+                'name' => 'Diagram',
+                'type' => 'picture',
+                'image' => '/api/v2/labs',
+                'interfaces' => [],
+            ]],
+        ]);
+        self::assertSame(422, $badPicture->getStatusCode(), (string) $badPicture->getBody());
+
+        $lab = $this->createLab('Icon save');
+        $save = $this->request('PUT', '/api/v2/labs/' . $lab['id'], [
+            'revision' => 1,
+            'nodes' => [[
+                'id' => '1',
+                'name' => 'PC1',
+                'type' => 'vpcs',
+                'icon' => '//evil.example/icon.png',
+                'interfaces' => [['id' => 0, 'network_id' => '0']],
+            ]],
+        ]);
+        self::assertSame(422, $save->getStatusCode(), (string) $save->getBody());
+    }
+
     /**
      * @param list<array<string, mixed>> $labs
      * @return array<string, mixed>
@@ -700,6 +812,21 @@ final class LabApiTest extends TestCase
         ]);
 
         return $id;
+    }
+
+    private function enableLegacyV1(): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at) '
+            . 'ON CONFLICT(key) DO UPDATE SET value = :value, updated_at = :updated_at'
+        );
+        $statement->execute([
+            ':key' => 'legacy_v1_enabled',
+            ':value' => '1',
+            ':updated_at' => time(),
+        ]);
+        $config = Config::forTests($this->root, $this->root . '/data');
+        $this->app = (new App($config, $this->agent))->create();
     }
 
     /**

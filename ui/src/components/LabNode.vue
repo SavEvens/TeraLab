@@ -2,7 +2,7 @@
 <template>
   <div class="lab-node" :class="[data.kind, data.state]">
     <div class="node-icon">
-      <img v-if="data.icon" :src="`/images/icons/${data.icon}`" alt="" />
+      <img v-if="iconSrc" :src="iconSrc" alt="" />
       <svg v-else viewBox="0 0 32 32" aria-hidden="true">
         <template v-if="data.kind === 'vpcs'">
           <rect x="5" y="7" width="22" height="14" rx="1.5" />
@@ -35,7 +35,10 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
+import { safeIconSrc } from '../media'
 
-defineProps({ data: { type: Object, required: true } })
+const props = defineProps({ data: { type: Object, required: true } })
+const iconSrc = computed(() => safeIconSrc(props.data.icon))
 </script>

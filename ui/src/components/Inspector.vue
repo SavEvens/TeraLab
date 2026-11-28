@@ -69,7 +69,7 @@
           </option>
         </select>
       </label>
-      <datalist v-if="isDocker" id="docker-image-options">
+      <datalist v-if="isDocker && dockerImageSuggestions" id="docker-image-options">
         <option v-for="image in dockerImages" :key="image.reference" :value="image.reference">
           {{ image.size ? `${image.reference} (${image.size})` : image.reference }}
         </option>
@@ -105,7 +105,8 @@ const props = defineProps({
   node: { type: Object, default: null },
   templates: { type: Array, default: () => [] },
   images: { type: Array, default: () => [] },
-  dockerImages: { type: Array, default: () => [] }
+  dockerImages: { type: Array, default: () => [] },
+  dockerImageSuggestions: { type: Boolean, default: true }
 })
 const emit = defineEmits(['update', 'delete', 'console', 'config', 'ports', 'template'])
 
@@ -119,9 +120,12 @@ const dockerTemplateImage = computed(() => {
   return template?.options?.docker?.image || ''
 })
 const dockerImagePlaceholder = computed(() => dockerTemplateImage.value || 'e.g. frrouting/frr:v8.4.1')
-const dockerImageHint = computed(() => (dockerTemplateImage.value
-  ? `Empty uses the template default (${dockerTemplateImage.value}). Pulled images are offered as you type.`
-  : 'No container image set — enter a container reference. Pulled images are offered as you type.'))
+const dockerImageHint = computed(() => {
+  const base = dockerTemplateImage.value
+    ? `Empty uses the template default (${dockerTemplateImage.value}).`
+    : 'No container image set — enter a container reference.'
+  return props.dockerImageSuggestions ? `${base} Pulled images are offered as you type.` : base
+})
 
 // The agent only accepts these four drivers. Legacy labs may still carry an
 // older alias; show the canonical equivalent without rewriting the stored

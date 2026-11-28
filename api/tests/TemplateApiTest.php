@@ -11,10 +11,14 @@ use Psr\Http\Message\ResponseInterface;
 use Slim\App as SlimApp;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Psr7\Factory\StreamFactory;
+use Slim\Psr7\UploadedFile;
+use Symfony\Component\Yaml\Yaml;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Templates\TemplateRepository;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 /**
  * The builtin FRR templates through the public template API: they must load,
@@ -22,6 +26,8 @@ use TeraLab\Api\Database\Database;
  */
 final class TemplateApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
 
     private string $root;
@@ -39,6 +45,7 @@ final class TemplateApiTest extends TestCase
         // The repository root is the real one so the actual builtin templates
         // under api/templates/builtin are exercised.
         $this->config = Config::forTests(dirname(__DIR__, 2), $this->root . '/data');
+        $this->installSetupToken($this->config);
         $agent = new AgentClient($this->config, static fn (string $method, string $path, array $payload): array => [
             200,
             '{"ok":true,"result":{}}',
@@ -48,6 +55,7 @@ final class TemplateApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         self::assertSame(201, $setup->getStatusCode(), (string) $setup->getBody());
         $this->cookie = $this->cookie($setup);
@@ -135,7 +143,7 @@ final class TemplateApiTest extends TestCase
             );
             self::assertSame(403, $response->getStatusCode(), $method . ' ' . $path);
             self::assertSame(
-                'The demo does not allow template changes.',
+                'Insufficient permissions.',
                 (string) $this->json($response)['message'],
             );
         }
@@ -156,6 +164,320 @@ final class TemplateApiTest extends TestCase
         self::assertFileExists($this->config->templatesDir . '/admin-new.yaml');
     }
 
+    public function testBuiltinTemplateIdsAreReserved(): void
+    {
+        $vpcs = (string) file_get_contents(dirname(__DIR__) . '/templates/builtin/vpcs.yaml');
+        self::assertStringContainsString('id: vpcs', $vpcs);
+
+        $save = $this->request(
+            'PUT',
+            '/api/v2/templates/vpcs',
+            ['yaml' => $vpcs],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(409, $save->getStatusCode(), (string) $save->getBody());
+        self::assertFileDoesNotExist($this->config->templatesDir . '/vpcs.yaml');
+
+        $import = $this->request(
+            'POST',
+            '/api/v2/templates/import',
+            [],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+            $this->uploaded($vpcs, 'vpcs.yaml'),
+        );
+        self::assertSame(409, $import->getStatusCode(), (string) $import->getBody());
+        self::assertFileDoesNotExist($this->config->templatesDir . '/vpcs.yaml');
+
+        $delete = $this->request(
+            'DELETE',
+            '/api/v2/templates/vpcs',
+            [],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(409, $delete->getStatusCode(), (string) $delete->getBody());
+        self::assertFileExists(dirname(__DIR__) . '/templates/builtin/vpcs.yaml');
+    }
+
+    public function testPreexistingCustomShadowCannotOverrideABuiltin(): void
+    {
+        // Simulate a custom file created before the reserved-id rule existed.
+        if (!is_dir($this->config->templatesDir)) {
+            mkdir($this->config->templatesDir, 0770, true);
+        }
+        file_put_contents(
+            $this->config->templatesDir . '/vpcs.yaml',
+            "schema: 1\nid: vpcs\nname: Shadow VPC\nkind: docker\noptions:\n  docker:\n    image: evil.example/shadow:latest\n",
+        );
+
+        $show = $this->request('GET', '/api/v2/templates/vpcs', [], [], $this->cookie);
+        self::assertSame(200, $show->getStatusCode(), (string) $show->getBody());
+        $template = $this->json($show)['data'];
+        self::assertSame('builtin', $template['source']);
+        self::assertSame('VPC', $template['name']);
+        self::assertSame('vpcs', $template['kind']);
+
+        $list = $this->request('GET', '/api/v2/templates', [], [], $this->cookie);
+        self::assertSame(200, $list->getStatusCode(), (string) $list->getBody());
+        $matches = array_values(array_filter(
+            $this->json($list)['data'],
+            static fn (array $entry): bool => ($entry['id'] ?? '') === 'vpcs',
+        ));
+        self::assertCount(1, $matches);
+        self::assertSame('builtin', $matches[0]['source']);
+    }
+
+    public function testBuiltinTemplateCanBeDuplicatedWithoutOverwritingIt(): void
+    {
+        $builtinPath = dirname(__DIR__) . '/templates/builtin/vpcs.yaml';
+        $before = (string) file_get_contents($builtinPath);
+
+        $duplicate = $this->request(
+            'POST',
+            '/api/v2/templates/vpcs/duplicate',
+            [],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(200, $duplicate->getStatusCode(), (string) $duplicate->getBody());
+        $copy = $this->json($duplicate)['data'];
+        self::assertSame('vpcs-copy', $copy['id']);
+        self::assertSame('custom', $copy['source']);
+        self::assertFileExists($this->config->templatesDir . '/vpcs-copy.yaml');
+        self::assertSame($before, (string) file_get_contents($builtinPath));
+    }
+
+    public function testEditorsCannotMutateTheTemplateCatalogue(): void
+    {
+        $adminCookie = $this->cookie;
+        $adminCsrf = $this->csrf;
+
+        $owned = $this->request(
+            'PUT',
+            '/api/v2/templates/admin-owned',
+            ['yaml' => "schema: 1\nid: admin-owned\nname: Admin Owned\nkind: vpcs\n"],
+            ['X-CSRF-Token' => $adminCsrf],
+            $adminCookie,
+        );
+        self::assertSame(200, $owned->getStatusCode(), (string) $owned->getBody());
+
+        [$editorCookie, $editorCsrf] = $this->editorSession();
+        $cases = [
+            ['PUT', '/api/v2/templates/editor-owned', ['yaml' => "schema: 1\nid: editor-owned\nname: Editor\nkind: vpcs\n"]],
+            ['POST', '/api/v2/templates/import', []],
+            ['POST', '/api/v2/templates/admin-owned/duplicate', []],
+            ['DELETE', '/api/v2/templates/admin-owned', []],
+        ];
+        foreach ($cases as [$method, $path, $body]) {
+            $response = $this->request(
+                $method,
+                $path,
+                $body,
+                ['X-CSRF-Token' => $editorCsrf],
+                $editorCookie,
+            );
+            self::assertSame(403, $response->getStatusCode(), $method . ' ' . $path);
+        }
+        self::assertFileDoesNotExist($this->config->templatesDir . '/editor-owned.yaml');
+        self::assertFileExists($this->config->templatesDir . '/admin-owned.yaml');
+
+        // Admins can still mutate the same catalogue.
+        $adminSave = $this->request(
+            'PUT',
+            '/api/v2/templates/admin-owned',
+            ['yaml' => "schema: 1\nid: admin-owned\nname: Admin Owned Again\nkind: vpcs\n"],
+            ['X-CSRF-Token' => $adminCsrf],
+            $adminCookie,
+        );
+        self::assertSame(200, $adminSave->getStatusCode(), (string) $adminSave->getBody());
+    }
+
+    public function testTemplateIconMustBeAStaticBasename(): void
+    {
+        $base = "schema: 1\nid: icon-test\nname: Icon test\nkind: vpcs\n";
+        foreach ([
+            '../../about.php',
+            '../../../api/v2/x',
+            '//evil',
+            'https://x/y',
+            'Router.png/..',
+            "bad\nname.png",
+            'missing.png',
+        ] as $icon) {
+            $response = $this->request(
+                'PUT',
+                '/api/v2/templates/icon-test',
+                ['yaml' => $base . 'icon: ' . Yaml::dump($icon) . "\n"],
+                ['X-CSRF-Token' => $this->csrf],
+                $this->cookie,
+            );
+            self::assertSame(422, $response->getStatusCode(), $icon);
+        }
+
+        foreach (['Router.png', 'Cisco ACS.png', ''] as $icon) {
+            $response = $this->request(
+                'PUT',
+                '/api/v2/templates/icon-test',
+                ['yaml' => $base . 'icon: ' . Yaml::dump($icon) . "\n"],
+                ['X-CSRF-Token' => $this->csrf],
+                $this->cookie,
+            );
+            self::assertSame(200, $response->getStatusCode(), $icon . ': ' . (string) $response->getBody());
+        }
+    }
+
+    public function testAdminTemplateSaveIsAudited(): void
+    {
+        $yaml = "schema: 1\nid: audited-template\nname: Audited\nkind: vpcs\n";
+        $response = $this->request(
+            'PUT',
+            '/api/v2/templates/audited-template',
+            ['yaml' => $yaml],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+
+        $pdo = (new Database($this->config))->pdo();
+        $row = $pdo->query(
+            "SELECT user_id, action, target, result, details_json FROM audit_log WHERE action = 'template.save'"
+        )->fetch();
+        self::assertIsArray($row);
+        self::assertSame('audited-template', $row['target']);
+        self::assertSame('success', $row['result']);
+        self::assertNotNull($row['user_id']);
+        $details = json_decode((string) $row['details_json'], true);
+        self::assertIsArray($details);
+        self::assertSame('vpcs', $details['kind'] ?? null);
+    }
+
+    public function testTemplateYamlSizeAliasDepthAndKeyCaps(): void
+    {
+        $base = "schema: 1\nid: bounded\nname: Bounded\nkind: vpcs\n";
+
+        $oversized = $base . str_repeat("# padding padding padding padding\n", 8000);
+        self::assertGreaterThan(262144, strlen($oversized));
+        $response = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => $oversized],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('larger than 256 KiB', (string) $this->json($response)['message']);
+
+        $aliases = "schema: 1\nid: aliases\nname: Aliases\nkind: vpcs\nanchor: &base {cpu: 1}\n";
+        for ($index = 0; $index < 16; $index++) {
+            $aliases .= 'copy' . $index . ": *base\n";
+        }
+        $aliasResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/aliases',
+            ['yaml' => $aliases],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $aliasResponse->getStatusCode(), (string) $aliasResponse->getBody());
+
+        $deep = $base . 'options: ';
+        for ($index = 0; $index < 24; $index++) {
+            $deep .= '[';
+        }
+        $deep .= "'x'";
+        for ($index = 0; $index < 24; $index++) {
+            $deep .= ']';
+        }
+        $deep .= "\n";
+        $deepResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => $deep],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $deepResponse->getStatusCode(), (string) $deepResponse->getBody());
+
+        $manyOptions = $base . "options:\n";
+        for ($index = 0; $index < 65; $index++) {
+            $manyOptions .= '  option' . $index . ": 'x'\n";
+        }
+        $optionResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => $manyOptions],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $optionResponse->getStatusCode(), (string) $optionResponse->getBody());
+        self::assertStringContainsString('at most 64 keys', (string) $this->json($optionResponse)['message']);
+
+        $manyDefaults = $base . "defaults:\n";
+        for ($index = 0; $index < 17; $index++) {
+            $manyDefaults .= '  default' . $index . ": 'x'\n";
+        }
+        $defaultResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => $manyDefaults],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $defaultResponse->getStatusCode(), (string) $defaultResponse->getBody());
+        self::assertStringContainsString('at most 16 keys', (string) $this->json($defaultResponse)['message']);
+
+        $nameResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => "schema: 1\nid: bounded\nname: \"" . str_repeat('n', 129) . "\"\nkind: vpcs\n"],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $nameResponse->getStatusCode(), (string) $nameResponse->getBody());
+    }
+
+    public function testTemplateRouteIdShapeAndDockerConfigPathPolicy(): void
+    {
+        self::assertSame(
+            422,
+            $this->request('GET', '/api/v2/templates/' . str_repeat('t', 65), [], [], $this->cookie)->getStatusCode(),
+        );
+
+        $base = "schema: 1\nid: bad-path\nname: Bad path\nkind: docker\noptions:\n  docker:\n"
+            . "    image: alpine:3.20\n    config_path: ";
+        foreach (['/proc/self/environ', '/sys/kernel/x', '/dev/shm/x', '/etc/../proc/x'] as $path) {
+            $response = $this->request(
+                'PUT',
+                '/api/v2/templates/bad-path',
+                ['yaml' => $base . Yaml::dump($path) . "\n"],
+                ['X-CSRF-Token' => $this->csrf],
+                $this->cookie,
+            );
+            self::assertSame(422, $response->getStatusCode(), $path . ': ' . (string) $response->getBody());
+        }
+    }
+
+    public function testTemplateImportRejectsOversizedUploadBeforeParsing(): void
+    {
+        $oversized = "schema: 1\nid: oversized\nname: Oversized\nkind: vpcs\n"
+            . str_repeat("# padding padding padding padding\n", 8000);
+        self::assertGreaterThan(TemplateRepository::MAX_YAML_BYTES, strlen($oversized));
+
+        $response = $this->request(
+            'POST',
+            '/api/v2/templates/import',
+            [],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+            $this->uploaded($oversized, 'oversized.yaml'),
+        );
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('larger than 256 KiB', (string) $this->json($response)['message']);
+        self::assertFileDoesNotExist($this->config->templatesDir . '/oversized.yaml');
+    }
+
     /**
      * @param array<string, mixed> $body
      * @param array<string, string> $headers
@@ -166,6 +488,7 @@ final class TemplateApiTest extends TestCase
         array $body = [],
         array $headers = [],
         ?string $cookie = null,
+        ?UploadedFile $file = null,
     ): ResponseInterface {
         $request = (new ServerRequestFactory())->createServerRequest($method, $path, ['REMOTE_ADDR' => '127.0.0.1']);
         foreach ($headers as $name => $value) {
@@ -178,6 +501,11 @@ final class TemplateApiTest extends TestCase
             $request = $request
                 ->withHeader('Content-Type', 'application/json')
                 ->withBody((new StreamFactory())->createStream(json_encode($body, JSON_THROW_ON_ERROR)));
+        }
+        if ($file !== null) {
+            $request = $request
+                ->withHeader('Content-Type', 'multipart/form-data; boundary=test')
+                ->withUploadedFiles(['file' => $file]);
         }
 
         return $this->app->handle($request);
@@ -202,6 +530,46 @@ final class TemplateApiTest extends TestCase
         }
 
         return $matches[1];
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function editorSession(): array
+    {
+        $password = 'Teralab-Editor-2026!';
+        $pdo = (new Database($this->config))->pdo();
+        $statement = $pdo->prepare(
+            'INSERT INTO users (id, username, password_hash, role, expiration, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :role, -1, :created_at, :updated_at)'
+        );
+        $statement->execute([
+            ':id' => 'editor-template',
+            ':username' => 'editor-template',
+            ':password_hash' => password_hash($password, PASSWORD_ARGON2ID),
+            ':role' => 'editor',
+            ':created_at' => time(),
+            ':updated_at' => time(),
+        ]);
+        $response = $this->request('POST', '/api/v2/auth/login', [
+            'username' => 'editor-template',
+            'password' => $password,
+        ]);
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+        self::assertNotSame('', $this->cookie($response));
+
+        return [$this->cookie($response), (string) $this->json($response)['csrf_token']];
+    }
+
+    private function uploaded(string $content, string $name): UploadedFile
+    {
+        return new UploadedFile(
+            (new StreamFactory())->createStream($content),
+            $name,
+            'application/yaml',
+            strlen($content),
+            UPLOAD_ERR_OK,
+        );
     }
 
     /**

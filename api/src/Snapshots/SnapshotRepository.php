@@ -98,4 +98,36 @@ final class SnapshotRepository
 
         return $statement->rowCount() > 0;
     }
+
+    /**
+     * Delete every snapshot of a lab. Used when the lab is deleted or when an
+     * expired guest is purged.
+     */
+    public function deleteForLab(string $labID): int
+    {
+        $statement = $this->pdo->prepare('DELETE FROM lab_snapshots WHERE lab_id = :lab_id');
+        $statement->execute([':lab_id' => $labID]);
+
+        return $statement->rowCount();
+    }
+
+    /**
+     * Count and total XML bytes stored for one lab.
+     *
+     * @return array{count: int, bytes: int}
+     */
+    public function stats(string $labID): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(CAST(xml AS BLOB))), 0) AS bytes '
+            . 'FROM lab_snapshots WHERE lab_id = :lab_id'
+        );
+        $statement->execute([':lab_id' => $labID]);
+        $row = $statement->fetch();
+        if (!is_array($row)) {
+            return ['count' => 0, 'bytes' => 0];
+        }
+
+        return ['count' => (int) ($row['count'] ?? 0), 'bytes' => (int) ($row['bytes'] ?? 0)];
+    }
 }

@@ -10,6 +10,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Auth\AuthService;
 use TeraLab\Api\Auth\RateLimiter;
+use TeraLab\Api\Auth\SetupToken;
 use TeraLab\Api\Auth\TurnstileVerifier;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
@@ -25,19 +26,57 @@ final class AuthController
         private readonly SettingsService $settings,
         private readonly RateLimiter $rateLimiter,
         private readonly TurnstileVerifier $turnstile,
+        private readonly SetupToken $setupToken,
     ) {
     }
 
     public function setup(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $data = Json::body($request);
+        if ($this->auth->hasUsers()) {
+            throw new HttpException(409, 'Setup has already been completed.');
+        }
+
+        $ip = $this->ip($request);
+        // The explicit header wins; the JSON field is the fallback for clients
+        // that cannot set custom headers.
+        $token = $request->getHeaderLine('X-TeraLab-Setup-Token');
+        if ($token === '') {
+            $bodyToken = $data['setup_token'] ?? null;
+            $token = is_string($bodyToken) ? $bodyToken : '';
+        }
+
+        // Charge the attempt before comparing the token so an unauthenticated
+        // caller cannot brute-force the operator secret.
+        $this->rateLimiter->assertCountBelow(
+            'setup:' . $ip,
+            $ip,
+            RateLimiter::SETUP_MAX_PER_IP,
+            RateLimiter::SETUP_WINDOW_SECONDS,
+            RateLimiter::SETUP_LIMIT_MESSAGE,
+        );
+        $this->rateLimiter->assertCountBelow(
+            RateLimiter::SETUP_GLOBAL_KEY,
+            RateLimiter::SETUP_GLOBAL_IP,
+            RateLimiter::SETUP_MAX_GLOBAL,
+            RateLimiter::SETUP_WINDOW_SECONDS,
+            RateLimiter::SETUP_LIMIT_MESSAGE,
+        );
+        $this->rateLimiter->consume('setup:' . $ip, $ip);
+        $this->rateLimiter->consume(RateLimiter::SETUP_GLOBAL_KEY, RateLimiter::SETUP_GLOBAL_IP);
+
+        $this->setupToken->assertValid($token);
+
         $username = $this->stringField($data, 'username');
         $password = $this->stringField($data, 'password');
         $email = $this->optionalStringField($data, 'email');
-        $ip = $this->ip($request);
         $userAgent = $request->getHeaderLine('User-Agent');
 
         $this->auth->setup($username, $password, $email, $ip);
+        $this->setupToken->remove();
+        // A prior failed login attempt for this not-yet-existing username must
+        // not make the setup response fail after the administrator was created.
+        $this->rateLimiter->clear($username, $ip);
         $session = $this->auth->login($username, $password, $ip, $userAgent);
 
         return $this->withSessionCookie(
@@ -56,7 +95,7 @@ final class AuthController
     {
         $data = Json::body($request);
         $ip = $this->ip($request);
-        $this->requireCaptcha($request, $data, $ip);
+        $this->requireCaptcha($request, $data, $ip, 'login');
         $username = $this->stringField($data, 'username');
         $password = $this->stringField($data, 'password');
         $session = $this->auth->login(
@@ -102,7 +141,7 @@ final class AuthController
         }
 
         $data = Json::body($request);
-        $this->requireCaptcha($request, $data, $ip);
+        $this->requireCaptcha($request, $data, $ip, 'guest');
 
         // Consume the guest budget before minting: provisioning failures must
         // not refund a slot, and the budget itself bounds burst creation.
@@ -219,8 +258,12 @@ final class AuthController
     /**
      * @param array<string, mixed> $data
      */
-    private function requireCaptcha(ServerRequestInterface $request, array $data, string $ip): void
-    {
+    private function requireCaptcha(
+        ServerRequestInterface $request,
+        array $data,
+        string $ip,
+        string $action,
+    ): void {
         if ($this->settings->int('turnstile_enabled', 0) !== 1) {
             return;
         }
@@ -250,6 +293,8 @@ final class AuthController
             $this->settings->string('turnstile_secret_key', ''),
             $token,
             $ip,
+            $action,
+            $this->settings->string('turnstile_hostname', ''),
         );
     }
 

@@ -9,6 +9,7 @@ on:
       - "v1.6-dev"
       - "feat/**"
       - "fix/**"
+      - "security/**"
   pull_request:
   workflow_dispatch:
 
@@ -129,6 +130,7 @@ jobs:
             scripts/check-artifact-policy.sh \
             scripts/php-lint.sh \
             scripts/check-secrets.sh \
+            scripts/check-install-perms.sh \
             scripts/dev-vm.sh \
             scripts/setup-runtime-paths.sh \
             packaging/dynamips/build.sh \
@@ -139,6 +141,7 @@ jobs:
             packaging/teralab/prerm.sh \
             packaging/teralab/postrm.sh \
             packaging/teralab/teralab-firewall \
+            packaging/teralab/fpm-socket-acl \
             scripts/teralab-project-init.sh
 
   ui:
@@ -156,13 +159,51 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - name: Install
-        run: npm ci --no-audit --no-fund
+        run: npm ci --no-fund
       - name: Unit tests
         run: npm test
       - name: Build
         run: npm run build
       - name: Browser E2E
         run: npm run e2e
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: "8.4"
+          coverage: none
+          tools: composer
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: agent/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Composer audit
+        working-directory: api
+        run: composer audit --locked --no-interaction
+      - name: Go vulnerability check
+        working-directory: agent
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci --no-fund
+      - name: npm production audit
+        working-directory: ui
+        run: npm audit --omit=dev
+      - name: npm dev toolchain audit
+        working-directory: ui
+        run: npm audit
 
   release-gate:
     name: Release gate

@@ -6,10 +6,13 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import AddLinkDialog from '../src/components/AddLinkDialog.vue'
 import Inspector from '../src/components/Inspector.vue'
+import LabNode from '../src/components/LabNode.vue'
+import PictureNode from '../src/components/PictureNode.vue'
 import TemplatePicker from '../src/components/TemplatePicker.vue'
 import ToastHost from '../src/components/ToastHost.vue'
 import ImagesView from '../src/views/ImagesView.vue'
 import SystemView from '../src/views/SystemView.vue'
+import TemplatesView from '../src/views/TemplatesView.vue'
 import PasswordChangeDialog from '../src/components/PasswordChangeDialog.vue'
 import { api, uploadImageWithProgress } from '../src/api'
 import { session } from '../src/stores/session'
@@ -19,16 +22,24 @@ vi.mock('../src/api', () => ({
   api: {
     images: vi.fn(),
     templates: vi.fn(),
+    template: vi.fn(),
+    saveTemplate: vi.fn(),
+    deleteTemplate: vi.fn(),
+    exportTemplate: vi.fn(),
+    importTemplate: vi.fn(),
+    duplicateTemplate: vi.fn(),
     importLegacyImages: vi.fn(),
     deleteImage: vi.fn(),
     renameImage: vi.fn(),
     setImageReference: vi.fn(),
     mapImageTemplate: vi.fn(),
     host: vi.fn(),
+    health: vi.fn(),
     settings: vi.fn(),
     saveSettings: vi.fn(),
     demoStatus: vi.fn(),
     demoSweep: vi.fn(),
+    maintenance: vi.fn(),
     logs: vi.fn(),
     tokens: vi.fn(),
     createToken: vi.fn(),
@@ -166,6 +177,63 @@ describe('TemplatePicker', () => {
     expect(wrapper.findAll('.template-grid li')).toHaveLength(1)
     expect(wrapper.find('[data-group="needs-image"]').text()).toContain('VPCS')
     expect(wrapper.find('[data-group="ready"]').exists()).toBe(false)
+  })
+
+  it('renders only plain basename icons and falls back for traversal or URLs', () => {
+    const iconTemplates = [
+      { id: 'traversal', name: 'Traversal', kind: 'qemu', icon: '../../about.php' },
+      { id: 'backslash', name: 'Backslash', kind: 'qemu', icon: '..\\..\\about.php' },
+      { id: 'external', name: 'External', kind: 'qemu', icon: 'https://evil.test/track.png' },
+      { id: 'plain', name: 'Plain', kind: 'qemu', icon: 'Router.png' }
+    ]
+    const wrapper = mount(TemplatePicker, { props: { templates: iconTemplates, images: [] } })
+    const tile = (name) => wrapper.findAll('.template-grid li').find((item) => item.text().includes(name))
+
+    for (const name of ['Traversal', 'Backslash', 'External']) {
+      expect(tile(name).find('img').exists()).toBe(false)
+      expect(tile(name).find('.template-dot').exists()).toBe(true)
+    }
+    expect(tile('Plain').find('img').attributes('src')).toBe('/images/icons/Router.png')
+    expect(wrapper.html()).not.toContain('about.php')
+    expect(wrapper.html()).not.toContain('evil.test')
+  })
+})
+
+describe('LabNode and PictureNode media', () => {
+  const mountNode = (icon) => mount(LabNode, {
+    props: { data: { id: '1', name: 'R1', kind: 'qemu', state: 'stopped', icon, interfaces: [{ id: 0 }] } },
+    global: { stubs: { Handle: true } }
+  })
+  const mountPicture = (image) => mount(PictureNode, { props: { data: { name: 'Picture', image } } })
+
+  it('renders a plain lab-node icon and falls back for traversal or a URL', () => {
+    expect(mountNode('Router.png').find('.node-icon img').attributes('src')).toBe('/images/icons/Router.png')
+
+    for (const icon of ['../../about.php', 'https://evil.test/track.png', '..\\..\\about.php']) {
+      const wrapper = mountNode(icon)
+      expect(wrapper.find('.node-icon img').exists()).toBe(false)
+      expect(wrapper.find('.node-icon svg').exists()).toBe(true)
+      expect(wrapper.html()).not.toContain('about.php')
+      expect(wrapper.html()).not.toContain('evil.test')
+    }
+  })
+
+  it('never sets an unsafe picture value as an image source', () => {
+    for (const image of ['javascript:alert(1)', 'https://evil.test/track.png', '//evil.test/x.png', '/api/v2/users', '/images/../api/v2/users', '/images/evil.phtml', '/images/EVIL.PHAR']) {
+      const wrapper = mountPicture(image)
+      expect(wrapper.find('img').exists()).toBe(false)
+      expect(wrapper.text()).toBe('Picture')
+      expect(wrapper.html()).not.toContain('evil.test')
+    }
+  })
+
+  it('renders a same-origin static picture and a small base64 data URI', () => {
+    const staticPicture = mountPicture('/images/logo.png')
+    expect(staticPicture.find('img').attributes('src')).toBe('/images/logo.png')
+
+    const dataUri = 'data:image/png;base64,iVBORw0KGgo='
+    expect(mountPicture(dataUri).find('img').attributes('src')).toBe(dataUri)
+    expect(mountPicture('').find('img').exists()).toBe(false)
   })
 })
 
@@ -344,6 +412,34 @@ describe('Inspector', () => {
     expect(labels.some((text) => text.includes('Startup config'))).toBe(false)
   })
 
+  it('hides pulled-image suggestions when the caller may not list them', () => {
+    const templates = [{ id: 'frr', name: 'FRR Router', kind: 'docker', options: { docker: { image: 'frrouting/frr:v8.4.1' } } }]
+    const node = {
+      id: '7',
+      position: { x: 0, y: 0 },
+      data: {
+        name: 'FRR7', template: 'frr', kind: 'docker', image: '', iso: '', console: 'telnet',
+        cpu: 1, ram: 256, serial: 0, interfaces: [{ id: 0 }]
+      }
+    }
+    const wrapper = mount(Inspector, {
+      props: {
+        node,
+        templates,
+        images: [],
+        dockerImages: [{ reference: 'frrouting/frr:v8.4.1' }],
+        dockerImageSuggestions: false
+      }
+    })
+
+    const input = wrapper.find('input[list="docker-image-options"]')
+    expect(input.exists()).toBe(true)
+    expect(input.attributes('placeholder')).toBe('frrouting/frr:v8.4.1')
+    expect(wrapper.find('datalist#docker-image-options').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Empty uses the template default (frrouting/frr:v8.4.1)')
+    expect(wrapper.text()).not.toContain('Pulled images are offered')
+  })
+
   it('falls back to a generic container placeholder without a template image', () => {
     const node = {
       id: '8',
@@ -422,6 +518,49 @@ describe('ImagesView', () => {
     wrapper.unmount()
   })
 
+  it('keeps the catalogue readable but hides every mutation from editors', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', template: 'csr1000v', path: '/var/lib/teralab/images/qemu/base.qcow2', created_at: 0 }]
+    })
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    expect(wrapper.find('form.upload').exists()).toBe(false)
+    expect(wrapper.text()).toContain('read-only for your account')
+    expect(wrapper.text()).not.toContain('Adopt images')
+    const buttons = wrapper.findAll('tbody button').map((button) => button.text())
+    expect(buttons).not.toContain('Rename')
+    expect(buttons).not.toContain('Delete')
+    expect(buttons).not.toContain('Unlink')
+    expect(wrapper.find('tbody tr select').exists()).toBe(false)
+    expect(wrapper.find('tbody tr').text()).toContain('base')
+    expect(wrapper.find('tbody tr').text()).toContain('csr1000v')
+    expect(api.images).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('shows the API 403 message when an editor forces a rename', async () => {
+    session.user = { username: 'admin', role: 'admin' }
+    api.images.mockResolvedValue({
+      data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', path: '/var/lib/teralab/images/qemu/base.qcow2', created_at: 0 }]
+    })
+    api.renameImage.mockRejectedValue(new Error('Administrator role required.'))
+    const wrapper = mount(ImagesView)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Rename').trigger('click')
+    session.user = { username: 'editor', role: 'editor' }
+    await wrapper.vm.$nextTick()
+    await wrapper.find('input[aria-label="Display name"]').setValue('forced')
+    await wrapper.find('.rename-modal form').trigger('submit')
+    await flushPromises()
+
+    expect(api.renameImage).toHaveBeenCalledWith('img1', 'forced')
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('Administrator role required.'))).toBe(true)
+    wrapper.unmount()
+  })
+
   it('marks linked images and labels their delete action Unlink', async () => {
     session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
@@ -497,7 +636,7 @@ describe('ImagesView', () => {
   })
 
   it('renames an image from one dialog with name and reference', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', path: '/var/lib/teralab/images/qemu/base.qcow2', created_at: 0 }]
     })
@@ -526,7 +665,7 @@ describe('ImagesView', () => {
   })
 
   it('only sends the fields that changed', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
     })
@@ -545,7 +684,7 @@ describe('ImagesView', () => {
   })
 
   it('closes without calling the API when nothing changed', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
     })
@@ -564,7 +703,7 @@ describe('ImagesView', () => {
   })
 
   it('validates both rename fields inline', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
     })
@@ -601,7 +740,7 @@ describe('ImagesView', () => {
   })
 
   it('keeps the dialog open and refreshes when the reference fails after the name', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.images.mockResolvedValue({
       data: [{ id: 'img1', name: 'base', reference: 'base.qcow2', kind: 'qemu', created_at: 0 }]
     })
@@ -634,7 +773,7 @@ describe('ImagesView', () => {
   }
 
   it('maps an uploaded image to the chosen template', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     api.templates.mockResolvedValue({
       data: [
         { id: 'csr1000v', name: 'CSR1000V', kind: 'qemu' },
@@ -664,7 +803,7 @@ describe('ImagesView', () => {
   })
 
   it('keeps the uploaded image when the template mapping fails', async () => {
-    session.user = { username: 'editor', role: 'editor' }
+    session.user = { username: 'admin', role: 'admin' }
     uploadImageWithProgress.mockResolvedValue({ data: { id: 'img-new', name: 'base' } })
     api.mapImageTemplate.mockRejectedValue(new Error('template not found'))
 
@@ -684,6 +823,98 @@ describe('ImagesView', () => {
   })
 })
 
+describe('TemplatesView', () => {
+  const templateFixture = (overrides = {}) => ({
+    id: 'linux',
+    name: 'Linux',
+    kind: 'qemu',
+    source: 'builtin',
+    icon: 'Router.png',
+    defaults: {},
+    options: {},
+    yaml: 'id: linux\nkind: qemu\n',
+    ...overrides
+  })
+
+  const openTemplate = async (wrapper) => {
+    await wrapper.find('.palette li').trigger('click')
+    await flushPromises()
+  }
+
+  it('hides template mutations and keeps the YAML readable for editors', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    const template = templateFixture()
+    api.templates.mockResolvedValue({ data: [template] })
+    api.template.mockResolvedValue({ data: template })
+    const wrapper = mount(TemplatesView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('read-only for your account')
+    expect(wrapper.find('input[type="file"]').exists()).toBe(false)
+    await openTemplate(wrapper)
+
+    const buttons = wrapper.findAll('.template-editor button').map((button) => button.text())
+    expect(buttons).toContain('Export')
+    expect(buttons).not.toContain('Duplicate')
+    expect(buttons).not.toContain('Save')
+    expect(buttons).not.toContain('Delete')
+    expect(wrapper.find('textarea').attributes('readonly')).toBeDefined()
+    expect(wrapper.find('.template-icon img').attributes('src')).toBe('/images/icons/Router.png')
+    wrapper.unmount()
+  })
+
+  it('offers import, duplicate, delete and save to admins', async () => {
+    session.user = { username: 'admin', role: 'admin' }
+    const template = templateFixture({ id: 'custom-x', source: 'custom' })
+    api.templates.mockResolvedValue({ data: [template] })
+    api.template.mockResolvedValue({ data: template })
+    const wrapper = mount(TemplatesView)
+    await flushPromises()
+
+    expect(wrapper.find('input[type="file"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('read-only')
+    await openTemplate(wrapper)
+
+    const buttons = wrapper.findAll('.template-editor button').map((button) => button.text())
+    expect(buttons).toContain('Duplicate')
+    expect(buttons).toContain('Delete')
+    expect(buttons).toContain('Save')
+    expect(wrapper.find('textarea').attributes('readonly')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('does not build an icon URL from an unsafe template value', async () => {
+    session.user = { username: 'admin', role: 'admin' }
+    const template = templateFixture({ icon: '../../about.php' })
+    api.templates.mockResolvedValue({ data: [template] })
+    api.template.mockResolvedValue({ data: template })
+    const wrapper = mount(TemplatesView)
+    await flushPromises()
+    await openTemplate(wrapper)
+
+    expect(wrapper.find('.template-icon img').exists()).toBe(false)
+    expect(wrapper.find('.template-icon span').text()).toBe('../../about.php')
+    wrapper.unmount()
+  })
+
+  it('surfaces the API 403 when an editor forces a template save', async () => {
+    session.user = { username: 'editor', role: 'editor' }
+    const template = templateFixture()
+    api.templates.mockResolvedValue({ data: [template] })
+    api.template.mockResolvedValue({ data: template })
+    api.saveTemplate.mockRejectedValue(new Error('Administrator role required.'))
+    const wrapper = mount(TemplatesView)
+    await flushPromises()
+    await openTemplate(wrapper)
+
+    await wrapper.vm.saveTemplate()
+    await flushPromises()
+
+    expect(api.saveTemplate).toHaveBeenCalledWith('linux', 'id: linux\nkind: qemu\n')
+    expect(wrapper.find('p.error[role="alert"]').text()).toContain('Administrator role required.')
+    wrapper.unmount()
+  })
+})
 
 const settingsFixture = () => ({
   timezone: 'UTC',
@@ -703,6 +934,7 @@ const settingsFixture = () => ({
   demo_sweep_interval: 120,
   turnstile_enabled: 1,
   turnstile_site_key: 'site-key',
+  turnstile_hostname: 'labs.example.test',
   turnstile_secret_key: 'configured-secret'
 })
 
@@ -1011,6 +1243,7 @@ describe('SystemView demo', () => {
     api.logs.mockResolvedValue({ data: { lines: [] } })
     api.tokens.mockResolvedValue({ data: [] })
     api.users.mockResolvedValue({ data: usersFixture() })
+    api.health.mockResolvedValue({ turnstile: { enabled: false, site_key: '', test_keys: false } })
     api.version.mockResolvedValue({ product: 'TeraLab', version: '1.6-dev', license: 'AGPL-3.0-or-later', source: 'https://example.test', components: [] })
     api.templates.mockResolvedValue({
       data: [
@@ -1048,6 +1281,7 @@ describe('SystemView demo', () => {
     expect(wrapper.find('input[aria-label="Guest sweep interval (seconds)"]').element.value).toBe('120')
     expect(wrapper.find('select[aria-label="Turnstile"]').element.value).toBe('1')
     expect(wrapper.find('input[aria-label="Turnstile site key"]').element.value).toBe('site-key')
+    expect(wrapper.find('input[aria-label="Turnstile hostname"]').element.value).toBe('labs.example.test')
 
     const labels = wrapper.findAll('.demo-panel label').map((label) => label.text())
     for (const text of [
@@ -1070,6 +1304,154 @@ describe('SystemView demo', () => {
     expect(secret.element.value).toBe('')
     expect(wrapper.find('.secret-field .badge').text()).toBe('configured')
     expect(wrapper.text()).toContain("Cloudflare's public testing keys")
+    wrapper.unmount()
+  })
+
+  it('renders the default resource caps with the API bounds and enforcement hints', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    const labs = wrapper.find('input[aria-label="Max labs per guest"]')
+    expect(labs.element.value).toBe('3')
+    expect(labs.attributes('min')).toBe('1')
+    expect(labs.attributes('max')).toBe('20')
+    expect(labs.attributes('step')).toBe('1')
+
+    const labBytes = wrapper.find('input[aria-label="Max lab size per guest (bytes)"]')
+    expect(labBytes.element.value).toBe('20971520')
+    expect(labBytes.attributes('min')).toBe('1048576')
+    expect(labBytes.attributes('max')).toBe('268435456')
+    expect(wrapper.text()).toContain('20.0 MiB')
+
+    const snapshots = wrapper.find('input[aria-label="Max snapshots per lab"]')
+    expect(snapshots.element.value).toBe('3')
+    expect(snapshots.attributes('min')).toBe('1')
+    expect(snapshots.attributes('max')).toBe('20')
+
+    const tokens = wrapper.find('input[aria-label="Max tokens per user"]')
+    expect(tokens.element.value).toBe('5')
+    expect(tokens.attributes('min')).toBe('1')
+    expect(tokens.attributes('max')).toBe('50')
+
+    const hints = wrapper.find('.demo-panel').text()
+    expect(hints).toContain('Guests always get the smallest caps.')
+    expect(hints).toContain('before a lab is written')
+    wrapper.unmount()
+  })
+
+  it('loads the resource caps from api.settings and normalises out-of-range values', async () => {
+    api.settings.mockResolvedValue({
+      data: {
+        ...settingsFixture(),
+        demo_max_labs_per_guest: 7,
+        demo_max_lab_bytes_per_guest: 8388608,
+        demo_max_snapshots_per_lab: 9,
+        demo_max_tokens_per_user: 12
+      }
+    })
+
+    const wrapper = await mountSystemDemoView()
+    expect(wrapper.find('input[aria-label="Max labs per guest"]').element.value).toBe('7')
+    expect(wrapper.find('input[aria-label="Max lab size per guest (bytes)"]').element.value).toBe('8388608')
+    expect(wrapper.find('input[aria-label="Max snapshots per lab"]').element.value).toBe('9')
+    expect(wrapper.find('input[aria-label="Max tokens per user"]').element.value).toBe('12')
+    wrapper.unmount()
+  })
+
+  it('clamps resource caps the API reports outside its bounds', async () => {
+    api.settings.mockResolvedValue({
+      data: {
+        ...settingsFixture(),
+        demo_max_labs_per_guest: 999,
+        demo_max_lab_bytes_per_guest: 0,
+        demo_max_snapshots_per_lab: '8',
+        demo_max_tokens_per_user: null
+      }
+    })
+
+    const wrapper = await mountSystemDemoView()
+    expect(wrapper.find('input[aria-label="Max labs per guest"]').element.value).toBe('20')
+    expect(wrapper.find('input[aria-label="Max lab size per guest (bytes)"]').element.value).toBe('1048576')
+    expect(wrapper.find('input[aria-label="Max snapshots per lab"]').element.value).toBe('8')
+    expect(wrapper.find('input[aria-label="Max tokens per user"]').element.value).toBe('5')
+    wrapper.unmount()
+  })
+
+  it('saves the resource caps as bounded numbers', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    await wrapper.find('input[aria-label="Max labs per guest"]').setValue('10')
+    await wrapper.find('input[aria-label="Max lab size per guest (bytes)"]').setValue('10485760')
+    await wrapper.find('input[aria-label="Max snapshots per lab"]').setValue('6')
+    await wrapper.find('input[aria-label="Max tokens per user"]').setValue('25')
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+    const payload = api.saveSettings.mock.calls[0][0]
+    expect(payload).toMatchObject({
+      demo_max_labs_per_guest: 10,
+      demo_max_lab_bytes_per_guest: 10485760,
+      demo_max_snapshots_per_lab: 6,
+      demo_max_tokens_per_user: 25
+    })
+    for (const key of [
+      'demo_max_labs_per_guest', 'demo_max_lab_bytes_per_guest',
+      'demo_max_snapshots_per_lab', 'demo_max_tokens_per_user'
+    ]) {
+      expect(typeof payload[key]).toBe('number')
+    }
+    wrapper.unmount()
+  })
+
+  it('prevents saving resource caps outside the API bounds', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    const save = wrapper.find('.demo-panel button[type="submit"]')
+    const labs = wrapper.find('input[aria-label="Max labs per guest"]')
+    await labs.setValue('21')
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).not.toHaveBeenCalled()
+    expect(wrapper.find('p.error[role="alert"]').text()).toContain('allowed range')
+    expect(save.element.disabled).toBe(true)
+
+    await labs.setValue('20')
+    await flushPromises()
+    expect(save.element.disabled).toBe(false)
+
+    const labBytes = wrapper.find('input[aria-label="Max lab size per guest (bytes)"]')
+    expect(labBytes.attributes('min')).toBe('1048576')
+    expect(labBytes.attributes('max')).toBe('268435456')
+    await labBytes.setValue('268435457')
+    await flushPromises()
+    expect(save.element.disabled).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('warns when health reports the shipped Turnstile test keys', async () => {
+    api.health.mockResolvedValue({
+      turnstile: { enabled: true, site_key: '1x00000000000000000000AA', test_keys: true }
+    })
+    const wrapper = await mountSystemDemoView()
+
+    const warning = wrapper.get('[data-test="turnstile-test-key-warning"]')
+    expect(warning.text()).toMatch(/public test keys/i)
+    expect(warning.text()).toMatch(/not production-ready/i)
+    wrapper.unmount()
+  })
+
+  it('saves the optional Turnstile hostname with the demo settings', async () => {
+    const wrapper = await mountSystemDemoView()
+
+    const hostname = wrapper.find('input[aria-label="Turnstile hostname"]')
+    expect(hostname.attributes('maxlength')).toBe('255')
+    await hostname.setValue('demo.example.test')
+    await wrapper.find('.demo-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+    expect(api.saveSettings.mock.calls[0][0].turnstile_hostname).toBe('demo.example.test')
     wrapper.unmount()
   })
 
@@ -1174,10 +1556,16 @@ describe('SystemView demo', () => {
   it('renders the sweep status, including never and unknown values', async () => {
     api.demoStatus
       .mockResolvedValueOnce({
-        data: { last_sweep_at: null, mem_available_mb: null, guests_active: 3, demo_nodes_running: 0 }
+        data: {
+          last_sweep_at: null, mem_available_mb: null, guests_active: 3, demo_nodes_running: 0,
+          guest_labs: 4, guest_lab_bytes: 1572864, guest_snapshots: 2
+        }
       })
       .mockResolvedValueOnce({
-        data: { last_sweep_at: 1800000000, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 1 }
+        data: {
+          last_sweep_at: 1800000000, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 1,
+          guest_labs: 0, guest_lab_bytes: 0, guest_snapshots: 0
+        }
       })
 
     const wrapper = await mountSystemDemoView()
@@ -1187,6 +1575,9 @@ describe('SystemView demo', () => {
     expect(status.find('[data-test="demo-memory"]').text()).toBe('unknown')
     expect(status.find('[data-test="demo-guests"]').text()).toBe('3')
     expect(status.find('[data-test="demo-nodes"]').text()).toBe('0')
+    expect(status.find('[data-test="demo-guest-labs"]').text()).toBe('4')
+    expect(status.find('[data-test="demo-guest-bytes"]').text()).toBe('1.5 MiB')
+    expect(status.find('[data-test="demo-guest-snapshots"]').text()).toBe('2')
 
     await openSystemTab(wrapper, 'Host')
     await openSystemTab(wrapper, 'Demo')
@@ -1196,6 +1587,9 @@ describe('SystemView demo', () => {
     expect(wrapper.find('[data-test="demo-memory"]').text()).toBe('6144 MB')
     expect(wrapper.find('[data-test="demo-guests"]').text()).toBe('0')
     expect(wrapper.find('[data-test="demo-nodes"]').text()).toBe('1')
+    expect(wrapper.find('[data-test="demo-guest-labs"]').text()).toBe('0')
+    expect(wrapper.find('[data-test="demo-guest-bytes"]').text()).toBe('0 B')
+    expect(wrapper.find('[data-test="demo-guest-snapshots"]').text()).toBe('0')
     wrapper.unmount()
   })
 
@@ -1211,7 +1605,10 @@ describe('SystemView demo', () => {
         data: { last_sweep_at: 1800000456, mem_available_mb: 6144, guests_active: 0, demo_nodes_running: 0 }
       })
     api.demoSweep.mockResolvedValue({
-      data: { guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, mem_available_mb: 6144 }
+      data: {
+        guests_purged: 2, labs_wiped: 3, nodes_reaped: 1, mem_available_mb: 6144,
+        guest_files_removed: 4, snapshots_removed: 2
+      }
     })
 
     const wrapper = await mountSystemDemoView()
@@ -1223,21 +1620,24 @@ describe('SystemView demo', () => {
 
     expect(api.demoSweep).toHaveBeenCalledTimes(1)
     expect(toasts.some((toast) => toast.kind === 'success'
-      && toast.message === 'Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped.')).toBe(true)
+      && toast.message === 'Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped; 4 guest files and 2 snapshots removed.')).toBe(true)
     expect(api.demoStatus).toHaveBeenCalledTimes(2)
     expect(wrapper.find('[data-test="demo-last-sweep"]').text()).toBe(new Date(1800000123 * 1000).toLocaleString())
     expect(wrapper.find('[data-test="demo-memory"]').text()).toBe('6144 MB')
     expect(wrapper.find('[data-test="demo-sweep"]').element.disabled).toBe(false)
 
     api.demoSweep.mockResolvedValueOnce({
-      data: { guests_purged: 0, labs_wiped: 0, nodes_reaped: 1, labs_failed: 2, mem_available_mb: 6144 }
+      data: {
+        guests_purged: 0, labs_wiped: 0, nodes_reaped: 1, labs_failed: 2, mem_available_mb: 6144,
+        guest_files_removed: 0, snapshots_removed: 0
+      }
     })
     await wrapper.find('[data-test="demo-sweep"]').trigger('click')
     await flushPromises()
 
     expect(api.demoSweep).toHaveBeenCalledTimes(2)
     expect(toasts.some((toast) => toast.kind === 'warn'
-      && toast.message === 'Sweep complete: 0 guests purged, 0 labs wiped, 1 node stopped; 2 labs could not be wiped and will be retried.')).toBe(true)
+      && toast.message === 'Sweep complete: 0 guests purged, 0 labs wiped, 1 node stopped; 0 guest files and 0 snapshots removed; 2 labs could not be wiped and will be retried.')).toBe(true)
     expect(api.demoStatus).toHaveBeenCalledTimes(3)
     expect(wrapper.find('[data-test="demo-last-sweep"]').text()).toBe(new Date(1800000456 * 1000).toLocaleString())
     expect(wrapper.find('[data-test="demo-sweep"]').element.disabled).toBe(false)
@@ -1305,6 +1705,230 @@ describe('SystemView account settings', () => {
     expect(account.exists()).toBe(true)
     expect(account.findAll('button').some((button) => button.text() === 'Change password')).toBe(true)
     expect(wrapper.find('.settings-panel form button[type="submit"]').element.disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('renders default retention and backup limits with the API bounds', async () => {
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const expected = [
+      ['Login attempt retention (days)', '30', '1', '3650'],
+      ['Audit log retention (days)', '90', '1', '3650'],
+      ['Finished job retention (days)', '30', '1', '3650'],
+      ['Max finished jobs kept', '1000', '100', '1000000'],
+      ['Maintenance interval (seconds)', '3600', '60', '86400'],
+      ['Max backup archive (bytes)', '2147483648', '1048576', '10737418240'],
+      ['Max backup entries', '10000', '1', '1000000'],
+      ['Max uncompressed backup (bytes)', '4294967296', '1048576', '42949672960'],
+      ['Max backup database (bytes)', '1073741824', '1048576', '10737418240']
+    ]
+    for (const [label, value, min, max] of expected) {
+      const input = wrapper.find(`input[aria-label="${label}"]`)
+      expect(input.exists()).toBe(true)
+      expect(input.element.value).toBe(value)
+      expect(input.attributes('min')).toBe(min)
+      expect(input.attributes('max')).toBe(max)
+    }
+
+    const settingsText = wrapper.find('.settings-panel:not(.demo-panel)').text()
+    expect(settingsText).toContain('2.0 GiB')
+    expect(settingsText).toContain('4.0 GiB')
+    expect(settingsText).toContain('1.0 GiB')
+    wrapper.unmount()
+  })
+
+  it('loads retention and backup limits from api.settings', async () => {
+    api.settings.mockResolvedValue({
+      data: {
+        ...settingsFixture(),
+        retention_login_attempts_days: 14,
+        retention_audit_log_days: 45,
+        retention_jobs_days: 7,
+        retention_jobs_max_rows: 500,
+        maintenance_interval_seconds: 900,
+        backup_max_archive_bytes: 104857600,
+        backup_max_entries: 5000,
+        backup_max_uncompressed_bytes: 209715200,
+        backup_max_database_bytes: 52428800
+      }
+    })
+
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const values = {
+      'Login attempt retention (days)': '14',
+      'Audit log retention (days)': '45',
+      'Finished job retention (days)': '7',
+      'Max finished jobs kept': '500',
+      'Maintenance interval (seconds)': '900',
+      'Max backup archive (bytes)': '104857600',
+      'Max backup entries': '5000',
+      'Max uncompressed backup (bytes)': '209715200',
+      'Max backup database (bytes)': '52428800'
+    }
+    for (const [label, value] of Object.entries(values)) {
+      expect(wrapper.find(`input[aria-label="${label}"]`).element.value).toBe(value)
+    }
+    wrapper.unmount()
+  })
+
+  it('clamps retention and backup limits the API reports outside its bounds', async () => {
+    api.settings.mockResolvedValue({
+      data: {
+        ...settingsFixture(),
+        retention_login_attempts_days: 0,
+        retention_audit_log_days: 99999,
+        retention_jobs_days: '10',
+        retention_jobs_max_rows: null,
+        maintenance_interval_seconds: 1,
+        backup_max_archive_bytes: 1,
+        backup_max_entries: 2000000,
+        backup_max_uncompressed_bytes: undefined,
+        backup_max_database_bytes: 10737418241
+      }
+    })
+
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    expect(wrapper.find('input[aria-label="Login attempt retention (days)"]').element.value).toBe('1')
+    expect(wrapper.find('input[aria-label="Audit log retention (days)"]').element.value).toBe('3650')
+    expect(wrapper.find('input[aria-label="Finished job retention (days)"]').element.value).toBe('10')
+    expect(wrapper.find('input[aria-label="Max finished jobs kept"]').element.value).toBe('1000')
+    expect(wrapper.find('input[aria-label="Maintenance interval (seconds)"]').element.value).toBe('60')
+    expect(wrapper.find('input[aria-label="Max backup archive (bytes)"]').element.value).toBe('1048576')
+    expect(wrapper.find('input[aria-label="Max backup entries"]').element.value).toBe('1000000')
+    expect(wrapper.find('input[aria-label="Max uncompressed backup (bytes)"]').element.value).toBe('4294967296')
+    expect(wrapper.find('input[aria-label="Max backup database (bytes)"]').element.value).toBe('10737418240')
+    wrapper.unmount()
+  })
+
+  it('saves retention and backup limits as bounded numbers', async () => {
+    api.saveSettings.mockResolvedValue({ data: settingsFixture() })
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    await wrapper.find('input[aria-label="Login attempt retention (days)"]').setValue('21')
+    await wrapper.find('input[aria-label="Audit log retention (days)"]').setValue('120')
+    await wrapper.find('input[aria-label="Finished job retention (days)"]').setValue('14')
+    await wrapper.find('input[aria-label="Max finished jobs kept"]').setValue('2000')
+    await wrapper.find('input[aria-label="Maintenance interval (seconds)"]').setValue('1800')
+    await wrapper.find('input[aria-label="Max backup archive (bytes)"]').setValue('536870912')
+    await wrapper.find('input[aria-label="Max backup entries"]').setValue('20000')
+    await wrapper.find('input[aria-label="Max uncompressed backup (bytes)"]').setValue('1073741824')
+    await wrapper.find('input[aria-label="Max backup database (bytes)"]').setValue('268435456')
+    await wrapper.find('.settings-panel:not(.demo-panel) form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+    const payload = api.saveSettings.mock.calls[0][0]
+    expect(payload).toMatchObject({
+      retention_login_attempts_days: 21,
+      retention_audit_log_days: 120,
+      retention_jobs_days: 14,
+      retention_jobs_max_rows: 2000,
+      maintenance_interval_seconds: 1800,
+      backup_max_archive_bytes: 536870912,
+      backup_max_entries: 20000,
+      backup_max_uncompressed_bytes: 1073741824,
+      backup_max_database_bytes: 268435456
+    })
+    for (const key of [
+      'retention_login_attempts_days', 'retention_audit_log_days', 'retention_jobs_days',
+      'retention_jobs_max_rows', 'maintenance_interval_seconds', 'backup_max_archive_bytes',
+      'backup_max_entries', 'backup_max_uncompressed_bytes', 'backup_max_database_bytes'
+    ]) {
+      expect(typeof payload[key]).toBe('number')
+    }
+    expect(toasts.some((toast) => toast.kind === 'success' && toast.message.includes('Settings saved'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('blocks saving retention limits outside the API bounds', async () => {
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const save = wrapper.find('.settings-panel:not(.demo-panel) form button[type="submit"]')
+    await wrapper.find('input[aria-label="Finished job retention (days)"]').setValue('0')
+    await wrapper.find('.settings-panel:not(.demo-panel) form').trigger('submit')
+    await flushPromises()
+
+    expect(api.saveSettings).not.toHaveBeenCalled()
+    expect(wrapper.find('p.error[role="alert"]').text()).toContain('allowed range')
+    expect(save.element.disabled).toBe(true)
+
+    await wrapper.find('input[aria-label="Finished job retention (days)"]').setValue('30')
+    await flushPromises()
+    expect(save.element.disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows the backup restore caps from the loaded settings', async () => {
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Backup')
+
+    const limits = wrapper.find('[data-test="backup-limits"]')
+    expect(limits.exists()).toBe(true)
+    expect(limits.text()).toContain('2.0 GiB')
+    expect(limits.text()).toContain('10000 entries')
+    expect(limits.text()).toContain('4.0 GiB')
+    expect(limits.text()).toContain('1.0 GiB')
+    wrapper.unmount()
+  })
+
+  it('runs maintenance, disables the button while running, and summarises the result', async () => {
+    let resolveMaintenance
+    api.maintenance.mockReturnValue(new Promise((resolve) => { resolveMaintenance = resolve }))
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const button = wrapper.find('[data-test="run-maintenance"]')
+    expect(button.text()).toBe('Run maintenance')
+    await button.trigger('click')
+    expect(button.element.disabled).toBe(true)
+    expect(button.text()).toBe('Running…')
+
+    resolveMaintenance({
+      data: {
+        sessions_deleted: 2, login_attempts_deleted: 1, audit_log_deleted: 4,
+        jobs_deleted: 3, snapshots_deleted: 2, trash_deleted: 1
+      }
+    })
+    await flushPromises()
+
+    expect(api.maintenance).toHaveBeenCalledTimes(1)
+    expect(toasts.some((toast) => toast.kind === 'success'
+      && toast.message === 'Maintenance complete: 2 sessions, 1 login attempt, 4 audit rows, 3 jobs, 2 snapshots, and 1 trash lab removed.')).toBe(true)
+    expect(button.element.disabled).toBe(false)
+    expect(button.text()).toBe('Run maintenance')
+    wrapper.unmount()
+  })
+
+  it('toasts a maintenance error and re-enables the button', async () => {
+    api.maintenance.mockRejectedValue(new Error('Maintenance is unavailable.'))
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    const button = wrapper.find('[data-test="run-maintenance"]')
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(api.maintenance).toHaveBeenCalledTimes(1)
+    expect(toasts.some((toast) => toast.kind === 'error' && toast.message.includes('Maintenance is unavailable.'))).toBe(true)
+    expect(button.element.disabled).toBe(false)
+    expect(button.text()).toBe('Run maintenance')
+    wrapper.unmount()
+  })
+
+  it('hides the maintenance action from non-admins', async () => {
+    session.user = { id: 'user3', username: 'viewer', role: 'user' }
+    const wrapper = await mountSystemApp()
+    await openSystemTab(wrapper, 'Settings')
+
+    expect(wrapper.find('[data-test="run-maintenance"]').exists()).toBe(false)
+    expect(wrapper.find('.maintenance-block').exists()).toBe(false)
     wrapper.unmount()
   })
 })

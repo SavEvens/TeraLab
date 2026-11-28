@@ -454,6 +454,9 @@ label { display: grid; gap: 5px; color: var(--muted); font: 600 10px/1.2 var(--m
 .template-preview { background: var(--bg-deep); border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: 500 10px/1.6 var(--mono); color: var(--muted); overflow: auto; }
 .template-preview dt { color: var(--cyan); text-transform: uppercase; letter-spacing: .08em; margin-top: 8px; }
 .template-preview dd { margin: 2px 0 0; color: var(--text); }
+.template-preview .template-icon { display: flex; align-items: center; gap: 6px; }
+.template-preview .template-icon img { width: 24px; height: 24px; object-fit: contain; }
+.catalogue-readonly { margin: 0 0 12px; }
 .palette li[data-kind]::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
 
 /* ---------- modals, toasts, consoles ---------- */

@@ -26,7 +26,7 @@ final class AuthMiddleware implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $authorization = $request->getHeaderLine('Authorization');
-        if (preg_match('/^Bearer\s+(.+)$/i', $authorization, $matches) === 1) {
+        if (preg_match('/^Bearer\s+([^\s]+)\z/i', $authorization, $matches) === 1) {
             $context = $this->tokens->authenticate(trim($matches[1]));
             if ($context === null) {
                 throw new HttpException(401, 'Invalid or expired API token.');

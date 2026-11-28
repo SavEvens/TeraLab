@@ -48,6 +48,28 @@ final class RestoreManagerTest extends TestCase
         self::assertNotSame([], glob($this->config->dbPath . '.pre-restore-*') ?: []);
     }
 
+    public function testStagedRestoreIsTightenedBeforeApplying(): void
+    {
+        file_put_contents($this->config->dbPath, 'old');
+        $staged = $this->root . '/data/restore/database.sdb';
+        $marker = $this->root . '/data/restore/pending';
+        file_put_contents($staged, 'new');
+        file_put_contents($marker, '1');
+        chmod($this->root . '/data/restore', 0770);
+        chmod($staged, 0644);
+        chmod($marker, 0644);
+
+        RestoreManager::applyPending($this->config);
+        clearstatcache();
+
+        self::assertSame('new', file_get_contents($this->config->dbPath));
+        self::assertSame(0600, fileperms($this->config->dbPath) & 0777);
+        self::assertSame(0700, fileperms($this->root . '/data/restore') & 0777);
+        $backups = glob($this->config->dbPath . '.pre-restore-*') ?: [];
+        self::assertCount(1, $backups);
+        self::assertSame(0600, fileperms((string) $backups[0]) & 0777);
+    }
+
     public function testDoesNothingWithoutAMarker(): void
     {
         file_put_contents($this->config->dbPath, 'old');

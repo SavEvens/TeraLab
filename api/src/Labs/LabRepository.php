@@ -68,6 +68,11 @@ final class LabRepository
     }
 
     /**
+     * Legacy/display lookup by canonical id or basename.
+     *
+     * Never use this for authorization: two labs in different folders may share
+     * a basename. Authenticated operations use findById().
+     *
      * @return array<string, mixed>|null
      */
     public function find(string $id): ?array
@@ -80,6 +85,27 @@ final class LabRepository
         }
 
         return null;
+    }
+
+    /**
+     * Resolve exactly one lab by its canonical id.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findById(string $id): ?array
+    {
+        if ($id === '') {
+            return null;
+        }
+
+        $matches = [];
+        foreach ($this->all() as $lab) {
+            if ((string) ($lab['id'] ?? '') === $id) {
+                $matches[] = $lab;
+            }
+        }
+
+        return count($matches) === 1 ? $matches[0] : null;
     }
 
     /**
@@ -100,5 +126,54 @@ final class LabRepository
     public function count(): int
     {
         return count($this->all());
+    }
+
+    public function root(): string
+    {
+        return $this->labsDir;
+    }
+
+    /**
+     * Number and total on-disk size of the labs owned by one account.
+     *
+     * Ownership comes from the stored `attributes.owner` value, the same field
+     * the demo guard and sweeper use. Only regular `.unl` files inside the lab
+     * store are counted; trash entries never contribute. Pass `$excludeLabId`
+     * to measure a lab replacement without counting its current copy.
+     *
+     * @return array{count: int, bytes: int, ids: list<string>}
+     */
+    public function ownedStats(string $ownerId, ?string $excludeLabId = null): array
+    {
+        if ($ownerId === '') {
+            return ['count' => 0, 'bytes' => 0, 'ids' => []];
+        }
+        $root = realpath($this->labsDir);
+        if ($root === false || !is_dir($root)) {
+            return ['count' => 0, 'bytes' => 0, 'ids' => []];
+        }
+
+        $count = 0;
+        $bytes = 0;
+        $ids = [];
+        foreach ($this->all() as $lab) {
+            $attributes = is_array($lab['attributes'] ?? null) ? $lab['attributes'] : [];
+            if (($attributes['owner'] ?? null) !== $ownerId) {
+                continue;
+            }
+            $id = (string) ($lab['id'] ?? '');
+            if ($excludeLabId !== null && $excludeLabId !== '' && $id === $excludeLabId) {
+                continue;
+            }
+            $path = $root . DIRECTORY_SEPARATOR . (string) ($lab['path'] ?? '');
+            $size = is_file($path) ? filesize($path) : false;
+            $count++;
+            $bytes += $size === false ? 0 : $size;
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+
+        return ['count' => $count, 'bytes' => $bytes, 'ids' => $ids];
     }
 }

@@ -80,6 +80,93 @@ final class LegacyAuthTest extends TestCase
         $auth->login('legacyadmin', 'wrong-password', '127.0.0.1', 'phpunit');
     }
 
+    public function testLegacyLoginAfterTheCutoffRequiresAnAdministratorReset(): void
+    {
+        $legacyPassword = 'Legacy-Pass-2026!';
+        $this->insertLegacyUser($legacyPassword);
+
+        $auth = new AuthService(
+            $this->pdo,
+            new PasswordPolicy(),
+            new RateLimiter($this->pdo),
+            new AuditLogger($this->pdo),
+            $this->config,
+            null,
+            time() - 1,
+        );
+
+        try {
+            $auth->login('legacyadmin', $legacyPassword, '127.0.0.1', 'phpunit');
+            self::fail('A legacy hash was accepted after the cutoff.');
+        } catch (\TeraLab\Api\Http\HttpException $exception) {
+            self::assertSame(403, $exception->status);
+            self::assertStringContainsString('reset', strtolower($exception->getMessage()));
+        }
+
+        $row = $this->pdo->query(
+            "SELECT legacy_password_hash FROM users WHERE username = 'legacyadmin'"
+        )->fetch();
+        self::assertIsArray($row);
+        self::assertNotNull($row['legacy_password_hash']);
+
+        $audit = $this->pdo->query(
+            "SELECT details_json FROM audit_log WHERE action = 'auth.login' ORDER BY ts DESC"
+        )->fetchColumn();
+        self::assertIsString($audit);
+        self::assertStringContainsString('legacy_hash_cutoff', $audit);
+
+        // A wrong legacy password must not reveal the cutoff state: it stays a
+        // generic credential failure.
+        try {
+            $auth->login('legacyadmin', 'wrong-password', '127.0.0.1', 'phpunit');
+            self::fail('A wrong legacy password was accepted.');
+        } catch (\TeraLab\Api\Http\HttpException $exception) {
+            self::assertSame(401, $exception->status);
+        }
+    }
+
+    public function testLegacyLoginBeforeTheCutoffStillRehashes(): void
+    {
+        $legacyPassword = 'Legacy-Pass-2026!';
+        $this->insertLegacyUser($legacyPassword);
+
+        $auth = new AuthService(
+            $this->pdo,
+            new PasswordPolicy(),
+            new RateLimiter($this->pdo),
+            new AuditLogger($this->pdo),
+            $this->config,
+            null,
+            time() + 3600,
+        );
+
+        $session = $auth->login('legacyadmin', $legacyPassword, '127.0.0.1', 'phpunit');
+        self::assertSame('legacyadmin', $session['user']['username']);
+
+        $row = $this->pdo->query(
+            "SELECT password_hash, legacy_password_hash FROM users WHERE username = 'legacyadmin'"
+        )->fetch();
+        self::assertIsArray($row);
+        self::assertNull($row['legacy_password_hash']);
+        self::assertTrue(password_verify($legacyPassword, (string) $row['password_hash']));
+    }
+
+    private function insertLegacyUser(string $legacyPassword): void
+    {
+        $statement = $this->pdo->prepare(
+            'INSERT INTO users (id, username, password_hash, legacy_password_hash, role, expiration, created_at, updated_at) '
+            . 'VALUES (:id, :username, :password_hash, :legacy, :role, -1, :now, :now)'
+        );
+        $statement->execute([
+            ':id' => bin2hex(random_bytes(16)),
+            ':username' => 'legacyadmin',
+            ':password_hash' => password_hash(bin2hex(random_bytes(16)), PASSWORD_ARGON2ID),
+            ':legacy' => hash('sha256', $legacyPassword),
+            ':role' => 'admin',
+            ':now' => time(),
+        ]);
+    }
+
     public function testIdleSessionsAreRejected(): void
     {
         $statement = $this->pdo->prepare(

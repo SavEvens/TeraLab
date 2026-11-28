@@ -1,0 +1,35 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 TeraLab contributors
+#
+# Grant the Apache worker UID connect permission on the TeraLab FastCGI
+# socket without adding www-data to the teralab group.
+#
+# php-fpm ignores listen.owner/listen.group when listen.acl_users is set, so
+# the pool keeps the owner/group/mode from the matrix and this hook applies a
+# named user ACL after the master has created (or re-exec'd with) the socket.
+# systemd runs it from an ExecStartPost drop-in; apply-state.sh also runs it
+# after a reload so an upgraded host is correct immediately.
+set -eu
+
+socket="${1:-/run/php/php8.4-fpm-teralab.sock}"
+apache_user="${TERALAB_APACHE_USER:-www-data}"
+
+# ExecStartPost can race the master's bind; wait briefly for the socket.
+waited=0
+while [ ! -S "$socket" ] && [ "$waited" -lt 100 ]; do
+	sleep 0.1
+	waited=$((waited + 1))
+done
+if [ ! -S "$socket" ]; then
+	printf 'fpm-socket-acl: socket %s did not appear\n' "$socket" >&2
+	exit 1
+fi
+
+if ! command -v setfacl >/dev/null 2>&1; then
+	printf 'fpm-socket-acl: setfacl is missing; install the acl package so %s can connect to %s\n' \
+		"$apache_user" "$socket" >&2
+	exit 1
+fi
+
+setfacl -m "u:${apache_user}:rw-" "$socket"

@@ -16,7 +16,7 @@ final class ConfigTest extends TestCase
 
     protected function setUp(): void
     {
-        foreach (['TERALAB_CONFIG', 'TERALAB_ROOT', 'TERALAB_DATA_DIR', 'TERALAB_DB', 'TERALAB_LABS', 'TERALAB_COOKIE_SECURE', 'TERALAB_SESSION_TTL', 'TERALAB_ENV', 'TERALAB_TRUSTED_PROXIES'] as $key) {
+        foreach (['TERALAB_CONFIG', 'TERALAB_ROOT', 'TERALAB_DATA_DIR', 'TERALAB_DB', 'TERALAB_LABS', 'TERALAB_COOKIE_SECURE', 'TERALAB_SESSION_TTL', 'TERALAB_ENV', 'TERALAB_TRUSTED_PROXIES', 'TERALAB_SETUP_TOKEN_FILE'] as $key) {
             $this->original[$key] = getenv($key);
             putenv($key);
         }
@@ -113,6 +113,20 @@ PHP);
         $config = Config::forTests('/tmp/teralab-root', '/tmp/teralab-data', ['10.0.0.0/8']);
         self::assertSame(['10.0.0.0/8'], $config->trustedProxies);
         self::assertSame([], Config::forTests('/tmp/teralab-root', '/tmp/teralab-data')->trustedProxies);
+    }
+
+    public function testSetupTokenFileDefaultsToEtcAndIsOverridable(): void
+    {
+        self::assertSame(
+            '/tmp/teralab-data/setup.token',
+            Config::forTests('/tmp/teralab-root', '/tmp/teralab-data')->setupTokenFile
+        );
+
+        putenv('TERALAB_CONFIG=/nonexistent/teralab-config.php');
+        self::assertSame('/etc/teralab/setup.token', Config::fromEnvironment()->setupTokenFile);
+
+        putenv('TERALAB_SETUP_TOKEN_FILE=/tmp/teralab-custom.token');
+        self::assertSame('/tmp/teralab-custom.token', Config::fromEnvironment()->setupTokenFile);
     }
 
     public function testPlainHttpDefaultsToNonSecureCookies(): void

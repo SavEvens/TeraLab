@@ -7,6 +7,7 @@ declare(strict_types=1);
 namespace TeraLab\Api\Auth;
 
 use PDO;
+use Throwable;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\BusyRetry;
 use TeraLab\Api\Http\HttpException;
@@ -15,6 +16,16 @@ use TeraLab\Api\System\SettingsService;
 
 final class AuthService
 {
+    /**
+     * New logins stop accepting the unsalted v1 SHA-256 hash on this date.
+     * Existing users must be reset by an administrator after it; the one-time
+     * rehash on login only works before the cutoff.
+     */
+    public const LEGACY_HASH_CUTOFF = 1798761600; // 2027-01-01T00:00:00Z
+
+    /** Writes to sessions.last_seen_at are cheap but not free; one per 30 s is enough. */
+    public const LAST_SEEN_THROTTLE_SECONDS = 30;
+
     public function __construct(
         private readonly PDO $pdo,
         private readonly PasswordPolicy $passwordPolicy,
@@ -22,6 +33,7 @@ final class AuthService
         private readonly AuditLogger $audit,
         private readonly Config $config,
         private readonly ?SettingsService $settings = null,
+        private readonly ?int $legacyCutoff = null,
     ) {
     }
 
@@ -31,17 +43,17 @@ final class AuthService
         if ($statement === false) {
             return false;
         }
+        $count = (int) $statement->fetchColumn();
+        $statement->closeCursor();
 
-        return (int) $statement->fetchColumn() > 0;
+        return $count > 0;
     }
 
     public function setup(string $username, string $password, ?string $email, string $ip): void
     {
-        if ($this->hasUsers()) {
-            throw new HttpException(409, 'Setup has already been completed.');
-        }
+        $email = EmailValidator::validate($email);
 
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$/', $username) !== 1) {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}\z/', $username) !== 1) {
             throw new HttpException(422, 'Invalid username.');
         }
 
@@ -52,27 +64,67 @@ final class AuthService
 
         $now = time();
         $userId = bin2hex(random_bytes(16));
-        $statement = $this->pdo->prepare(
-            'INSERT INTO users '
-            . '(id, username, email, name, password_hash, role, expiration, created_at, updated_at) '
-            . 'VALUES (:id, :username, :email, :name, :password_hash, :role, -1, :created_at, :updated_at)'
-        );
-        $statement->execute([
-            ':id' => $userId,
-            ':username' => $username,
-            ':email' => $email,
-            ':name' => null,
-            ':password_hash' => password_hash($password, PASSWORD_ARGON2ID, [
-                'memory_cost' => 65536,
-                'time_cost' => 3,
-                'threads' => 2,
-            ]),
-            ':role' => 'admin',
-            ':created_at' => $now,
-            ':updated_at' => $now,
+        $hash = password_hash($password, PASSWORD_ARGON2ID, [
+            'memory_cost' => 65536,
+            'time_cost' => 3,
+            'threads' => 2,
         ]);
 
+        // BEGIN IMMEDIATE takes SQLite's write lock before the user count is
+        // read, so one of two concurrent setup requests wins and the other
+        // observes the committed administrator and answers 409. BusyRetry only
+        // repeats the whole transaction after a rollback (SQLITE_BUSY).
+        BusyRetry::retry(function () use ($userId, $username, $email, $hash, $now): void {
+            $this->pdo->exec('BEGIN IMMEDIATE');
+            try {
+                if ($this->hasUsers() || $this->setupComplete()) {
+                    throw new HttpException(409, 'Setup has already been completed.');
+                }
+
+                $statement = $this->pdo->prepare(
+                    'INSERT INTO users '
+                    . '(id, username, email, name, password_hash, role, expiration, created_at, updated_at) '
+                    . 'VALUES (:id, :username, :email, :name, :password_hash, :role, -1, :created_at, :updated_at)'
+                );
+                $statement->execute([
+                    ':id' => $userId,
+                    ':username' => $username,
+                    ':email' => $email,
+                    ':name' => null,
+                    ':password_hash' => $hash,
+                    ':role' => 'admin',
+                    ':created_at' => $now,
+                    ':updated_at' => $now,
+                ]);
+
+                // Defense in depth: even if the users table is later emptied by
+                // an operator, the completed flag blocks a second takeover.
+                $marker = $this->pdo->prepare(
+                    "INSERT INTO settings (key, value, updated_at) VALUES ('setup_complete', '1', :updated_at) "
+                    . "ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = :updated_at"
+                );
+                $marker->execute([':updated_at' => $now]);
+
+                $this->pdo->commit();
+            } catch (Throwable $exception) {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+                throw $exception;
+            }
+        });
+
         $this->audit->log($userId, $ip, 'auth.setup', null, 'success', ['username' => $username]);
+    }
+
+    private function setupComplete(): bool
+    {
+        $statement = $this->pdo->prepare("SELECT value FROM settings WHERE key = 'setup_complete'");
+        $statement->execute();
+        $value = $statement->fetchColumn();
+        $statement->closeCursor();
+
+        return $value === '1' || $value === 1;
     }
 
     /**
@@ -87,6 +139,20 @@ final class AuthService
         $legacy = $user['legacy_password_hash'] ?? null;
         if (!$verified && $user !== null && is_string($legacy) && $legacy !== ''
             && hash_equals($legacy, hash('sha256', $password))) {
+            if (time() >= $this->legacyCutoff()) {
+                // Only a caller who proves the retired password sees this
+                // message; everyone else keeps the generic credential failure.
+                $this->rateLimiter->record($username, $ip, false);
+                $this->audit->log((string) $user['id'], $ip, 'auth.login', null, 'failure', [
+                    'reason' => 'legacy_hash_cutoff',
+                ]);
+                throw new HttpException(
+                    403,
+                    'Password reset required: this account uses a retired password hash. '
+                    . 'Ask an administrator to reset it.',
+                );
+            }
+
             $verified = true;
             $rehash = password_hash($password, PASSWORD_ARGON2ID, [
                 'memory_cost' => 65536,
@@ -254,10 +320,16 @@ final class AuthService
         }
 
         // Last-seen bookkeeping is idempotent and must never fail a request.
-        BusyRetry::retry(function () use ($row): void {
-            $update = $this->pdo->prepare('UPDATE sessions SET last_seen_at = :now WHERE id_hash = :id_hash');
-            $update->execute([':now' => time(), ':id_hash' => (string) $row['id_hash']]);
-        });
+        // Authenticated traffic is frequent; writing on every request turns a
+        // read-only call into a SQLite write. One update per throttle window is
+        // enough for idle-expiry (which is measured in minutes).
+        $lastSeen = (int) $row['last_seen_at'];
+        if (time() - $lastSeen >= self::LAST_SEEN_THROTTLE_SECONDS) {
+            BusyRetry::retry(function () use ($row): void {
+                $update = $this->pdo->prepare('UPDATE sessions SET last_seen_at = :now WHERE id_hash = :id_hash');
+                $update->execute([':now' => time(), ':id_hash' => (string) $row['id_hash']]);
+            });
+        }
 
         return [
             'user' => $this->publicUser($row),
@@ -288,13 +360,22 @@ final class AuthService
             'time_cost' => 3,
             'threads' => 2,
         ]);
-        $update = $this->pdo->prepare(
-            'UPDATE users SET password_hash = :password_hash, legacy_password_hash = NULL, updated_at = :updated_at WHERE id = :id'
-        );
-        $update->execute([':password_hash' => $rehash, ':updated_at' => time(), ':id' => $userId]);
+        $this->transaction(function () use ($userId, $sessionId, $rehash): void {
+            $update = $this->pdo->prepare(
+                'UPDATE users SET password_hash = :password_hash, legacy_password_hash = NULL, updated_at = :updated_at WHERE id = :id'
+            );
+            $update->execute([':password_hash' => $rehash, ':updated_at' => time(), ':id' => $userId]);
 
-        $revoke = $this->pdo->prepare('DELETE FROM sessions WHERE user_id = :user_id AND id_hash != :current');
-        $revoke->execute([':user_id' => $userId, ':current' => hash('sha256', $sessionId)]);
+            // The documented self-service rule keeps the calling session and
+            // removes every other credential, including every API token.
+            $revoke = $this->pdo->prepare(
+                'DELETE FROM sessions WHERE user_id = :user_id AND id_hash != :current'
+            );
+            $revoke->execute([':user_id' => $userId, ':current' => hash('sha256', $sessionId)]);
+
+            $tokens = $this->pdo->prepare('DELETE FROM api_tokens WHERE user_id = :user_id');
+            $tokens->execute([':user_id' => $userId]);
+        });
         $this->audit->log($userId, $ip, 'auth.password', null, 'success');
     }
 
@@ -332,6 +413,25 @@ final class AuthService
     private function sessionTtl(): int
     {
         return $this->settings?->int('session_ttl', $this->config->sessionTtl) ?? $this->config->sessionTtl;
+    }
+
+    private function legacyCutoff(): int
+    {
+        return $this->legacyCutoff ?? self::LEGACY_HASH_CUTOFF;
+    }
+
+    private function transaction(callable $operation): void
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $operation();
+            $this->pdo->commit();
+        } catch (Throwable $exception) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $exception;
+        }
     }
 
     /**

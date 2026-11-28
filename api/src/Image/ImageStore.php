@@ -27,6 +27,9 @@ final class ImageStore
 {
     public const KINDS = ['qemu', 'iso', 'iol', 'dynamips'];
 
+    /** Shared with teralab-vm so qemu-img and IOLtools can read the store. */
+    private const IMAGE_GROUP = 'teralab-images';
+
     private const EXTENSIONS = [
         'qemu' => 'qcow2',
         'iso' => 'iso',
@@ -36,6 +39,8 @@ final class ImageStore
 
     /** @var Closure(string): array<string, mixed> */
     private readonly Closure $inspector;
+
+    private bool $groupWarningLogged = false;
 
     /**
      * @param (Closure(string): array<string, mixed>)|null $inspector
@@ -109,6 +114,7 @@ final class ImageStore
         }
 
         $clientName = $this->safeName($file->getClientFilename() ?? '');
+        $displayName = $this->displayName($name);
         $extension = self::EXTENSIONS[$kind];
         if (!str_ends_with(strtolower($clientName), '.' . $extension)) {
             throw new HttpException(422, 'The file extension does not match the image kind.');
@@ -148,21 +154,32 @@ final class ImageStore
             }
 
             $id = $kind . '-' . substr($sha256, 0, 16);
-            $finalDir = $this->config->imagesDir . '/' . $kind . '/' . $id;
+            $kindDir = $this->config->imagesDir . '/' . $kind;
+            $createdKindDir = !is_dir($kindDir);
+            $finalDir = $kindDir . '/' . $id;
             if (!is_dir($finalDir) && !mkdir($finalDir, 0755, true) && !is_dir($finalDir)) {
                 throw new RuntimeException('Cannot create the image directory.');
+            }
+            // mkdir() is filtered by the process umask; FPM runs with 0077,
+            // which would leave the store untraversable for the per-lab
+            // engine user. writeTemporary() has already pinned the store root.
+            if (!is_link($finalDir)) {
+                @chmod($finalDir, 0755);
+            }
+            if ($createdKindDir && !is_link($kindDir)) {
+                @chmod($kindDir, 0755);
             }
 
             $path = $finalDir . '/' . $clientName;
             if (!rename($temporary, $path)) {
                 throw new RuntimeException('Cannot move the image into place.');
             }
-            @chmod($path, in_array($kind, ['iol', 'dynamips'], true) ? 0755 : 0644);
+            $this->restrictImageFile($path, $kind);
 
             $row = [
                 'id' => $id,
                 'kind' => $kind,
-                'name' => $name !== null && $name !== '' ? $name : $clientName,
+                'name' => $displayName ?? $clientName,
                 'reference' => $this->uniqueReference(ImageReference::portable($clientName)),
                 'path' => $path,
                 'sha256' => $sha256,
@@ -194,7 +211,7 @@ final class ImageStore
         if ($image === null) {
             throw new HttpException(404, 'Image not found.');
         }
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $template) !== 1) {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/', $template) !== 1) {
             throw new HttpException(422, 'Invalid template id.');
         }
         if ($this->templates !== null) {
@@ -234,8 +251,8 @@ final class ImageStore
      */
     public function rename(string $id, string $name, ?string $reference = null): array
     {
-        $name = trim($name);
-        if ($name === '' || strlen($name) > 128 || preg_match('/[\x00-\x1f]/', $name) === 1) {
+        $name = $this->displayName($name);
+        if ($name === null) {
             throw new HttpException(422, 'Invalid image name.');
         }
         $current = $this->find($id);
@@ -257,6 +274,10 @@ final class ImageStore
             ':reference' => $reference ?? (string) ($current['reference'] ?? ''),
             ':id' => $id,
         ]);
+        $this->restrictImageFile(
+            (string) ($current['path'] ?? ''),
+            (string) ($current['kind'] ?? ''),
+        );
 
         return $this->find($id) ?? throw new HttpException(404, 'Image not found.');
     }
@@ -282,6 +303,10 @@ final class ImageStore
         }
         $statement = $this->pdo->prepare('UPDATE images SET reference = :reference WHERE id = :id');
         $statement->execute([':reference' => $reference, ':id' => $id]);
+        $this->restrictImageFile(
+            (string) ($current['path'] ?? ''),
+            (string) ($current['kind'] ?? ''),
+        );
 
         return $this->find($id) ?? throw new HttpException(404, 'Image not found.');
     }
@@ -401,14 +426,25 @@ final class ImageStore
 
     private function writeTemporary(UploadedFileInterface $file): string
     {
-        $directory = $this->config->imagesDir . '/tmp';
-        if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
+        $imagesRoot = $this->config->imagesDir;
+        $createdImagesRoot = !is_dir($imagesRoot);
+        $directory = $imagesRoot . '/tmp';
+        if (!is_dir($directory) && !mkdir($directory, 02770, true) && !is_dir($directory)) {
             throw new RuntimeException('Cannot create the upload directory.');
+        }
+        // Setgid keeps the group on the staged files that teralab-vm reads
+        // with qemu-img; explicit chmod stops a permissive umask from making
+        // the directory world-writable.
+        @chmod($directory, 02770);
+        if ($createdImagesRoot && !is_link($imagesRoot)) {
+            // Recursive mkdir() also created the store root under the umask.
+            @chmod($imagesRoot, 0755);
         }
         $temporary = tempnam($directory, 'upload-');
         if ($temporary === false) {
             throw new RuntimeException('Cannot create a temporary file.');
         }
+        @chmod($temporary, 0600);
 
         $stream = $file->getStream();
         $stream->rewind();
@@ -469,10 +505,59 @@ final class ImageStore
      */
     private function writeMetadata(string $directory, array $row): void
     {
+        $metadata = $directory . '/meta.json';
         @file_put_contents(
-            $directory . '/meta.json',
+            $metadata,
             json_encode($row, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
         );
+        // Metadata never needs group or world write, whatever the umask is.
+        @chmod($metadata, 0640);
+        $this->applyImageGroup($metadata);
+    }
+
+    /**
+     * Image files are group-readable for teralab-vm and group-owned by
+     * teralab-images; IOL/Dynamips binaries stay executable for that group.
+     * Adopted images are symlinks into the legacy tree: their target belongs
+     * to another tool and is never modified.
+     */
+    private function restrictImageFile(string $path, string $kind): void
+    {
+        if ($path === '' || is_link($path) || !file_exists($path)) {
+            return;
+        }
+        $executable = in_array($kind, ['iol', 'dynamips'], true)
+            || str_ends_with(strtolower($path), '.bin');
+        @chmod($path, $executable ? 0750 : 0640);
+        $this->applyImageGroup($path);
+    }
+
+    /**
+     * Group changes are best-effort: the installer creates teralab-images and
+     * adds the API user to it, but a store without that group must keep
+     * working (the file is still owner-only plus group read). A missing group
+     * or a rejected chgrp silently breaks VM reads, so report it once.
+     */
+    private function applyImageGroup(string $path): void
+    {
+        if (function_exists('posix_getgrnam') && @posix_getgrnam(self::IMAGE_GROUP) === false) {
+            $this->warnImageGroup('the ' . self::IMAGE_GROUP . ' group does not exist');
+
+            return;
+        }
+        if (!@chgrp($path, self::IMAGE_GROUP)) {
+            $this->warnImageGroup('cannot change the image group to ' . self::IMAGE_GROUP
+                . ' (is the API user a member?)');
+        }
+    }
+
+    private function warnImageGroup(string $reason): void
+    {
+        if ($this->groupWarningLogged) {
+            return;
+        }
+        $this->groupWarningLogged = true;
+        error_log('TeraLab image store: ' . $reason . '; engine users may be unable to read images.');
     }
 
     private function safeName(string $name): string
@@ -485,6 +570,19 @@ final class ImageStore
         }
 
         return substr($base, 0, 128);
+    }
+
+    private function displayName(?string $name): ?string
+    {
+        if ($name === null) {
+            return null;
+        }
+        $name = trim($name);
+        if ($name === '' || strlen($name) > 128 || preg_match('/[\x00-\x1f\x7f]/', $name) === 1) {
+            throw new HttpException(422, 'Invalid image name.');
+        }
+
+        return $name;
     }
 
     private function removeDirectory(string $directory): void

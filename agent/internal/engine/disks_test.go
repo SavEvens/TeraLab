@@ -52,11 +52,10 @@ func fakeQEMUImg(t *testing.T, body string) (string, string) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "argv.log")
 	scriptPath := filepath.Join(dir, "qemu-img")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_QEMU_IMG_LOG\"\n" + body + "\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + logPath + "'\n" + body + "\n"
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake qemu-img: %v", err)
 	}
-	t.Setenv("FAKE_QEMU_IMG_LOG", logPath)
 
 	return scriptPath, logPath
 }
@@ -68,11 +67,10 @@ func fakeQEMUBinary(t *testing.T) (string, string) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "argv.log")
 	scriptPath := filepath.Join(dir, "qemu-system-x86_64")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_QEMU_LOG\"\nexec sleep 30\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + logPath + "'\nexec sleep 30\n"
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake qemu: %v", err)
 	}
-	t.Setenv("FAKE_QEMU_LOG", logPath)
 
 	return scriptPath, logPath
 }
@@ -502,7 +500,7 @@ func TestStartQEMUAttachesDisksInSlotOrderAndReusesGeneratedDisk(t *testing.T) {
 		Name:     "R1",
 		Image:    base,
 		Ethernet: 1,
-		Networks: []string{"br0"},
+		Networks: []string{network.BridgeName("lab-1", "0")},
 		Disks: []DiskSpec{
 			{Slot: "virtioc", SizeGB: 2},
 			{Slot: "virtiob", Image: base},
@@ -581,7 +579,7 @@ func TestStartQEMURemovesRunDirWhenExtraDiskFails(t *testing.T) {
 		LabID:    "lab-1",
 		Name:     "R1",
 		Ethernet: 1,
-		Networks: []string{"br0"},
+		Networks: []string{network.BridgeName("lab-1", "0")},
 		Disks: []DiskSpec{
 			{Slot: "virtiob", SizeGB: 1},
 			{Slot: "virtioc", Image: base},

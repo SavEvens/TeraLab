@@ -17,9 +17,12 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Tests\Support\SetupToken;
 
 final class Phase1ApiTest extends TestCase
 {
+    use SetupToken;
+
     private const PASSWORD = 'Teralab-Admin-2026!';
     private const EDITOR_PASSWORD = 'Teralab-Editor-2026!';
     private const VIEWER_PASSWORD = 'Teralab-Viewer-2026!';
@@ -44,6 +47,7 @@ final class Phase1ApiTest extends TestCase
             "schema: 1\nid: linux\nname: Linux\nkind: qemu\ndefaults:\n  cpu: 1\n  ram: 512\n  ethernet: 4\noptions:\n  qemu_arch: x86_64\n"
         );
         $config = Config::forTests($this->root, $this->root . '/data');
+        $this->installSetupToken($config);
         $agent = new AgentClient($config, static function (string $method, string $path, array $payload): array {
             if ($path === '/v1/lab.ensure') {
                 return [200, '{"ok":true,"result":{"bridges":{"0":"tl-test-bridge-0"}}}'];
@@ -83,6 +87,7 @@ final class Phase1ApiTest extends TestCase
         $setup = $this->request('POST', '/api/v2/setup', [
             'username' => 'admin',
             'password' => self::PASSWORD,
+            'setup_token' => $this->setupToken(),
         ]);
         $this->adminCookie = $this->cookie($setup);
         $this->adminCsrf = (string) $this->json($setup)['csrf_token'];
@@ -139,26 +144,34 @@ final class Phase1ApiTest extends TestCase
         self::assertSame(0.5, $this->json($host)['data']['load1']);
         self::assertSame(1000, $this->json($host)['data']['disk_free_bytes']);
 
-        // Editor may manage images; viewer may not.
+        // Catalogue mutations are admin-only; editors and viewers are read-only.
         $content = "QFI\xfb" . str_repeat("\0", 64);
         $viewerUpload = $this->request('POST', '/api/v2/images', [], [], $viewerCookie, $viewerCsrf, $this->upload($content, 'base.qcow2'));
         self::assertSame(403, $viewerUpload->getStatusCode());
         $editorUpload = $this->request('POST', '/api/v2/images', [], [], $editorCookie, $editorCsrf, $this->upload($content, 'base.qcow2'));
-        self::assertSame(201, $editorUpload->getStatusCode(), (string) $editorUpload->getBody());
-        $image = $this->json($editorUpload)['data'];
+        self::assertSame(403, $editorUpload->getStatusCode());
+        $adminUpload = $this->request('POST', '/api/v2/images', [], [], $this->adminCookie, $this->adminCsrf, $this->upload($content, 'base.qcow2'));
+        self::assertSame(201, $adminUpload->getStatusCode(), (string) $adminUpload->getBody());
+        $image = $this->json($adminUpload)['data'];
 
-        $rename = $this->request('PATCH', '/api/v2/images/' . $image['id'], ['name' => 'Renamed image'], [], $editorCookie, $editorCsrf);
+        $editorRename = $this->request('PATCH', '/api/v2/images/' . $image['id'], ['name' => 'Renamed image'], [], $editorCookie, $editorCsrf);
+        self::assertSame(403, $editorRename->getStatusCode());
+        $rename = $this->request('PATCH', '/api/v2/images/' . $image['id'], ['name' => 'Renamed image'], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(200, $rename->getStatusCode(), (string) $rename->getBody());
         self::assertSame('Renamed image', $this->json($rename)['data']['name']);
 
-        $map = $this->request('PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'linux'], [], $editorCookie, $editorCsrf);
+        $editorMap = $this->request('PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'linux'], [], $editorCookie, $editorCsrf);
+        self::assertSame(403, $editorMap->getStatusCode());
+        $map = $this->request('PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'linux'], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(200, $map->getStatusCode(), (string) $map->getBody());
         self::assertSame('linux', $this->json($map)['data']['template']);
-        $missing = $this->request('PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'does-not-exist'], [], $editorCookie, $editorCsrf);
+        $missing = $this->request('PUT', '/api/v2/images/' . $image['id'] . '/template', ['template' => 'does-not-exist'], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(404, $missing->getStatusCode());
 
         $customYaml = "schema: 1\nid: custom1\nname: Custom\nkind: qemu\ndefaults:\n  cpu: 2\noptions:\n  qemu_arch: x86_64\n";
-        $savedTemplate = $this->request('PUT', '/api/v2/templates/custom1', ['yaml' => $customYaml], [], $editorCookie, $editorCsrf);
+        $editorSave = $this->request('PUT', '/api/v2/templates/custom1', ['yaml' => $customYaml], [], $editorCookie, $editorCsrf);
+        self::assertSame(403, $editorSave->getStatusCode());
+        $savedTemplate = $this->request('PUT', '/api/v2/templates/custom1', ['yaml' => $customYaml], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(200, $savedTemplate->getStatusCode(), (string) $savedTemplate->getBody());
         self::assertSame('custom', $this->json($savedTemplate)['data']['source']);
         $list = $this->request('GET', '/api/v2/templates', [], [], $editorCookie);
@@ -167,10 +180,14 @@ final class Phase1ApiTest extends TestCase
         self::assertContains('linux', $ids);
         self::assertContains('custom1', $ids);
         $badYaml = "schema: 1\nid: badnic\nname: Bad NIC\nkind: qemu\noptions:\n  qemu_nic: bogus\n";
-        $rejected = $this->request('PUT', '/api/v2/templates/badnic', ['yaml' => $badYaml], [], $editorCookie, $editorCsrf);
+        $editorRejected = $this->request('PUT', '/api/v2/templates/badnic', ['yaml' => $badYaml], [], $editorCookie, $editorCsrf);
+        self::assertSame(403, $editorRejected->getStatusCode());
+        $rejected = $this->request('PUT', '/api/v2/templates/badnic', ['yaml' => $badYaml], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(422, $rejected->getStatusCode(), (string) $rejected->getBody());
 
-        $removed = $this->request('DELETE', '/api/v2/templates/custom1', [], [], $editorCookie, $editorCsrf);
+        $editorRemoved = $this->request('DELETE', '/api/v2/templates/custom1', [], [], $editorCookie, $editorCsrf);
+        self::assertSame(403, $editorRemoved->getStatusCode());
+        $removed = $this->request('DELETE', '/api/v2/templates/custom1', [], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(200, $removed->getStatusCode());
     }
 
@@ -178,22 +195,29 @@ final class Phase1ApiTest extends TestCase
     {
         [$editorCookie, $editorCsrf] = $this->login('editor', self::EDITOR_PASSWORD);
         $yaml = "schema: 1\nid: custom1\nname: Custom One\nkind: qemu\ndefaults:\n  cpu: 2\noptions: {}\n";
-        self::assertSame(200, $this->request('PUT', '/api/v2/templates/custom1', ['yaml' => $yaml], [], $editorCookie, $editorCsrf)->getStatusCode());
+        self::assertSame(403, $this->request('PUT', '/api/v2/templates/custom1', ['yaml' => $yaml], [], $editorCookie, $editorCsrf)->getStatusCode());
+        self::assertSame(200, $this->request('PUT', '/api/v2/templates/custom1', ['yaml' => $yaml], [], $this->adminCookie, $this->adminCsrf)->getStatusCode());
 
         $export = $this->request('GET', '/api/v2/templates/custom1/export', [], [], $editorCookie);
         self::assertSame(200, $export->getStatusCode());
         self::assertStringContainsString('id: custom1', (string) $export->getBody());
 
-        $duplicate = $this->request('POST', '/api/v2/templates/custom1/duplicate', [], [], $editorCookie, $editorCsrf);
+        $editorDuplicate = $this->request('POST', '/api/v2/templates/custom1/duplicate', [], [], $editorCookie, $editorCsrf);
+        self::assertSame(403, $editorDuplicate->getStatusCode());
+        $duplicate = $this->request('POST', '/api/v2/templates/custom1/duplicate', [], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(200, $duplicate->getStatusCode(), (string) $duplicate->getBody());
         self::assertSame('custom1-copy', $this->json($duplicate)['data']['id']);
 
-        $builtinCopy = $this->request('POST', '/api/v2/templates/linux/duplicate', [], [], $editorCookie, $editorCsrf);
+        $builtinCopy = $this->request('POST', '/api/v2/templates/linux/duplicate', [], [], $this->adminCookie, $this->adminCsrf);
         self::assertSame(200, $builtinCopy->getStatusCode(), (string) $builtinCopy->getBody());
         self::assertSame('linux-copy', $this->json($builtinCopy)['data']['id']);
 
         $importYaml = "schema: 1\nid: imported1\nname: Imported\nkind: vpcs\ndefaults:\n  ethernet: 1\noptions: {}\n";
-        $import = $this->request('POST', '/api/v2/templates/import', [], [], $editorCookie, $editorCsrf, $this->upload($importYaml, 'imported1.yaml'));
+        self::assertSame(
+            403,
+            $this->request('POST', '/api/v2/templates/import', [], [], $editorCookie, $editorCsrf, $this->upload($importYaml, 'imported1.yaml'))->getStatusCode(),
+        );
+        $import = $this->request('POST', '/api/v2/templates/import', [], [], $this->adminCookie, $this->adminCsrf, $this->upload($importYaml, 'imported1.yaml'));
         self::assertSame(201, $import->getStatusCode(), (string) $import->getBody());
         self::assertSame('custom', $this->json($import)['data']['source']);
     }
@@ -276,6 +300,24 @@ final class Phase1ApiTest extends TestCase
         self::assertStringStartsWith('PK', (string) $backup->getBody());
     }
 
+    public function testTokenNamesAreBoundedAndControlFree(): void
+    {
+        $max = str_repeat('t', 128);
+        $created = $this->request('POST', '/api/v2/system/tokens', ['name' => $max]);
+        self::assertSame(201, $created->getStatusCode(), (string) $created->getBody());
+        self::assertSame($max, $this->json($created)['data']['name']);
+
+        foreach ([str_repeat('t', 129), "bad\nname", "bad\x7fname"] as $name) {
+            $response = $this->request('POST', '/api/v2/system/tokens', ['name' => $name]);
+            self::assertSame(422, $response->getStatusCode(), var_export($name, true));
+        }
+
+        self::assertSame(
+            422,
+            $this->request('DELETE', '/api/v2/system/tokens/not-a-token')->getStatusCode(),
+        );
+    }
+
     public function testOversizedMultipartGetsActionableError(): void
     {
         $response = $this->request(
@@ -354,7 +396,7 @@ final class Phase1ApiTest extends TestCase
         $nodes = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes', [], [], $this->adminCookie);
         self::assertSame(200, $nodes->getStatusCode());
 
-        $status = $this->request('GET', '/api/v2/nodes/status?id=' . rawurlencode((string) $lab['id'] . '-1'), [], [], $this->adminCookie);
+        $status = $this->request('GET', '/api/v2/labs/' . $lab['id'] . '/nodes/1/status', [], [], $this->adminCookie);
         self::assertSame(200, $status->getStatusCode());
         $usage = $this->json($status)['data'];
         self::assertSame(123, $usage['memory_bytes']);

@@ -10,7 +10,9 @@
       <button v-if="canAdmin" class="ghost" @click="openAdopt">Adopt images…</button>
     </div>
 
-    <form v-if="canEdit" class="upload" @submit.prevent="upload">
+    <p v-if="!canAdmin" class="hint catalogue-readonly" role="note">{{ readOnlyHint }}</p>
+
+    <form v-if="canAdmin" class="upload" @submit.prevent="upload">
       <label>Kind
         <select v-model="kind" aria-label="Image kind">
           <option value="qemu">qemu (qcow2)</option>
@@ -55,18 +57,19 @@
           <td>{{ image.format || '—' }}</td>
           <td>{{ bytes(image.size) }}</td>
           <td>
-            <select :value="image.template || ''" :disabled="!canEdit" @change="mapTemplate(image, $event.target.value)">
+            <select v-if="canAdmin" :value="image.template || ''" @change="mapTemplate(image, $event.target.value)">
               <option value="">—</option>
               <option v-for="template in templates" :key="template.id" :value="template.id">{{ template.id }}</option>
             </select>
+            <template v-else>{{ image.template || '—' }}</template>
           </td>
           <td><code>{{ (image.sha256 || '').slice(0, 12) }}</code></td>
           <td>{{ new Date(image.created_at * 1000).toLocaleDateString() }}</td>
           <td>
             <div class="row-actions">
               <button class="ghost" @click="inspect(image)">Details</button>
-              <button v-if="canEdit" class="ghost" @click="openRename(image)">Rename</button>
-              <button v-if="canEdit" class="danger" @click="remove(image)">{{ image.external ? 'Unlink' : 'Delete' }}</button>
+              <button v-if="canAdmin" class="ghost" @click="openRename(image)">Rename</button>
+              <button v-if="canAdmin" class="danger" @click="remove(image)">{{ image.external ? 'Unlink' : 'Delete' }}</button>
             </div>
           </td>
         </tr>
@@ -260,8 +263,11 @@ const details = ref(null)
 const error = ref('')
 const renameDialog = ref({ open: false, image: null, name: '', reference: '', saving: false })
 const fileInput = ref(null)
-const canEdit = computed(() => ['admin', 'editor'].includes(session.user?.role || 'user'))
 const canAdmin = computed(() => session.user?.role === 'admin')
+const isGuest = computed(() => session.user?.guest === true)
+const readOnlyHint = computed(() => isGuest.value
+  ? 'Demo accounts can browse the shared image catalogue. Uploading, renaming, deleting, and mapping images require an administrator account.'
+  : 'The shared image catalogue is read-only for your account. Uploading, renaming, deleting, and mapping images require an administrator account.')
 const uploadTemplates = computed(() => templates.value.filter((template) => template.kind === kind.value))
 
 watch(kind, () => { uploadTemplate.value = '' })

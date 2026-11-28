@@ -18,7 +18,7 @@
         <p class="hint">An image is mapped, or the template supplies a container image.</p>
         <ul class="template-grid">
           <li v-for="template in ready" :key="template.id">
-            <img v-if="template.icon" :src="`/images/icons/${template.icon}`" alt="" />
+            <img v-if="safeIconSrc(template.icon)" :src="safeIconSrc(template.icon)" alt="" />
             <span v-else class="template-dot" aria-hidden="true"></span>
             <span class="template-copy">
               <strong>{{ template.name || template.id }}</strong>
@@ -34,7 +34,7 @@
         <p class="hint">No image is mapped yet. Add the node now and map an image on the Images page.</p>
         <ul class="template-grid">
           <li v-for="template in needsImage" :key="template.id">
-            <img v-if="template.icon" :src="`/images/icons/${template.icon}`" alt="" />
+            <img v-if="safeIconSrc(template.icon)" :src="safeIconSrc(template.icon)" alt="" />
             <span v-else class="template-dot" aria-hidden="true"></span>
             <span class="template-copy">
               <strong>{{ template.name || template.id }}</strong>
@@ -50,7 +50,7 @@
         <p class="hint">The demo includes a starter set of templates. Sign in with a full account to use these.</p>
         <ul class="template-grid">
           <li v-for="template in locked" :key="template.id">
-            <img v-if="template.icon" :src="`/images/icons/${template.icon}`" alt="" />
+            <img v-if="safeIconSrc(template.icon)" :src="safeIconSrc(template.icon)" alt="" />
             <span v-else class="template-dot" aria-hidden="true"></span>
             <span class="template-copy">
               <strong>{{ template.name || template.id }}</strong>
@@ -79,6 +79,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { safeIconSrc } from '../media'
 
 const props = defineProps({
   templates: { type: Array, default: () => [] },

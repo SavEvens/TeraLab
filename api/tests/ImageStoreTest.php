@@ -102,10 +102,47 @@ final class ImageStoreTest extends TestCase
     {
         $content = "\x7fELF" . str_repeat("\0", 60);
         $image = $this->store->store($this->upload($content, 'iol.bin'), 'iol', 'IOL', null);
+        clearstatcache();
+
         self::assertSame('iol', $image['kind']);
+        self::assertSame(0750, fileperms((string) $image['path']) & 0777);
         self::assertNotSame(0, fileperms((string) $image['path']) & 0111);
-        self::assertNotSame(0, fileperms((string) $image['path']) & 0004);
+        self::assertSame(0, fileperms((string) $image['path']) & 0002);
         self::assertNotSame(0, fileperms(dirname((string) $image['path'])) & 0001);
+
+        $gid = $this->imageGroupGid();
+        if ($gid !== null) {
+            self::assertSame($gid, filegroup((string) $image['path']));
+        }
+    }
+
+    public function testStoredImageFilesAreNotGroupOrWorldWritable(): void
+    {
+        $image = $this->store->store(
+            $this->upload("QFI\xfb" . str_repeat("\0", 60), 'disk.qcow2'),
+            'qemu',
+            null,
+            null,
+        );
+        clearstatcache();
+
+        $path = (string) $image['path'];
+        self::assertSame(0640, fileperms($path) & 0777, 'image must be owner-write and group-read only');
+        self::assertSame(0, fileperms($path) & 0022, 'image must not be group or world writable');
+        $metadata = dirname($path) . '/meta.json';
+        self::assertSame(0640, fileperms($metadata) & 0777);
+        self::assertSame(0, fileperms($metadata) & 0002);
+
+        $gid = $this->imageGroupGid();
+        if ($gid !== null) {
+            self::assertSame($gid, filegroup($path));
+            self::assertSame($gid, filegroup($metadata));
+        }
+
+        $temporaryDirectory = $this->config->imagesDir . '/tmp';
+        self::assertSame(0770, fileperms($temporaryDirectory) & 0777);
+        self::assertSame(0, fileperms($temporaryDirectory) & 0002, 'upload directory must not be world writable');
+        self::assertSame([], glob($temporaryDirectory . '/upload-*') ?: []);
     }
 
     public function testRejectsInvalidMagicWithoutRow(): void
@@ -266,6 +303,128 @@ final class ImageStoreTest extends TestCase
         self::assertDirectoryDoesNotExist($directory);
         self::assertFileExists($target);
         self::assertSame('legacy image', file_get_contents($target));
+    }
+
+    public function testSetReferenceNormalisesAnExistingImageMode(): void
+    {
+        $image = $this->store->store(
+            $this->upload("QFI\xfb" . str_repeat("r", 60), 'legacy.qcow2'),
+            'qemu',
+            null,
+            null,
+        );
+        $path = (string) $image['path'];
+        chmod($path, 0644);
+
+        $this->store->setReference((string) $image['id'], 'normalised');
+        clearstatcache();
+
+        self::assertSame(0640, fileperms($path) & 0777);
+        $gid = $this->imageGroupGid();
+        if ($gid !== null) {
+            self::assertSame($gid, filegroup($path));
+        }
+    }
+
+    public function testReferenceSetDoesNotTouchAnAdoptedTarget(): void
+    {
+        $target = $this->root . '/addons/hda.qcow2';
+        mkdir(dirname($target), 0770, true);
+        file_put_contents($target, 'legacy image');
+        chmod($target, 0644);
+
+        $directory = $this->config->imagesDir . '/qemu/qemu-adopted';
+        mkdir($directory, 0750, true);
+        $link = $directory . '/hda.qcow2';
+        symlink($target, $link);
+        $this->insertImageRow('qemu-adopted', $link, 12, 1, str_repeat('d', 64), 'adopted');
+
+        $this->store->setReference('qemu-adopted', 'adopted-ref');
+        clearstatcache();
+
+        self::assertSame(0644, fileperms($target) & 0777, 'an adopted legacy file is never modified');
+        self::assertTrue(is_link($link));
+    }
+
+    public function testImageDirectoriesStayTraversableUnderTheServiceUmask(): void
+    {
+        $previous = umask(0077);
+        try {
+            $image = $this->store->store(
+                $this->upload("QFI\xfb" . str_repeat("u", 60), 'umask.qcow2'),
+                'qemu',
+                null,
+                null,
+            );
+            $binary = $this->store->store(
+                $this->upload("\x7fELF" . str_repeat("\0", 60), 'tool.bin'),
+                'iol',
+                null,
+                null,
+            );
+        } finally {
+            umask($previous);
+        }
+        clearstatcache();
+
+        $path = (string) $image['path'];
+        self::assertSame(0755, fileperms(dirname($path)) & 0777, 'per-image directory must be traversable');
+        self::assertSame(0755, fileperms(dirname($path, 2)) & 0777, 'kind directory must be traversable');
+        self::assertSame(0640, fileperms($path) & 0777);
+
+        $binaryPath = (string) $binary['path'];
+        self::assertSame(0755, fileperms(dirname($binaryPath)) & 0777);
+        self::assertSame(0755, fileperms(dirname($binaryPath, 2)) & 0777);
+        self::assertSame(0750, fileperms($binaryPath) & 0777);
+
+        self::assertSame(0755, fileperms($this->config->imagesDir) & 0777, 'image root must be traversable');
+
+        $gid = $this->imageGroupGid();
+        if ($gid !== null) {
+            self::assertSame($gid, filegroup($path));
+            self::assertSame($gid, filegroup($binaryPath));
+        }
+    }
+
+    public function testMissingImageGroupIsLoggedOnceWithoutFailingUploads(): void
+    {
+        if ($this->imageGroupGid() !== null) {
+            self::markTestSkipped('teralab-images exists on this host, so no warning is expected.');
+        }
+
+        $log = $this->root . '/error.log';
+        $previous = ini_set('error_log', $log);
+        try {
+            $first = $this->store->store(
+                $this->upload("QFI\xfb" . str_repeat("g", 60), 'one.qcow2'),
+                'qemu',
+                null,
+                null,
+            );
+            $second = $this->store->store(
+                $this->upload("QFI\xfb" . str_repeat("h", 60), 'two.qcow2'),
+                'qemu',
+                null,
+                null,
+            );
+        } finally {
+            ini_set('error_log', is_string($previous) ? $previous : '');
+        }
+        clearstatcache();
+
+        self::assertNotSame($first['id'], $second['id']);
+        $contents = is_file($log) ? (string) file_get_contents($log) : '';
+        self::assertSame(1, substr_count($contents, 'TeraLab image store:'));
+    }
+
+    private function imageGroupGid(): ?int
+    {
+        if (!function_exists('posix_getgrnam')) {
+            return null;
+        }
+        $group = @posix_getgrnam('teralab-images');
+
+        return is_array($group) ? (int) $group['gid'] : null;
     }
 
     private function insertImageRow(

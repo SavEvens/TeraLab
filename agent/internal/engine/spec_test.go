@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SavEvens/TeraLab/agent/internal/network"
 )
 
 func testSpec(t *testing.T) (Spec, string) {
@@ -24,7 +26,7 @@ func testSpec(t *testing.T) (Spec, string) {
 		Name:     "R1",
 		Image:    disk,
 		Ethernet: 1,
-		Networks: []string{"br0"},
+		Networks: []string{network.BridgeName("lab-1", "0")},
 	}
 	spec.Normalize()
 
@@ -232,7 +234,7 @@ func TestFreeVNCDisplayIsUnique(t *testing.T) {
 }
 
 func TestVPCSValidation(t *testing.T) {
-	spec := Spec{ID: "pc-1", Name: "PC1", Engine: "vpcs", Ethernet: 1, Networks: []string{"br0"}}
+	spec := Spec{ID: "pc-1", Name: "PC1", Engine: "vpcs", Ethernet: 1, Networks: []string{network.BridgeName("", "0")}}
 	spec.Normalize()
 	if err := spec.Validate([]string{t.TempDir()}); err != nil {
 		t.Fatalf("expected vpcs spec to validate: %v", err)
@@ -245,7 +247,7 @@ func TestVPCSValidation(t *testing.T) {
 
 	spec.Console = "telnet"
 	spec.Ethernet = 2
-	spec.Networks = []string{"br0", "br1"}
+	spec.Networks = []string{network.BridgeName("", "0"), network.BridgeName("", "1")}
 	if err := spec.Validate([]string{t.TempDir()}); err == nil {
 		t.Fatal("expected multi-nic vpcs to be rejected")
 	}
@@ -266,7 +268,7 @@ func TestDynamipsValidationAndArgs(t *testing.T) {
 		Image:    image,
 		Platform: "c7200",
 		Ethernet: 2,
-		Networks: []string{"br0", "br1"},
+		Networks: []string{network.BridgeName("lab1", "0"), network.BridgeName("lab1", "1")},
 	}
 	spec.Normalize()
 	if err := spec.Validate([]string{images}); err != nil {
@@ -285,7 +287,8 @@ func TestDynamipsValidationAndArgs(t *testing.T) {
 		"-P c7200",
 		"-r 512",
 		"-n 512",
-		"-p 20000",
+		"-T 20000",
+		"--console-binding-addr 127.0.0.1",
 		"-s 0:0:tap:tl1",
 		"-s 0:1:tap:tl2",
 		image,
@@ -632,14 +635,9 @@ func TestDockerSpecAcceptsFRRInjectionOptions(t *testing.T) {
 			path:    "/etc/frr/frr.conf",
 		},
 		{
-			name:    "maximum length path",
+			name:    "daemons file is allowlisted",
 			daemons: []string{"zebra"},
-			path:    "/" + strings.Repeat("a", 200),
-		},
-		{
-			name:    "dots inside a segment are allowed",
-			daemons: []string{"zebra"},
-			path:    "/etc/frr..d/frr.conf",
+			path:    "/etc/frr/daemons",
 		},
 	}
 	for _, testCase := range cases {

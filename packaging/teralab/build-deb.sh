@@ -196,8 +196,10 @@ install -m 0644 "$SRC/PROVENANCE.md" "$PAYLOAD/PROVENANCE.md"
 install -m 0644 "$SRC/TERALAB_VERSION" "$PAYLOAD/TERALAB_VERSION"
 install -m 0755 "$SRC/packaging/teralab/apply-state.sh" "$PAYLOAD/packaging/teralab/apply-state.sh"
 install -m 0755 "$SRC/packaging/teralab/teralab-firewall" "$PAYLOAD/packaging/teralab/teralab-firewall"
+install -m 0755 "$SRC/packaging/teralab/fpm-socket-acl" "$PAYLOAD/packaging/teralab/fpm-socket-acl"
 install -m 0644 "$SRC/packaging/teralab/import-legacy.php" "$PAYLOAD/packaging/teralab/import-legacy.php"
 install -m 0644 "$SRC/packaging/teralab/teralab.apache.conf" "$PAYLOAD/packaging/teralab/teralab.apache.conf"
+install -m 0644 "$SRC/packaging/teralab/php-fpm-pool.conf" "$PAYLOAD/packaging/teralab/php-fpm-pool.conf"
 # Unit templates stay next to apply-state so a source-mode run from the
 # packaged tree (for example --ksm without --package) can reinstall them.
 install -m 0644 "$SRC/agent/systemd/teralab-agent.service" "$PAYLOAD/packaging/teralab/teralab-agent.service"
@@ -209,6 +211,17 @@ install -d -m 0755 "$ETC/apache2/conf-available"
 sed 's|@ROOT@|/opt/teralab|g' "$SRC/packaging/teralab/teralab.apache.conf" \
 	> "$ETC/apache2/conf-available/teralab.conf"
 chmod 0644 "$ETC/apache2/conf-available/teralab.conf"
+
+# The dedicated PHP-FPM pool is a conffile so local tuning survives upgrades.
+install -d -m 0755 "$ETC/php/8.4/fpm/pool.d"
+install -m 0644 "$SRC/packaging/teralab/php-fpm-pool.conf" "$ETC/php/8.4/fpm/pool.d/teralab.conf"
+
+# The privileged firewall helper runs from a root-only libexec path. The
+# source copy under /opt/teralab/packaging stays for reference and for a
+# source-mode apply-state run from the packaged tree.
+install -d -m 0755 "$STAGE/usr/local/libexec/teralab"
+install -m 0755 "$SRC/packaging/teralab/teralab-firewall" "$STAGE/usr/local/libexec/teralab/teralab-firewall"
+install -m 0755 "$SRC/packaging/teralab/fpm-socket-acl" "$STAGE/usr/local/libexec/teralab/fpm-socket-acl"
 
 # Keep in sync with packaging/teralab/apply-state.sh.
 for sapi in apache2 fpm cli; do
@@ -243,7 +256,10 @@ find "$PAYLOAD" -type d -exec chmod 0755 {} +
 find "$PAYLOAD" -type f -exec chmod 0644 {} +
 chmod 0755 "$PAYLOAD/bin/teralab-agent" \
 	"$PAYLOAD/packaging/teralab/apply-state.sh" \
-	"$PAYLOAD/packaging/teralab/teralab-firewall"
+	"$PAYLOAD/packaging/teralab/teralab-firewall" \
+	"$PAYLOAD/packaging/teralab/fpm-socket-acl"
+chmod 0755 "$STAGE/usr/local/libexec/teralab/teralab-firewall" \
+	"$STAGE/usr/local/libexec/teralab/fpm-socket-acl"
 
 printf 'Bootstrapping nfpm %s...\n' "$NFPM_VERSION"
 install -d -m 0755 "$BUILD/.tools"
@@ -293,12 +309,12 @@ suggests="$(dpkg-deb -f "$DEB" Suggests)"
 [ -n "$suggests" ] || fail "Suggests field is empty"
 
 depends_list="$(printf '%s\n' "$depends" | tr ',' '\n' | sed 's/^ *//; s/ *$//')"
-for pkg in apache2 php8.4-fpm php8.4-cli php8.4-sqlite3 php8.4-mbstring php8.4-xml \
+for pkg in acl apache2 php8.4-fpm php8.4-cli php8.4-sqlite3 php8.4-mbstring php8.4-xml \
 	qemu-system-x86 qemu-utils logrotate; do
 	grep -qx "$pkg" <<<"$depends_list" || fail "Depends is missing $pkg"
 done
 depends_count="$(printf '%s\n' "$depends_list" | grep -c .)"
-[ "$depends_count" -eq 9 ] || fail "Depends has $depends_count entries, expected 9"
+[ "$depends_count" -eq 10 ] || fail "Depends has $depends_count entries, expected 10"
 case "$recommends" in
 	*vpcs*) ;;
 	*) fail "Recommends is missing vpcs" ;;
@@ -334,12 +350,17 @@ for path in \
 	./opt/teralab/packaging/teralab/teralab.apache.conf \
 	./opt/teralab/packaging/teralab/teralab-agent.service \
 	./opt/teralab/packaging/teralab/teralab-firewall.service \
+	./opt/teralab/packaging/teralab/php-fpm-pool.conf \
+	./opt/teralab/packaging/teralab/fpm-socket-acl \
 	./etc/systemd/system/teralab-agent.service \
 	./etc/systemd/system/teralab-firewall.service \
 	./etc/apache2/conf-available/teralab.conf \
 	./etc/php/8.4/apache2/conf.d/99-teralab-uploads.ini \
 	./etc/php/8.4/fpm/conf.d/99-teralab-uploads.ini \
+	./etc/php/8.4/fpm/pool.d/teralab.conf \
 	./etc/php/8.4/cli/conf.d/99-teralab-uploads.ini \
+	./usr/local/libexec/teralab/teralab-firewall \
+	./usr/local/libexec/teralab/fpm-socket-acl \
 	./etc/logrotate.d/teralab \
 	./usr/share/doc/teralab/copyright \
 	./usr/share/doc/teralab/changelog.gz; do
@@ -379,6 +400,7 @@ expected_conffiles=(
 	/etc/php/8.4/apache2/conf.d/99-teralab-uploads.ini
 	/etc/php/8.4/fpm/conf.d/99-teralab-uploads.ini
 	/etc/php/8.4/cli/conf.d/99-teralab-uploads.ini
+	/etc/php/8.4/fpm/pool.d/teralab.conf
 	/etc/systemd/system/teralab-agent.service
 	/etc/systemd/system/teralab-firewall.service
 	/etc/logrotate.d/teralab

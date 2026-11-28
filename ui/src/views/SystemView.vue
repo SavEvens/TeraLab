@@ -79,11 +79,131 @@
             <input v-model.number="settingsForm.max_upload_bytes" type="number" min="1048576" max="10737418240" />
           </label>
         </div>
+
+        <h2>Retention and limits</h2>
+        <p class="hint">
+          Retention and backup caps are stored settings. The maintenance action removes expired rows and
+          expired trash; backup restore rejects archives over these caps.
+        </p>
+        <div class="field-grid">
+          <label>Login attempt retention (days)
+            <input
+              v-model.number="settingsForm.retention_login_attempts_days"
+              type="number"
+              step="1"
+              :min="limitBounds.retention_login_attempts_days.min"
+              :max="limitBounds.retention_login_attempts_days.max"
+              aria-label="Login attempt retention (days)"
+            />
+          </label>
+          <label>Audit log retention (days)
+            <input
+              v-model.number="settingsForm.retention_audit_log_days"
+              type="number"
+              step="1"
+              :min="limitBounds.retention_audit_log_days.min"
+              :max="limitBounds.retention_audit_log_days.max"
+              aria-label="Audit log retention (days)"
+            />
+          </label>
+          <label>Finished job retention (days)
+            <input
+              v-model.number="settingsForm.retention_jobs_days"
+              type="number"
+              step="1"
+              :min="limitBounds.retention_jobs_days.min"
+              :max="limitBounds.retention_jobs_days.max"
+              aria-label="Finished job retention (days)"
+            />
+          </label>
+          <label>Max finished jobs kept
+            <input
+              v-model.number="settingsForm.retention_jobs_max_rows"
+              type="number"
+              step="100"
+              :min="limitBounds.retention_jobs_max_rows.min"
+              :max="limitBounds.retention_jobs_max_rows.max"
+              aria-label="Max finished jobs kept"
+            />
+          </label>
+          <label>Maintenance interval (seconds)
+            <input
+              v-model.number="settingsForm.maintenance_interval_seconds"
+              type="number"
+              step="60"
+              :min="limitBounds.maintenance_interval_seconds.min"
+              :max="limitBounds.maintenance_interval_seconds.max"
+              aria-label="Maintenance interval (seconds)"
+            />
+          </label>
+          <label>Max backup archive (bytes)
+            <input
+              v-model.number="settingsForm.backup_max_archive_bytes"
+              type="number"
+              step="1048576"
+              :min="limitBounds.backup_max_archive_bytes.min"
+              :max="limitBounds.backup_max_archive_bytes.max"
+              aria-label="Max backup archive (bytes)"
+            />
+            <small class="hint">{{ bytes(settingsForm.backup_max_archive_bytes) }}</small>
+          </label>
+          <label>Max backup entries
+            <input
+              v-model.number="settingsForm.backup_max_entries"
+              type="number"
+              step="1"
+              :min="limitBounds.backup_max_entries.min"
+              :max="limitBounds.backup_max_entries.max"
+              aria-label="Max backup entries"
+            />
+          </label>
+          <label>Max uncompressed backup (bytes)
+            <input
+              v-model.number="settingsForm.backup_max_uncompressed_bytes"
+              type="number"
+              step="1048576"
+              :min="limitBounds.backup_max_uncompressed_bytes.min"
+              :max="limitBounds.backup_max_uncompressed_bytes.max"
+              aria-label="Max uncompressed backup (bytes)"
+            />
+            <small class="hint">{{ bytes(settingsForm.backup_max_uncompressed_bytes) }}</small>
+          </label>
+          <label>Max backup database (bytes)
+            <input
+              v-model.number="settingsForm.backup_max_database_bytes"
+              type="number"
+              step="1048576"
+              :min="limitBounds.backup_max_database_bytes.min"
+              :max="limitBounds.backup_max_database_bytes.max"
+              aria-label="Max backup database (bytes)"
+            />
+            <small class="hint">{{ bytes(settingsForm.backup_max_database_bytes) }}</small>
+          </label>
+        </div>
         <div class="row">
-          <button type="submit" :disabled="!canAdmin || !settingsLoaded || saving">{{ saving ? 'Saving…' : 'Save settings' }}</button>
+          <button type="submit" :disabled="!canAdmin || !settingsLoaded || saving || !limitSettingsValid">{{ saving ? 'Saving…' : 'Save settings' }}</button>
           <span class="hint">Session and upload limits apply to new requests immediately.</span>
         </div>
       </form>
+
+      <div v-if="canAdmin" class="account-block maintenance-block">
+        <h2>Maintenance</h2>
+        <p class="hint">
+          Removes expired sessions, old login attempts, audit rows, finished jobs, excess snapshots, and
+          expired trash. The scheduler runs it about every {{ settingsForm.maintenance_interval_seconds }} seconds.
+        </p>
+        <div class="row">
+          <button
+            type="button"
+            data-test="run-maintenance"
+            :disabled="maintenanceRunning"
+            @click="runMaintenance"
+          >
+            {{ maintenanceRunning ? 'Running…' : 'Run maintenance' }}
+          </button>
+          <span class="hint">Runs immediately and reports what it removed.</span>
+        </div>
+      </div>
     </section>
 
     <section v-show="active === 'Logs'" class="panel">
@@ -111,6 +231,12 @@
         <p class="hint">Restores labs, custom templates, settings, and image metadata. Database restore stays manual for safety.</p>
         <input type="file" accept=".zip" aria-label="Backup file" @change="restoreFile = $event.target.files?.[0] || null" />
         <button class="ghost" :disabled="!canAdmin || !restoreFile" @click="restoreBackup">Restore backup</button>
+        <p class="hint" data-test="backup-limits">
+          Restore limits: archive up to {{ bytes(settingsForm.backup_max_archive_bytes) }},
+          {{ settingsForm.backup_max_entries }} entries,
+          {{ bytes(settingsForm.backup_max_uncompressed_bytes) }} uncompressed, and a database up to
+          {{ bytes(settingsForm.backup_max_database_bytes) }}.
+        </p>
         <p v-if="restoreResult" class="hint mono">{{ JSON.stringify(restoreResult) }}</p>
       </article>
     </section>
@@ -194,7 +320,52 @@
           <label>Guest sweep interval (seconds)
             <input v-model.number="settingsForm.demo_sweep_interval" type="number" min="60" max="3600" aria-label="Guest sweep interval (seconds)" />
           </label>
+          <label>Max labs per guest
+            <input
+              v-model.number="settingsForm.demo_max_labs_per_guest"
+              type="number"
+              step="1"
+              :min="demoCapBounds.demo_max_labs_per_guest.min"
+              :max="demoCapBounds.demo_max_labs_per_guest.max"
+              aria-label="Max labs per guest"
+            />
+          </label>
+          <label>Max lab size per guest (bytes)
+            <input
+              v-model.number="settingsForm.demo_max_lab_bytes_per_guest"
+              type="number"
+              step="1048576"
+              :min="demoCapBounds.demo_max_lab_bytes_per_guest.min"
+              :max="demoCapBounds.demo_max_lab_bytes_per_guest.max"
+              aria-label="Max lab size per guest (bytes)"
+            />
+            <small class="hint">{{ bytes(settingsForm.demo_max_lab_bytes_per_guest) }}</small>
+          </label>
+          <label>Max snapshots per lab
+            <input
+              v-model.number="settingsForm.demo_max_snapshots_per_lab"
+              type="number"
+              step="1"
+              :min="demoCapBounds.demo_max_snapshots_per_lab.min"
+              :max="demoCapBounds.demo_max_snapshots_per_lab.max"
+              aria-label="Max snapshots per lab"
+            />
+          </label>
+          <label>Max tokens per user
+            <input
+              v-model.number="settingsForm.demo_max_tokens_per_user"
+              type="number"
+              step="1"
+              :min="demoCapBounds.demo_max_tokens_per_user.min"
+              :max="demoCapBounds.demo_max_tokens_per_user.max"
+              aria-label="Max tokens per user"
+            />
+          </label>
         </div>
+        <p class="hint">
+          Guests always get the smallest caps. Lab bytes are checked against the guest cap before a lab is
+          written, and snapshots and API tokens are capped per lab and per user.
+        </p>
 
         <h2>Allowed templates</h2>
         <p class="hint">Guests can only add nodes from the selected templates.</p>
@@ -223,6 +394,15 @@
           <label>Site key
             <input v-model="settingsForm.turnstile_site_key" aria-label="Turnstile site key" autocomplete="off" maxlength="128" />
           </label>
+          <label>Hostname
+            <input
+              v-model="settingsForm.turnstile_hostname"
+              aria-label="Turnstile hostname"
+              autocomplete="off"
+              maxlength="255"
+              placeholder="optional"
+            />
+          </label>
           <label>Secret key
             <span class="secret-field">
               <input
@@ -242,9 +422,10 @@
           The shipped defaults are Cloudflare's public testing keys. Replace the site and secret keys before
           exposing the demo publicly.
         </p>
+        <TurnstileTestKeyNotice v-if="turnstileTestKeys" />
 
         <div class="row">
-          <button type="submit" :disabled="!canAdmin || !settingsLoaded || saving">{{ saving ? 'Saving…' : 'Save demo settings' }}</button>
+          <button type="submit" :disabled="!canAdmin || !settingsLoaded || saving || !demoCapsValid">{{ saving ? 'Saving…' : 'Save demo settings' }}</button>
           <span class="hint">
             The guest cap and Turnstile apply now; the node/template/RAM limits and idle/sweep
             policy are stored settings and are enforced in the next demo steps.
@@ -272,6 +453,18 @@
           <article class="stat-card">
             <span>Demo nodes running</span>
             <strong data-test="demo-nodes">{{ demoStatus?.demo_nodes_running ?? '—' }}</strong>
+          </article>
+          <article class="stat-card">
+            <span>Guest labs</span>
+            <strong data-test="demo-guest-labs">{{ demoStatus?.guest_labs ?? '—' }}</strong>
+          </article>
+          <article class="stat-card">
+            <span>Guest lab bytes</span>
+            <strong data-test="demo-guest-bytes">{{ guestLabBytesLabel }}</strong>
+          </article>
+          <article class="stat-card">
+            <span>Guest snapshots</span>
+            <strong data-test="demo-guest-snapshots">{{ demoStatus?.guest_snapshots ?? '—' }}</strong>
           </article>
         </div>
         <div class="row">
@@ -470,6 +663,7 @@ import { api } from '../api'
 import { session } from '../stores/session'
 import { notify } from '../stores/toasts'
 import PasswordChangeDialog from '../components/PasswordChangeDialog.vue'
+import TurnstileTestKeyNotice from '../components/TurnstileTestKeyNotice.vue'
 import AboutView from './AboutView.vue'
 
 const DEMO_INT_KEYS = [
@@ -477,6 +671,29 @@ const DEMO_INT_KEYS = [
   'demo_max_nodes_per_lab', 'demo_max_ram_per_node', 'demo_memory_floor_mb',
   'demo_idle_wipe_minutes', 'demo_sweep_interval', 'turnstile_enabled'
 ]
+// Mirrors SettingsService::INT_BOUNDS. The UI never sends a value outside these
+// ranges; the API remains the authority on the final value.
+const demoCapBounds = {
+  demo_max_labs_per_guest: { min: 1, max: 20, fallback: 3 },
+  demo_max_lab_bytes_per_guest: { min: 1048576, max: 268435456, fallback: 20971520 },
+  demo_max_snapshots_per_lab: { min: 1, max: 20, fallback: 3 },
+  demo_max_tokens_per_user: { min: 1, max: 50, fallback: 5 }
+}
+// Retention and backup caps share the same INT_BOUNDS contract.
+const limitBounds = {
+  retention_login_attempts_days: { min: 1, max: 3650, fallback: 30 },
+  retention_audit_log_days: { min: 1, max: 3650, fallback: 90 },
+  retention_jobs_days: { min: 1, max: 3650, fallback: 30 },
+  retention_jobs_max_rows: { min: 100, max: 1000000, fallback: 1000 },
+  maintenance_interval_seconds: { min: 60, max: 86400, fallback: 3600 },
+  backup_max_archive_bytes: { min: 1048576, max: 10737418240, fallback: 2147483648 },
+  backup_max_entries: { min: 1, max: 1000000, fallback: 10000 },
+  backup_max_uncompressed_bytes: { min: 1048576, max: 42949672960, fallback: 4294967296 },
+  backup_max_database_bytes: { min: 1048576, max: 10737418240, fallback: 1073741824 }
+}
+const LIMIT_DEFAULTS = Object.fromEntries(
+  Object.entries(limitBounds).map(([key, bounds]) => [key, bounds.fallback])
+)
 const DEMO_DEFAULTS = {
   demo_enabled: 0,
   demo_landing: 'login',
@@ -489,14 +706,26 @@ const DEMO_DEFAULTS = {
   demo_memory_floor_mb: 2048,
   demo_idle_wipe_minutes: 120,
   demo_sweep_interval: 300,
+  demo_max_labs_per_guest: 3,
+  demo_max_lab_bytes_per_guest: 20971520,
+  demo_max_snapshots_per_lab: 3,
+  demo_max_tokens_per_user: 5,
   turnstile_enabled: 0,
-  turnstile_site_key: '3x00000000000000000000FF'
+  turnstile_site_key: '3x00000000000000000000FF',
+  turnstile_hostname: ''
 }
 
 const route = useRoute()
 const router = useRouter()
 const host = ref(null)
-const settingsForm = ref({ ...DEMO_DEFAULTS, timezone: 'UTC', console_default: 'telnet', session_ttl: 3600, max_upload_bytes: 33554432 })
+const settingsForm = ref({
+  ...DEMO_DEFAULTS,
+  ...LIMIT_DEFAULTS,
+  timezone: 'UTC',
+  console_default: 'telnet',
+  session_ttl: 3600,
+  max_upload_bytes: 33554432
+})
 const saving = ref(false)
 const settingsLoaded = ref(false)
 const error = ref('')
@@ -521,13 +750,17 @@ const demoTemplatesError = ref('')
 const demoTemplatesSelected = ref([])
 const turnstileSecret = ref('')
 const secretConfigured = ref(false)
+const turnstileTestKeys = ref(false)
 const demoStatus = ref(null)
 const demoStatusError = ref('')
 const sweeping = ref(false)
+const maintenanceRunning = ref(false)
 const canAdmin = computed(() => session.user?.role === 'admin')
 const passwordOpen = ref(false)
 const tabs = computed(() => {
-  const list = ['Host', 'Settings', 'Logs', 'Backup', 'Tokens']
+  const list = []
+  if (canAdmin.value) list.push('Host')
+  list.push('Settings', 'Logs', 'Backup', 'Tokens')
   if (canAdmin.value) {
     list.push('Users')
     list.push('Demo')
@@ -536,9 +769,11 @@ const tabs = computed(() => {
   return list
 })
 
+const defaultTab = computed(() => (canAdmin.value ? 'Host' : 'Settings'))
+
 function matchTab(value) {
   const wanted = typeof value === 'string' ? value.trim().toLowerCase() : ''
-  return tabs.value.find((tab) => tab.toLowerCase() === wanted) || 'Host'
+  return tabs.value.find((tab) => tab.toLowerCase() === wanted) || defaultTab.value
 }
 
 const active = ref(matchTab(route.query.tab))
@@ -569,6 +804,11 @@ const memoryLabel = computed(() => {
   if (value === null || value === undefined || !Number.isFinite(megabytes)) return 'unknown'
   return `${Math.round(megabytes)} MB`
 })
+const guestLabBytesLabel = computed(() => {
+  const value = demoStatus.value?.guest_lab_bytes
+  if (value === null || value === undefined) return '—'
+  return bytes(value)
+})
 const editingSelf = computed(() => !!editUser.value.user && isSelf(editUser.value.user))
 const timezones = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : ['UTC']
 
@@ -577,14 +817,39 @@ function splitTemplateCsv(value) {
   return [...new Set(raw.split(',').map((part) => part.trim()).filter(Boolean))]
 }
 
+function normaliseBoundedInt(bounds, value) {
+  const number = Number(value)
+  if (value === null || value === undefined || value === '' || !Number.isFinite(number)) return bounds.fallback
+  return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(number)))
+}
+
+function normaliseBounds(map, form) {
+  for (const [key, bounds] of Object.entries(map)) form[key] = normaliseBoundedInt(bounds, form[key])
+}
+
+function withinBound(bounds, value) {
+  const number = Number(value)
+  return Number.isInteger(number) && number >= bounds.min && number <= bounds.max
+}
+
+function boundsValid(map, form) {
+  return Object.entries(map).every(([key, bounds]) => withinBound(bounds, form[key]))
+}
+
+const demoCapsValid = computed(() => boundsValid(demoCapBounds, settingsForm.value))
+const limitSettingsValid = computed(() => boundsValid(limitBounds, settingsForm.value))
+
 function templateCsv(values) {
   return [...new Set((values || []).map((value) => String(value).trim()).filter(Boolean))].join(',')
 }
 
 function applySettingsData(data) {
-  const next = { ...DEMO_DEFAULTS, ...(data || {}) }
+  const next = { ...DEMO_DEFAULTS, ...LIMIT_DEFAULTS, ...(data || {}) }
   for (const key of DEMO_INT_KEYS) next[key] = Number(next[key])
+  normaliseBounds(demoCapBounds, next)
+  normaliseBounds(limitBounds, next)
   if (!['login', 'demo'].includes(next.demo_landing)) next.demo_landing = DEMO_DEFAULTS.demo_landing
+  if (typeof next.turnstile_hostname !== 'string') next.turnstile_hostname = ''
   secretConfigured.value = typeof next.turnstile_secret_key === 'string' && next.turnstile_secret_key !== ''
   delete next.turnstile_secret_key
   next.demo_allowed_templates = templateCsv(splitTemplateCsv(next.demo_allowed_templates))
@@ -619,13 +884,18 @@ async function loadDemoStatus() {
   }
 }
 
+function plural(value, singular, pluralForm) {
+  return `${value} ${value === 1 ? singular : pluralForm}`
+}
+
 function sweepSummary(data) {
   const count = (value) => Number(value ?? 0) || 0
-  const plural = (value, singular, pluralForm) => `${value} ${value === 1 ? singular : pluralForm}`
   const failed = count(data?.labs_failed)
   const summary = `Sweep complete: ${plural(count(data?.guests_purged), 'guest', 'guests')} purged, `
     + `${plural(count(data?.labs_wiped), 'lab', 'labs')} wiped, `
-    + `${plural(count(data?.nodes_reaped), 'node', 'nodes')} stopped`
+    + `${plural(count(data?.nodes_reaped), 'node', 'nodes')} stopped; `
+    + `${plural(count(data?.guest_files_removed), 'guest file', 'guest files')} and `
+    + `${plural(count(data?.snapshots_removed), 'snapshot', 'snapshots')} removed`
   return failed > 0
     ? { kind: 'warn', message: `${summary}; ${plural(failed, 'lab', 'labs')} could not be wiped and will be retried.` }
     : { kind: 'success', message: `${summary}.` }
@@ -643,6 +913,29 @@ async function sweepNow() {
     toastError(exception)
   } finally {
     sweeping.value = false
+  }
+}
+
+function maintenanceSummary(data) {
+  const count = (value) => Number(value ?? 0) || 0
+  return `Maintenance complete: ${plural(count(data?.sessions_deleted), 'session', 'sessions')}, `
+    + `${plural(count(data?.login_attempts_deleted), 'login attempt', 'login attempts')}, `
+    + `${plural(count(data?.audit_log_deleted), 'audit row', 'audit rows')}, `
+    + `${plural(count(data?.jobs_deleted), 'job', 'jobs')}, `
+    + `${plural(count(data?.snapshots_deleted), 'snapshot', 'snapshots')}, and `
+    + `${plural(count(data?.trash_deleted), 'trash lab', 'trash labs')} removed.`
+}
+
+async function runMaintenance() {
+  if (!canAdmin.value || maintenanceRunning.value) return
+  maintenanceRunning.value = true
+  try {
+    const data = (await api.maintenance()).data || {}
+    notify('success', maintenanceSummary(data))
+  } catch (exception) {
+    toastError(exception)
+  } finally {
+    maintenanceRunning.value = false
   }
 }
 
@@ -702,12 +995,29 @@ function toastError(exception) {
 }
 
 async function loadHost() {
+  // Host status is administrator-only. A viewer or editor must never request
+  // it, even when the URL points at the Host tab.
+  if (!canAdmin.value) {
+    host.value = null
+    return
+  }
   host.value = (await api.host()).data
 }
 
 async function loadSettings() {
   applySettingsData((await api.settings()).data)
   settingsLoaded.value = true
+}
+
+// Health is public and advisory; a failed probe must not blank the Settings
+// page. It tells us whether the API is still using Cloudflare's test secret.
+async function loadTurnstileFlags() {
+  try {
+    const flags = await api.health()
+    turnstileTestKeys.value = flags?.turnstile?.test_keys === true
+  } catch {
+    turnstileTestKeys.value = false
+  }
 }
 
 async function loadLogs() {
@@ -732,7 +1042,7 @@ async function refreshUsers() {
 async function loadAll() {
   error.value = ''
   try {
-    await Promise.all([loadHost(), loadSettings(), loadLogs(), loadTokens()])
+    await Promise.all([loadHost(), loadSettings(), loadLogs(), loadTokens(), loadTurnstileFlags()])
   } catch (exception) {
     error.value = exception.message
   }
@@ -748,6 +1058,10 @@ function settingsPayload() {
 }
 
 async function saveSettings() {
+  if (!limitSettingsValid.value) {
+    error.value = 'Retention and limit settings must stay within the allowed range.'
+    return
+  }
   saving.value = true
   error.value = ''
   try {
@@ -761,6 +1075,10 @@ async function saveSettings() {
 }
 
 async function saveDemoSettings() {
+  if (!demoCapsValid.value) {
+    error.value = 'Demo limits must stay within the allowed range.'
+    return
+  }
   saving.value = true
   error.value = ''
   const typedSecret = turnstileSecret.value.trim() !== ''

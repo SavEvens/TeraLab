@@ -37,7 +37,8 @@ Exact versions and hashes: `api/composer.lock`.
 | Module | Licence | Use |
 |---|---|---|
 | github.com/creack/pty | MIT | PTY consoles |
-| github.com/gorilla/websocket | BSD-2-Clause | Console gateway |
+| github.com/gorilla/websocket | BSD-2-Clause | Console gateway (pinned to the GO-2026-6278 fix commit) |
+| golang.org/x/net | BSD-3-Clause | HTTP proxy dialer used by the fixed gorilla/websocket |
 | golang.org/x/sys | BSD-3-Clause | TUN/TAP ioctls |
 
 ## UI dependencies (`ui/package-lock.json`)
@@ -64,8 +65,27 @@ build-host tools as well.
 |---|---|---|
 | nfpm (build host only) | MIT | Generates the `.deb`; not distributed |
 
-No runtime dependency is added by the nfpm build step; the package's runtime
-dependencies are Debian PHP, Apache and QEMU packages declared by `nfpm.yaml`.
+Dependency audits run in CI as build tooling, not runtime components:
+`composer audit --locked` for the PHP graph, `npm audit --omit=dev` plus a full
+`npm audit` for the UI toolchain, and `govulncheck` (pinned to v1.10.0) for the
+Go agent module graph. The `dependency-audit` CI job enforces these on pushes to
+the project branches and on every pull request, and a weekly scheduled workflow
+repeats them so new
+advisories are noticed between releases. None of these tools is installed or
+distributed by the TeraLab package; the UI production build has no Node.js
+runtime dependency.
+
+No runtime dependency is added by the nfpm build step. The package's runtime
+dependencies are Debian packages declared by `nfpm.yaml` and are separate
+processes, not linked into TeraLab:
+
+| Package | Licence | Use |
+|---|---|---|
+| `apache2` | Apache-2.0 | HTTP server; vhost proxies PHP to the teralab FPM pool |
+| `php8.4-fpm`, `php8.4-cli`, `php8.4-sqlite3`, `php8.4-mbstring`, `php8.4-xml` | PHP-3.01 | API runtime and CLI tooling |
+| `qemu-system-x86`, `qemu-utils` | GPL-2.0-or-later | Engine and image tooling (separate programs) |
+| `logrotate` | GPL-2.0-or-later | Runtime log rotation |
+| `acl` | GPL-2.0-or-later (tools), LGPL-2.1-or-later (libacl) | `setfacl` for the `teralab-vm`/image traverse ACLs and the Apache FastCGI socket ACL |
 
 ## System components (separate processes/packages)
 

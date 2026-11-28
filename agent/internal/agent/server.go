@@ -37,7 +37,10 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 		logger:  logger,
 		manager: manager,
 		tokens:  tokens,
-		gateway: console.New(cfg.ConsoleAddr, manager, tokens),
+		gateway: console.New(cfg.ConsoleAddr, manager, tokens, console.Options{
+			AllowedOrigins: cfg.ConsoleAllowedOrigins,
+			Logger:         logger,
+		}),
 	}
 }
 
@@ -53,8 +56,30 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := os.MkdirAll(s.cfg.RunDir, 0o750); err != nil {
 		return err
 	}
+	// State records are agent-only. Create the root 0700 and re-apply the mode
+	// so an upgrade cannot inherit a permissive directory.
+	stateDir := s.cfg.StateDir
+	if stateDir == "" {
+		stateDir = filepath.Join(s.cfg.RunDir, ".state")
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		s.logger.Warn("cannot secure the state directory", "path", stateDir, "error", err)
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(stateDir, 0, 0); err != nil {
+			s.logger.Warn("cannot own the state directory", "path", stateDir, "error", err)
+		}
+	}
 	if err := os.MkdirAll(s.cfg.ImagesDir, 0o750); err != nil {
 		return err
+	}
+	// Validate the per-lab uid registry before any start. A corrupt file does
+	// not stop the agent, but every lab start then fails closed.
+	if err := s.manager.PrepareLabUIDs(); err != nil {
+		s.logger.Error("per-lab uid registry is invalid; lab starts will fail closed", "error", err)
 	}
 
 	if result, err := s.manager.Reconcile(nil); err != nil {

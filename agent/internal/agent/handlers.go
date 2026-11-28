@@ -9,13 +9,16 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/SavEvens/TeraLab/agent/internal/config"
 	"github.com/SavEvens/TeraLab/agent/internal/engine"
 	"github.com/SavEvens/TeraLab/agent/internal/images"
 	"github.com/SavEvens/TeraLab/agent/internal/system"
+	"github.com/SavEvens/TeraLab/agent/internal/token"
 )
 
 const maxRequestBody = 1 << 20
@@ -37,6 +40,9 @@ type nodeRequest struct {
 
 type consoleRequest struct {
 	NodeID string `json:"node_id"`
+	// UserID is supplied by the API for the authenticated user. The UI must
+	// never send it; the agent stores it for revocation and audit.
+	UserID string `json:"user_id"`
 }
 
 type labEnsureRequest struct {
@@ -253,6 +259,11 @@ func (s *Server) handleImageInspect(writer http.ResponseWriter, request *http.Re
 		writeError(writer, http.StatusBadRequest, "invalid_request", "path is required")
 		return
 	}
+	if s.cfg.VMUID == 0 && !s.cfg.AllowRootVM {
+		writeError(writer, http.StatusServiceUnavailable, "engine_unavailable",
+			"teralab-vm user is missing; refusing to run qemu-img as root")
+		return
+	}
 	resolved, err := images.ResolveUnderAny(payload.Path, s.cfg.ImageRoots())
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid_path", err.Error())
@@ -260,7 +271,14 @@ func (s *Server) handleImageInspect(writer http.ResponseWriter, request *http.Re
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
 	defer cancel()
-	info, err := images.Inspect(ctx, s.cfg.QEMUImg, resolved)
+	info, err := images.InspectAs(ctx, s.cfg.QEMUImg, resolved, images.Command{
+		Credential: vmCredential(s.cfg),
+		Env: []string{
+			"PATH=/usr/local/bin:/usr/bin:/bin",
+			"HOME=" + filepath.Dir(resolved),
+			"LC_ALL=C",
+		},
+	})
 	if err != nil {
 		writeError(writer, http.StatusUnprocessableEntity, "invalid_image", err.Error())
 		return
@@ -275,6 +293,10 @@ func (s *Server) handleConsoleOpen(writer http.ResponseWriter, request *http.Req
 		writeError(writer, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if !validConsoleUserID(payload.UserID) {
+		writeError(writer, http.StatusBadRequest, "invalid_request", "user_id is too long or contains control characters")
+		return
+	}
 	info, err := s.manager.Status(payload.NodeID)
 	if err != nil {
 		writeError(writer, http.StatusNotFound, "not_found", err.Error())
@@ -284,22 +306,27 @@ func (s *Server) handleConsoleOpen(writer http.ResponseWriter, request *http.Req
 		writeError(writer, http.StatusConflict, "not_running", "node is not running")
 		return
 	}
-	expiry := 5 * time.Minute
-	token := s.tokens.Issue(payload.NodeID, expiry)
-	if token == "" {
-		writeError(writer, http.StatusInternalServerError, "token_failed", "cannot issue console token")
+	value, err := s.tokens.Issue(payload.NodeID, payload.UserID, token.DefaultTTL)
+	if err != nil {
+		switch {
+		case errors.Is(err, token.ErrNodeCapacity), errors.Is(err, token.ErrCapacity):
+			writeError(writer, http.StatusTooManyRequests, "console_token_limit", err.Error())
+		default:
+			writeError(writer, http.StatusInternalServerError, "token_failed", "cannot issue console token")
+		}
 		return
 	}
 
 	result := map[string]any{
-		"kind":       info.Console,
-		"token":      token,
-		"expires_in": int(expiry.Seconds()),
+		"kind":        info.Console,
+		"token":       value,
+		"subprotocol": token.SubprotocolPrefix + value,
+		"expires_in":  int(token.DefaultTTL.Seconds()),
 	}
 	if port, ok := s.manager.TCPConsole(payload.NodeID); ok && info.Console != "vnc" {
 		result["kind"] = "telnet"
 		result["port"] = port
-		result["ws_url"] = "ws://" + s.cfg.ConsoleAddr + "/tcp?token=" + token
+		result["ws_url"] = consoleWebSocketURL(s.cfg.ConsoleAddr, "/tcp")
 		writeJSON(writer, http.StatusOK, apiResponse{OK: true, Result: result})
 		return
 	}
@@ -311,12 +338,45 @@ func (s *Server) handleConsoleOpen(writer http.ResponseWriter, request *http.Req
 		}
 		result["port"] = port
 		result["password"] = password
-		result["ws_url"] = "ws://" + s.cfg.ConsoleAddr + "/vnc?token=" + token
+		result["ws_url"] = consoleWebSocketURL(s.cfg.ConsoleAddr, "/vnc")
 	} else {
-		result["ws_url"] = "ws://" + s.cfg.ConsoleAddr + "/ws?token=" + token
+		result["ws_url"] = consoleWebSocketURL(s.cfg.ConsoleAddr, "/ws")
 	}
 
 	writeJSON(writer, http.StatusOK, apiResponse{OK: true, Result: result})
+}
+
+// consoleWebSocketURL builds the endpoint the browser opens. The token is
+// deliberately absent: it travels in Sec-WebSocket-Protocol so it never lands
+// in access logs, browser history, or proxy caches.
+func consoleWebSocketURL(addr, path string) string {
+	return "ws://" + addr + path
+}
+
+// validConsoleUserID bounds the API-supplied user ID before it is retained in
+// the token store and written to the agent log.
+func validConsoleUserID(userID string) bool {
+	if len(userID) > 128 {
+		return false
+	}
+	for _, character := range userID {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+
+	return true
+}
+
+// vmCredential is the unprivileged engine identity for qemu-img. A zero UID
+// means the VM user could not be resolved; the agent then refuses at start
+// time rather than silently running image parsers as root.
+func vmCredential(cfg config.Config) *syscall.Credential {
+	if cfg.VMUID == 0 {
+		return nil
+	}
+
+	return &syscall.Credential{Uid: cfg.VMUID, Gid: cfg.VMGID, Groups: cfg.VMGroups}
 }
 
 func readJSON(request *http.Request, destination any) error {

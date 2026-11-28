@@ -176,6 +176,9 @@ try {
   const demoMemoryBefore = (await page.locator('[data-test="demo-memory"]').innerText()).trim()
   const demoGuestsBefore = (await page.locator('[data-test="demo-guests"]').innerText()).trim()
   const demoNodesBefore = (await page.locator('[data-test="demo-nodes"]').innerText()).trim()
+  const demoGuestLabs = (await page.locator('[data-test="demo-guest-labs"]').innerText()).trim()
+  const demoGuestBytes = (await page.locator('[data-test="demo-guest-bytes"]').innerText()).trim()
+  const demoGuestSnapshots = (await page.locator('[data-test="demo-guest-snapshots"]').innerText()).trim()
   await page.getByRole('button', { name: 'Sweep now' }).click()
   await page.waitForFunction(
     () => document.querySelector('[data-test="demo-last-sweep"]')?.textContent.trim() !== 'never',
@@ -185,7 +188,7 @@ try {
   const demoLastSweepAfter = (await page.locator('[data-test="demo-last-sweep"]').innerText()).trim()
   const demoMemoryAfter = (await page.locator('[data-test="demo-memory"]').innerText()).trim()
   await page.waitForFunction(
-    () => [...document.querySelectorAll('.toast')].some((toast) => /Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped\./.test(toast.textContent || '')),
+    () => [...document.querySelectorAll('.toast')].some((toast) => /Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped; 4 guest files and 2 snapshots removed\./.test(toast.textContent || '')),
     null,
     { timeout: 10000 }
   )
@@ -772,6 +775,7 @@ try {
   await page.getByRole('link', { name: 'System' }).click()
   await page.waitForURL('**/ui/system')
   await page.waitForSelector('[role="tab"]')
+  const viewerHasHostTab = await page.getByRole('tab', { name: 'Host', exact: true }).count()
   const viewerHasUsersTab = await page.getByRole('tab', { name: 'Users' }).count()
   const viewerHasDemoTab = await page.getByRole('tab', { name: 'Demo', exact: true }).count()
   const usersForbidden = await page.evaluate(async () => (await fetch('/api/v2/users', { credentials: 'same-origin' })).status)
@@ -799,19 +803,23 @@ try {
   const captchaContext = await browser.newContext()
   let executeOnSubmitCount = 0
   let executeOnSubmitWidgetId = ''
+  let renderedTurnstileActions = []
   try {
     const captchaPage = await captchaContext.newPage()
     await captchaPage.addInitScript(() => {
       window.__turnstileExecutions = 0
+      window.__turnstileActionOptions = {}
       window.turnstile = {
         render: (_element, options) => {
-          window.__turnstileOptions = options
-          return 'e2e-turnstile-widget'
+          const action = options.action || 'default'
+          window.__turnstileActionOptions[action] = options
+          return `e2e-turnstile-${action}`
         },
         execute: (widgetId) => {
           window.__turnstileExecutions += 1
           window.__turnstileWidgetId = widgetId
-          setTimeout(() => window.__turnstileOptions?.callback?.('e2e-turnstile-token'), 0)
+          const action = widgetId.replace(/^e2e-turnstile-/, '')
+          setTimeout(() => window.__turnstileActionOptions[action]?.callback?.('e2e-turnstile-token'), 0)
         },
         reset: () => {},
         remove: () => {}
@@ -819,6 +827,7 @@ try {
     })
     await captchaPage.goto(`http://127.0.0.1:${uiPort}/ui/login`)
     await captchaPage.getByRole('button', { name: 'Enter demo' }).waitFor({ timeout: 10000 })
+    renderedTurnstileActions = await captchaPage.evaluate(() => Object.keys(window.__turnstileActionOptions))
     await captchaPage.getByRole('button', { name: 'Enter demo' }).click()
     await captchaPage.waitForURL('**/ui/labs', { timeout: 10000 })
     await captchaPage.waitForFunction(() => document.querySelector('.labs'), null, { timeout: 10000 })
@@ -843,6 +852,8 @@ try {
     loginMs,
     editorMs,
     consoleMs,
+    consoleUrls: mock.wsUrls,
+    consoleProtocols: mock.wsProtocols,
     terminalBounds,
     canvasMenu: canvasMenu.replace(/\s+/g, ' ').trim(),
     nodeMenu: nodeMenu.replace(/\s+/g, ' ').trim(),
@@ -999,6 +1010,7 @@ try {
     demoNodesBefore,
     demoSweepToast,
     demoSweepSummary,
+    viewerHasHostTab,
     viewerHasUsersTab,
     viewerHasDemoTab,
     usersForbidden,
@@ -1101,6 +1113,13 @@ try {
   if (editorChrome.overlap) throw new Error(`Vue Flow chrome overlaps the toolbar/status bar: ${JSON.stringify(editorChrome)}`)
   if (chromeLayoutConsole.overlap) throw new Error(`Vue Flow chrome overlaps the toolbar with the console open: ${JSON.stringify(chromeLayoutConsole)}`)
   if (resizeFrames.length) throw new Error(`console sent resize frames: ${JSON.stringify(resizeFrames)}`)
+  if (!mock.wsUrls.length) throw new Error('console never opened a WebSocket')
+  if (mock.wsUrls.some((url) => /[?&](?:access_?|auth_?)?token=/i.test(url))) {
+    throw new Error(`console token leaked into the WebSocket URL: ${JSON.stringify(mock.wsUrls)}`)
+  }
+  if (mock.wsProtocols.some((protocol) => !/^teralab\.console\.[A-Za-z0-9._~!#$%&'*+\-^`|]+$/.test(protocol || ''))) {
+    throw new Error(`console did not use the capability subprotocol: ${JSON.stringify(mock.wsProtocols)}`)
+  }
   if (!(heightAfter > heightBefore + 50)) throw new Error(`dock drag did not resize the console body: ${heightBefore} -> ${heightAfter}`)
   if (!(Number.parseFloat(cssHeightAfter) > Number.parseFloat(cssHeightBefore))) throw new Error(`--console-h did not change: ${cssHeightBefore} -> ${cssHeightAfter}`)
   if (!dockStoredHeight || Number(dockStoredHeight) !== Math.round(Number.parseFloat(cssHeightAfter))) {
@@ -1233,16 +1252,22 @@ try {
   if (demoGuestsBefore !== '0' || demoNodesBefore !== '1') {
     throw new Error(`demo counts are wrong: guests=${demoGuestsBefore} nodes=${demoNodesBefore}`)
   }
-  if (!/Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped\./.test(demoSweepToast)) {
+  if (demoGuestLabs !== '2' || demoGuestBytes !== '1.5 MiB' || demoGuestSnapshots !== '1') {
+    throw new Error(`demo guest footprint is wrong: labs=${demoGuestLabs} bytes=${demoGuestBytes} snapshots=${demoGuestSnapshots}`)
+  }
+  if (!/Sweep complete: 2 guests purged, 3 labs wiped, 1 node stopped; 4 guest files and 2 snapshots removed\./.test(demoSweepToast)) {
     throw new Error(`demo sweep toast is wrong: ${demoSweepToast}`)
   }
   if (
     demoSweepSummary?.guests_purged !== 2 ||
     demoSweepSummary?.labs_wiped !== 3 ||
-    demoSweepSummary?.nodes_reaped !== 1
+    demoSweepSummary?.nodes_reaped !== 1 ||
+    demoSweepSummary?.guest_files_removed !== 4 ||
+    demoSweepSummary?.snapshots_removed !== 2
   ) {
     throw new Error(`demo sweep summary is wrong: ${JSON.stringify(demoSweepSummary)}`)
   }
+  if (viewerHasHostTab !== 0) throw new Error('non-admin still sees the admin-only Host tab')
   if (viewerHasUsersTab !== 0) throw new Error('non-admin still sees the Users tab')
   if (viewerHasDemoTab !== 0) throw new Error('non-admin still sees the Demo tab')
   if (usersForbidden !== 403) throw new Error(`GET /api/v2/users returned ${usersForbidden} for a non-admin`)
@@ -1257,8 +1282,11 @@ try {
   if (executeOnSubmitCount !== 1) {
     throw new Error(`Turnstile execute ran ${executeOnSubmitCount} times on submit`)
   }
-  if (executeOnSubmitWidgetId !== 'e2e-turnstile-widget') {
+  if (executeOnSubmitWidgetId !== 'e2e-turnstile-guest') {
     throw new Error(`Turnstile execute got widget id ${executeOnSubmitWidgetId}`)
+  }
+  if (!renderedTurnstileActions.includes('guest') || !renderedTurnstileActions.includes('login')) {
+    throw new Error(`expected guest and login widgets, rendered ${JSON.stringify(renderedTurnstileActions)}`)
   }
   if (!demoLandingUrl.includes('mode=demo') || !demoPanelPrimary) {
     throw new Error(`demo landing did not select the demo panel: ${demoLandingUrl} primary=${demoPanelPrimary}`)

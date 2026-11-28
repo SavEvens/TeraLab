@@ -26,8 +26,9 @@ final class NetworkController
      */
     public function ensure(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        $this->access->requireRole($this->access->user($request), 'editor');
-        $labID = $this->labID($args);
+        $user = $this->access->user($request);
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
+        $declared = $this->declaredNetworks($lab);
         $body = Json::body($request);
         $networks = $body['networks'] ?? null;
         if (!is_array($networks)) {
@@ -39,6 +40,12 @@ final class NetworkController
             if (!is_array($network) || !isset($network['id']) || !is_string($network['id']) || $network['id'] === '') {
                 throw new HttpException(422, 'Each network needs a string id.');
             }
+            if (array_key_exists('bridge', $network)) {
+                throw new HttpException(422, 'Bridge names are derived by the agent and are not accepted.');
+            }
+            if (!isset($declared[$network['id']])) {
+                throw new HttpException(422, 'Network id is not declared in this lab.');
+            }
             $entry = ['id' => $network['id']];
             if (isset($network['name']) && is_string($network['name'])) {
                 $entry['name'] = $network['name'];
@@ -46,6 +53,7 @@ final class NetworkController
             $payload[] = $entry;
         }
 
+        $labID = (string) $lab['id'];
         $result = $this->agent->ensureLab($labID, $payload);
         $bridges = $result['bridges'] ?? [];
         $list = [];
@@ -68,8 +76,9 @@ final class NetworkController
      */
     public function cleanup(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        $this->access->requireRole($this->access->user($request), 'editor');
-        $labID = $this->labID($args);
+        $user = $this->access->user($request);
+        $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
+        $labID = (string) $lab['id'];
 
         return Json::response($response, [
             'status' => 'success',
@@ -78,15 +87,18 @@ final class NetworkController
     }
 
     /**
-     * @param array<string, string> $args
+     * @param array<string, mixed> $lab
+     * @return array<string, true>
      */
-    private function labID(array $args): string
+    private function declaredNetworks(array $lab): array
     {
-        $labID = $args['id'] ?? '';
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $labID) !== 1) {
-            throw new HttpException(422, 'Invalid lab id.');
+        $declared = [];
+        foreach (($lab['network_list'] ?? []) as $network) {
+            if (is_array($network) && isset($network['id']) && is_string($network['id']) && $network['id'] !== '') {
+                $declared[$network['id']] = true;
+            }
         }
 
-        return $labID;
+        return $declared;
     }
 }

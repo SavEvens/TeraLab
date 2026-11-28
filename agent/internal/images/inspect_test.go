@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -214,5 +215,83 @@ func TestResolveUnderStaysSingleRoot(t *testing.T) {
 	}
 	if resolved, err := ResolveUnder(link, extra); err != nil || resolved != extraDisk {
 		t.Fatalf("ResolveUnder(extra) failed: %q %v", resolved, err)
+	}
+}
+
+func TestInspectRunsQEMUImgAsVMUserAndStagesUnreadableFiles(t *testing.T) {
+	path := writeQCOW2(t, t.TempDir())
+	qemuImg := filepath.Join(t.TempDir(), "qemu-img")
+	if err := os.WriteFile(qemuImg, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var inspected string
+	var executedCredential *syscall.Credential
+	var stagedMode os.FileMode
+	var stagedData []byte
+	command := Command{
+		Credential: &syscall.Credential{Uid: 997, Gid: 989, Groups: []uint32{993}},
+		Env:        []string{"PATH=/usr/bin"},
+		Run: func(cmd *exec.Cmd) ([]byte, error) {
+			executedCredential = cmd.SysProcAttr.Credential
+			inspected = cmd.Args[len(cmd.Args)-1]
+			info, err := os.Stat(inspected)
+			if err != nil {
+				return nil, err
+			}
+			stagedMode = info.Mode().Perm()
+			stagedData, _ = os.ReadFile(inspected)
+
+			return []byte(`{"format":"qcow2","virtual-size":1024}`), nil
+		},
+	}
+
+	if _, err := InspectAs(context.Background(), qemuImg, path, command); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if executedCredential == nil || executedCredential.Uid != 997 || executedCredential.Gid != 989 {
+		t.Fatalf("qemu-img must run as the VM user, got %+v", executedCredential)
+	}
+	if inspected == path {
+		t.Fatal("a 0600 upload must be staged for the VM user")
+	}
+	if stagedMode != 0o644 {
+		t.Fatalf("staging copy mode = %04o, want 0644", stagedMode)
+	}
+	if len(stagedData) == 0 {
+		t.Fatal("staging copy is empty")
+	}
+	if _, err := os.Stat(inspected); !os.IsNotExist(err) {
+		t.Fatalf("staging copy was not removed: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("the live upload mode changed to %04o", info.Mode().Perm())
+	}
+}
+
+func TestInspectWithoutCredentialInspectsInPlace(t *testing.T) {
+	path := writeQCOW2(t, t.TempDir())
+	qemuImg := filepath.Join(t.TempDir(), "qemu-img")
+	if err := os.WriteFile(qemuImg, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var inspected string
+	command := Command{Run: func(cmd *exec.Cmd) ([]byte, error) {
+		inspected = cmd.Args[len(cmd.Args)-1]
+		if cmd.SysProcAttr.Credential != nil {
+			t.Fatalf("unexpected credential: %+v", cmd.SysProcAttr.Credential)
+		}
+
+		return []byte(`{"format":"qcow2","virtual-size":1024}`), nil
+	}}
+	if _, err := InspectAs(context.Background(), qemuImg, path, command); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if inspected != path {
+		t.Fatalf("inspection path = %s, want %s", inspected, path)
 	}
 }
