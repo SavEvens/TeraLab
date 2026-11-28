@@ -9,7 +9,7 @@
 #
 # Sudoers rules must forbid arguments with "":
 #   savanna ALL=(root) NOPASSWD: /usr/local/libexec/teralab/deploy-local ""
-#   savanna ALL=(root) NOPASSWD: /usr/local/libexec/teralab/deploy-local --dry-run ""
+#   savanna ALL=(root) NOPASSWD: /usr/local/libexec/teralab/deploy-local --dry-run
 #   savanna ALL=(root) NOPASSWD: /usr/local/libexec/teralab/live-diagnostics ""
 # A rollback needs an archive argument, so it must use an authenticated sudo
 # call rather than a NOPASSWD rule.
