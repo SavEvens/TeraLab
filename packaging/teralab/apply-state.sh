@@ -148,6 +148,15 @@ SERVICE_UID="$(id -u "$SERVICE_USER")"
 SERVICE_GID="$(getent group "$SERVICE_GROUP" | cut -d: -f3)"
 IMAGE_GID="$(getent group "$IMAGE_GROUP" | cut -d: -f3)"
 
+# A package install over a legacy source tree keeps the files dpkg did not
+# replace (and the tree root itself) with the old owner. The code and helpers
+# must be root-owned and never group/world writable; source installs already
+# chown the rsynced tree, so this is a no-op there.
+if [ -d "$ROOT" ]; then
+	chown -R root:root "$ROOT"
+	chmod -R go-w "$ROOT"
+fi
+
 # www-data must never share the TeraLab trust boundary. Remove a stale
 # membership left by an older install instead of failing the upgrade.
 if id -nG www-data 2>/dev/null | tr ' ' '\n' | grep -qx "$SERVICE_GROUP"; then

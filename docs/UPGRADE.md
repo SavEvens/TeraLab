@@ -164,6 +164,23 @@ Changes you will notice in the editor and the Images page:
 
 ## Upgrading a .deb install
 
+### Migrating a source install to the package
+
+A host previously installed with `packaging/teralab/install.sh` has an
+unowned `/opt/teralab` and unowned Apache/unit files, so dpkg treats those
+files as locally created. For that one migration:
+
+- stop the agent and the web tier, back up as above;
+- install with `sudo apt-get install -o Dpkg::Options::=--force-confnew ./teralab_<version>_amd64.deb`
+  (or merge the packaged conffiles by hand) so the FPM handler, CSP headers
+  and new unit environments are applied;
+- run the installer's state step once (`sudo /opt/teralab/packaging/teralab/apply-state.sh --package`)
+  and `sudo scripts/check-install-perms.sh` from a matching checkout.
+
+`apply-state.sh` re-owns the installed tree root:root and removes group/world
+write bits, which covers any files the package did not replace. Later package
+upgrades are ordinary conffile-prompt upgrades.
+
 If TeraLab was installed from the Debian package, upgrade with the new
 artifact:
 
