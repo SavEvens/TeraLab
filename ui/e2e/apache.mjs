@@ -5,7 +5,8 @@
 // Requires TERALAB_APACHE_URL (default http://127.0.0.1:18080), a running
 // agent/API, TERALAB_ADMIN_PASSWORD or TERALAB_ADMIN_PASSWORD_FILE,
 // TERALAB_TEST_IMAGE (a small disposable qcow2) and TERALAB_TEST_ISO (a small
-// bootable ISO). TERALAB_EXPECT_VERSION defaults to 1.6-dev.
+// bootable ISO). TERALAB_EXPECT_VERSION overrides the repository
+// TERALAB_VERSION.
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -13,11 +14,10 @@ import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { chromium } from 'playwright-core'
 import WebSocket from 'ws'
-import { adminPassword } from './live-utils.mjs'
+import { adminPassword, expectedVersion } from './live-utils.mjs'
 
 const base = (process.env.TERALAB_APACHE_URL || 'http://127.0.0.1:18080').replace(/\/$/, '')
 const adminUser = process.env.TERALAB_ADMIN_USER || 'admin'
-const expectVersion = (process.env.TERALAB_EXPECT_VERSION || '1.6-dev').trim() || '1.6-dev'
 const outDir = process.env.TERALAB_E2E_OUT || path.join(os.tmpdir(), 'teralab-apache-e2e')
 
 function requiredTestFile(name, description) {
@@ -30,10 +30,12 @@ function requiredTestFile(name, description) {
 let password
 let qcow2
 let iso
+let expectVersion
 try {
   password = adminPassword(process.env).password
   qcow2 = requiredTestFile('TERALAB_TEST_IMAGE', 'a small disposable qcow2 image')
   iso = requiredTestFile('TERALAB_TEST_ISO', 'a small bootable ISO for the VNC node')
+  expectVersion = expectedVersion(process.env)
 } catch (error) {
   console.error(`APACHE_E2E_ENV_ERROR ${error.message}`)
   process.exit(1)

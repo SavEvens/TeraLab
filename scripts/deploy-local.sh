@@ -7,12 +7,30 @@
 # Production invocation (fixed defaults, root, no arguments):
 #   sudo -n /usr/local/libexec/teralab/deploy-local
 #
-# The helper refuses to run with a dirty tracked tree, a commit that is not the
-# expected candidate, an installed copy that differs from this source, active
-# lab engines or TeraLab containers, or insufficient backup space. It builds as
-# the source owner, backs up configuration and runtime data plus the installed
-# code tree, installs the freshly built package with --force-confold, verifies
-# the host, and only then writes the pass stamp.
+# Sudoers rules must forbid arguments with "":
+#   savanna ALL=(root) NOPASSWD: /usr/local/libexec/teralab/deploy-local ""
+#   savanna ALL=(root) NOPASSWD: /usr/local/libexec/teralab/deploy-local --dry-run ""
+#   savanna ALL=(root) NOPASSWD: /usr/local/libexec/teralab/live-diagnostics ""
+# A rollback needs an archive argument, so it must use an authenticated sudo
+# call rather than a NOPASSWD rule.
+#
+# Install the read-only permission checker as a root-owned helper too:
+#   install -o root -g root -m 0755 scripts/check-install-perms.sh \
+#     /usr/local/libexec/teralab/check-install-perms
+#
+# The helper refuses to run with a dirty tracked tree, untracked build-relevant
+# files, a commit that is not the expected candidate, an installed copy that
+# differs from this source, active lab engines or TeraLab containers, or
+# insufficient backup space. It builds as the source owner, stops the services,
+# backs up configuration and runtime data plus the installed code tree,
+# installs the freshly built package with --force-confold, verifies the host,
+# and only then atomically writes the root-owned pass stamp.
+#
+# Path and commit overrides are test-only: a real root run refuses them. The
+# canonical stamp is /var/lib/teralab-live/live-deploy.json; deploying a new
+# commit replaces it and therefore invalidates the previous commit's verify.
+# The directory is root:root 0755 so an unprivileged verify can read it without
+# weakening /var/lib/teralab.
 #
 # It never restores a database automatically and never writes history. A failed
 # deploy prints the exact code-rollback command; `--rollback <code-backup>`
@@ -23,22 +41,38 @@ umask 077
 PATH="$HOME/.local/go/bin:$HOME/.local/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export PATH
 
-SOURCE="/home/savanna/teralab"
-ROOT="/opt/teralab"
-DATA="/var/lib/teralab"
-STAMP="/var/lib/teralab/live-deploy.json"
-BACKUP_DIR="/var/backups"
-EVIDENCE_DIR="/home/savanna/teralab-work/live-validation"
-INSTALLED="/usr/local/libexec/teralab/deploy-local"
+DEFAULT_SOURCE="/home/savanna/teralab"
+DEFAULT_ROOT="/opt/teralab"
+DEFAULT_DATA="/var/lib/teralab"
+DEFAULT_STAMP="/var/lib/teralab-live/live-deploy.json"
+DEFAULT_BACKUP_DIR="/var/backups"
+DEFAULT_EVIDENCE_DIR="/home/savanna/teralab-work/live-validation"
+DEFAULT_INSTALLED="/usr/local/libexec/teralab/deploy-local"
+
+SOURCE="$DEFAULT_SOURCE"
+ROOT="$DEFAULT_ROOT"
+DATA="$DEFAULT_DATA"
+STAMP="$DEFAULT_STAMP"
+BACKUP_DIR="$DEFAULT_BACKUP_DIR"
+EVIDENCE_DIR="$DEFAULT_EVIDENCE_DIR"
+INSTALLED="$DEFAULT_INSTALLED"
 EXPECTED_COMMIT=""
 DRY_RUN=0
 SKIP_TESTS=0
 ROLLBACK=""
+OVERRIDES=()
 LIVE_URL="${TERALAB_LIVE_URL:-http://127.0.0.1}"
 SERVICES=(teralab-agent apache2 php8.4-fpm)
 
 FAIL_STAGE="startup"
 SERVICES_STOPPED=0
+DEPLOY_TMP=""
+cleanup() {
+	if [ -n "$DEPLOY_TMP" ]; then
+		rm -rf -- "$DEPLOY_TMP"
+	fi
+}
+trap cleanup EXIT
 CODE_TAR=""
 DATA_TAR=""
 ARTIFACT=""
@@ -57,24 +91,28 @@ Build, back up, install, and verify TeraLab on the local host.
 
 Options:
   --dry-run                 Run the preflight only; no build, backup, or install.
-  --source PATH             Source checkout        (default: $SOURCE)
-  --root PATH               Installed tree         (default: $ROOT)
-  --data PATH               Runtime state          (default: $DATA)
-  --stamp PATH              Canonical stamp        (default: $STAMP)
-  --backup-dir PATH         Backup directory       (default: $BACKUP_DIR)
-  --evidence-dir PATH       Evidence mirror dir    (default: $EVIDENCE_DIR)
+                            Path/commit overrides are accepted only here.
+  --source PATH             Source checkout        (default: $DEFAULT_SOURCE)
+  --root PATH               Installed tree         (default: $DEFAULT_ROOT)
+  --data PATH               Runtime state          (default: $DEFAULT_DATA)
+  --stamp PATH              Canonical stamp        (default: $DEFAULT_STAMP)
+  --backup-dir PATH         Backup directory       (default: $DEFAULT_BACKUP_DIR)
+  --evidence-dir PATH       Evidence mirror dir    (default: $DEFAULT_EVIDENCE_DIR)
   --expected-commit COMMIT  Require this HEAD      (default: current HEAD)
   --skip-tests              Skip scripts/test-all.sh (records tests.skipped)
   --rollback FILE           Restore /opt/teralab from a -code.tgz backup and
                             restart the services. The database is never touched.
+                            Requires root, the default paths, and a regular
+                            root-owned archive under /var/backups.
   --installed PATH          Installed helper used for the source-hash check
-                            (default: $INSTALLED; tests use a temporary copy)
+                            (default: $DEFAULT_INSTALLED; tests use a copy)
   -h, --help                Show this help
 
-The real run requires root. --dry-run and --help do not. Build and tests run as
-the owner of the source checkout so the tree stays owned and the Go/Node
-toolchains under that home resolve. Only the reviewed installed helper may run
-without a sudo prompt.
+The installed helper runs with fixed paths only. A real root run refuses every
+path and commit override; they exist for --dry-run tests. --dry-run and --help
+do not require root. Build and tests run as the owner of the source checkout so
+the tree stays owned and the Go/Node toolchains under that home resolve. Only
+the reviewed installed helper may run without a sudo prompt.
 EOF
 }
 
@@ -99,36 +137,43 @@ while [ "$#" -gt 0 ]; do
 		--source)
 			need_value "$@"
 			SOURCE="$2"
+			OVERRIDES+=("--source")
 			shift 2
 			;;
 		--root)
 			need_value "$@"
 			ROOT="$2"
+			OVERRIDES+=("--root")
 			shift 2
 			;;
 		--data)
 			need_value "$@"
 			DATA="$2"
+			OVERRIDES+=("--data")
 			shift 2
 			;;
 		--stamp)
 			need_value "$@"
 			STAMP="$2"
+			OVERRIDES+=("--stamp")
 			shift 2
 			;;
 		--backup-dir)
 			need_value "$@"
 			BACKUP_DIR="$2"
+			OVERRIDES+=("--backup-dir")
 			shift 2
 			;;
 		--evidence-dir)
 			need_value "$@"
 			EVIDENCE_DIR="$2"
+			OVERRIDES+=("--evidence-dir")
 			shift 2
 			;;
 		--expected-commit)
 			need_value "$@"
 			EXPECTED_COMMIT="$2"
+			OVERRIDES+=("--expected-commit")
 			shift 2
 			;;
 		--skip-tests)
@@ -143,6 +188,7 @@ while [ "$#" -gt 0 ]; do
 		--installed)
 			need_value "$@"
 			INSTALLED="$2"
+			OVERRIDES+=("--installed")
 			shift 2
 			;;
 		-h|--help)
@@ -156,6 +202,22 @@ while [ "$#" -gt 0 ]; do
 			;;
 	esac
 done
+
+if [ -n "$ROLLBACK" ] && [ "$DRY_RUN" -eq 1 ]; then
+	printf 'deploy-local: --rollback cannot be combined with --dry-run\n' >&2
+	exit 2
+fi
+
+EUID_NOW="$(id -u)"
+if [ "$EUID_NOW" -eq 0 ] && [ "$DRY_RUN" -ne 1 ] && [ "${#OVERRIDES[@]}" -gt 0 ]; then
+	if [ -n "$ROLLBACK" ]; then
+		printf 'deploy-local: rollback accepts only the default paths and no overrides; refused: %s\n' "${OVERRIDES[*]}" >&2
+	else
+		printf 'deploy-local: the installed helper runs with fixed paths only; refused override(s): %s\n' "${OVERRIDES[*]}" >&2
+		printf 'deploy-local: path and commit overrides are for --dry-run tests only\n' >&2
+	fi
+	exit 2
+fi
 
 LIVE_URL="${LIVE_URL%/}"
 
@@ -230,10 +292,29 @@ if [ -n "$ROLLBACK" ]; then
 		printf 'deploy-local: rollback requires root\n' >&2
 		exit 1
 	fi
+	[ "$ROOT" = "$DEFAULT_ROOT" ] \
+		|| { printf 'deploy-local: rollback requires the default --root\n' >&2; exit 1; }
+	[ "$BACKUP_DIR" = "$DEFAULT_BACKUP_DIR" ] \
+		|| { printf 'deploy-local: rollback requires the default --backup-dir\n' >&2; exit 1; }
+	[ ! -L "$ROLLBACK" ] \
+		|| { printf 'deploy-local: rollback archive must not be a symlink: %s\n' "$ROLLBACK" >&2; exit 1; }
 	if [ ! -f "$ROLLBACK" ] || [ ! -r "$ROLLBACK" ]; then
-		printf 'deploy-local: rollback archive is not readable: %s\n' "$ROLLBACK" >&2
+		printf 'deploy-local: rollback archive is not a readable regular file: %s\n' "$ROLLBACK" >&2
 		exit 1
 	fi
+	rollback_real="$(realpath -m -- "$ROLLBACK")"
+	case "$rollback_real" in
+		"$DEFAULT_BACKUP_DIR"/*) ;;
+		*) printf 'deploy-local: rollback archive must be under %s: %s\n' "$DEFAULT_BACKUP_DIR" "$rollback_real" >&2; exit 1 ;;
+	esac
+	[ "$(stat -c %u -- "$rollback_real")" = 0 ] \
+		|| { printf 'deploy-local: rollback archive must be owned by root\n' >&2; exit 1; }
+	rollback_mode="$(stat -c %a -- "$rollback_real")"
+	if (( 8#$rollback_mode & 0022 )); then
+		printf 'deploy-local: rollback archive must not be group or world writable\n' >&2
+		exit 1
+	fi
+	ROLLBACK="$rollback_real"
 	root_rel="${ROOT#/}"
 	entries="$(tar -tzf "$ROLLBACK")" \
 		|| { printf 'deploy-local: rollback archive is not a valid tarball: %s\n' "$ROLLBACK" >&2; exit 1; }
@@ -250,7 +331,8 @@ if [ -n "$ROLLBACK" ]; then
 	done <<<"$entries"
 	printf 'deploy-local: restoring %s from %s\n' "$ROOT" "$ROLLBACK"
 	tar -xzf "$ROLLBACK" -C /
-	systemctl start apache2 php8.4-fpm
+	systemctl start php8.4-fpm
+	systemctl start apache2
 	systemctl restart teralab-agent
 	printf 'deploy-local: rollback complete; the database and labs were not touched\n'
 	exit 0
@@ -268,15 +350,21 @@ record_failure() {
 	printf 'deploy-local: FAILED during %s: %s\n' "$FAIL_STAGE" "$message" >&2
 	if [ "$SERVICES_STOPPED" -eq 1 ]; then
 		printf 'deploy-local: restarting services after the failed install\n' >&2
-		systemctl start apache2 php8.4-fpm 2>/dev/null
+		systemctl start php8.4-fpm 2>/dev/null
+		systemctl start apache2 2>/dev/null
 		systemctl restart teralab-agent 2>/dev/null
 	fi
 	if [ "$DRY_RUN" -ne 1 ] && command -v python3 >/dev/null 2>&1 && [ "$EVIDENCE_DIR" != "/" ]; then
-		mkdir -p "$EVIDENCE_DIR" 2>/dev/null
 		FAILED_JSON="$EVIDENCE_DIR/deploy-$COMMIT-failed.json"
 		FAILED_ROLLBACK=""
 		if [ -n "$CODE_TAR" ]; then
 			FAILED_ROLLBACK="sudo /usr/local/libexec/teralab/deploy-local --rollback $CODE_TAR"
+		fi
+		FAILURE_UID="$(id -u)"
+		FAILURE_GID="$(id -g)"
+		if [ "$SOURCE_OWNER" != "unknown" ]; then
+			FAILURE_UID="$(id -u "$SOURCE_OWNER" 2>/dev/null || printf '%s' "$FAILURE_UID")"
+			FAILURE_GID="$(id -g "$SOURCE_OWNER" 2>/dev/null || printf '%s' "$FAILURE_GID")"
 		fi
 		DEPLOY_FAILURE_STAGE="$FAIL_STAGE" \
 		DEPLOY_FAILURE_MESSAGE="$message" \
@@ -285,10 +373,48 @@ record_failure() {
 		DEPLOY_FAILURE_BACKUP="$DATA_TAR" \
 		DEPLOY_FAILURE_CODE="$CODE_TAR" \
 		DEPLOY_FAILURE_PATH="$FAILED_JSON" \
+		DEPLOY_FAILURE_UID="$FAILURE_UID" \
+		DEPLOY_FAILURE_GID="$FAILURE_GID" \
 		python3 <<'PY' 2>/dev/null
 import datetime
 import json
 import os
+import stat
+import sys
+import tempfile
+
+
+def secure_write(path, document, uid, gid, mode):
+    directory = os.path.dirname(path) or "."
+    if os.path.realpath(directory) != os.path.abspath(directory):
+        raise RuntimeError("refusing a symlinked failure-record directory")
+    os.makedirs(directory, exist_ok=True)
+    if os.path.lexists(path):
+        current = os.lstat(path)
+        if stat.S_ISLNK(current.st_mode):
+            raise RuntimeError("refusing a symlinked failure-record path")
+        if not stat.S_ISREG(current.st_mode):
+            raise RuntimeError("failure-record path is not a regular file")
+    handle, temporary = tempfile.mkstemp(prefix=".deploy-failure-", dir=directory)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(document, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        if os.geteuid() == 0:
+            os.chown(temporary, uid, gid)
+        os.replace(temporary, path)
+        control = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(control)
+        finally:
+            os.close(control)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
 
 document = {
     "tool": "teralab-deploy-local",
@@ -301,17 +427,21 @@ document = {
     "codeBackup": os.environ["DEPLOY_FAILURE_CODE"],
     "rollback": os.environ["DEPLOY_FAILURE_ROLLBACK"],
 }
-path = os.environ["DEPLOY_FAILURE_PATH"]
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump(document, handle, indent=2, sort_keys=True)
-    handle.write("\n")
-os.chmod(path, 0o644)
+try:
+    secure_write(
+        os.environ["DEPLOY_FAILURE_PATH"],
+        document,
+        int(os.environ["DEPLOY_FAILURE_UID"]),
+        int(os.environ["DEPLOY_FAILURE_GID"]),
+        0o644,
+    )
+except (OSError, RuntimeError) as error:
+    print(f"deploy-local: cannot write the failure record: {error}", file=sys.stderr)
+    sys.exit(1)
 PY
-		if [ -f "$EVIDENCE_DIR/deploy-$COMMIT-failed.json" ] \
-			&& [ "$SOURCE_OWNER" != "unknown" ] && [ "$(id -u)" -eq 0 ]; then
-			chown "$SOURCE_OWNER" "$EVIDENCE_DIR/deploy-$COMMIT-failed.json" 2>/dev/null
+		if [ -f "$FAILED_JSON" ]; then
+			printf 'deploy-local: failure record: %s\n' "$FAILED_JSON" >&2
 		fi
-		printf 'deploy-local: failure record: %s\n' "$EVIDENCE_DIR/deploy-$COMMIT-failed.json" >&2
 	fi
 	if [ -n "$CODE_TAR" ]; then
 		printf 'deploy-local: roll back the code with:\n  sudo /usr/local/libexec/teralab/deploy-local --rollback %s\n' \
@@ -331,6 +461,18 @@ trap 'rc=$?; trap - ERR; record_failure "unexpected failure (status $rc)"; exit 
 
 safe_git() {
 	git -c "safe.directory=$SOURCE" -C "$SOURCE" "$@"
+}
+
+check_untracked_build_files() {
+	local listing
+	listing="$(safe_git status --porcelain --untracked-files=all -- packaging api ui agent)" \
+		|| die "cannot inspect untracked build-relevant files"
+	case "$listing" in
+		*'?? '*)
+			awk '$1 == "??" { print "  " substr($0, 4) }' <<<"$listing" >&2
+			die "untracked build-relevant files under packaging/, api/, ui/, or agent/; commit or remove them before deploying"
+			;;
+	esac
 }
 
 sha256_of() {
@@ -356,8 +498,12 @@ check_dir_writable() {
 	done
 	if [ ! -d "$probe" ] || [ ! -w "$probe" ]; then
 		if [ "$DRY_RUN" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
-			log "note: $label needs root to write ($probe); the real run verifies it"
-			return 0
+			local probe_uid
+			probe_uid="$(stat -c %u -- "$probe" 2>/dev/null || printf '0')"
+			if [ "$probe_uid" != "$(id -u)" ]; then
+				log "note: $label needs root to write ($probe); the real run verifies it"
+				return 0
+			fi
 		fi
 		die "$label is not writable: $dir"
 	fi
@@ -460,10 +606,11 @@ post_setup_closed() {
 		-X POST -H 'Content-Type: application/json' -d '{}' \
 		"$LIVE_URL/api/v2/setup" 2>/dev/null)" || return 1
 	case "$code" in
+		403|404|409|422) return 0 ;;
 		2??) log "setup endpoint answered $code; first-run setup is still open"; return 1 ;;
 		'') log "setup endpoint returned no status"; return 1 ;;
+		*) log "setup endpoint answered $code; expected 403, 404, 409, or 422"; return 1 ;;
 	esac
-	return 0
 }
 
 post_headers() {
@@ -478,10 +625,34 @@ post_headers() {
 	return 0
 }
 
+safe_root_script() {
+	local path="$1" mode
+	[ -f "$path" ] && [ ! -L "$path" ] || return 1
+	[ "$(stat -c %u -- "$path")" = 0 ] || return 1
+	mode="$(stat -c %a -- "$path")" || return 1
+	if (( 8#$mode & 0022 )); then
+		return 1
+	fi
+	return 0
+}
+
 post_install_perms() {
-	[ -f "$SOURCE/scripts/check-install-perms.sh" ] \
-		|| { log "install-permission checker is missing from the source"; return 1; }
-	bash "$SOURCE/scripts/check-install-perms.sh" --root "$ROOT" --data "$DATA"
+	local candidate perms=""
+	for candidate in \
+		"/usr/local/libexec/teralab/check-install-perms" \
+		"$ROOT/scripts/check-install-perms.sh" \
+		"$SOURCE/scripts/check-install-perms.sh"; do
+		if safe_root_script "$candidate"; then
+			perms="$candidate"
+			break
+		fi
+	done
+	if [ -z "$perms" ]; then
+		log "no root-owned, non-writable check-install-perms.sh is installed"
+		log "install it as root at /usr/local/libexec/teralab/check-install-perms"
+		return 1
+	fi
+	bash "$perms" --root "$ROOT" --data "$DATA"
 }
 
 post_root_owner() {
@@ -498,7 +669,30 @@ post_root_owner() {
 }
 
 write_stamp() {
-	mkdir -p "$(dirname "$STAMP")"
+	local stamp_dir stamp_mode
+	stamp_dir="$(dirname "$STAMP")"
+	if [ -L "$stamp_dir" ]; then
+		die "canonical stamp directory must not be a symlink: $stamp_dir"
+	fi
+	if [ -e "$stamp_dir" ] && [ ! -d "$stamp_dir" ]; then
+		die "canonical stamp path is not a directory: $stamp_dir"
+	fi
+	mkdir -p "$stamp_dir" || die "cannot create the canonical stamp directory: $stamp_dir"
+	chmod 0755 "$stamp_dir" || die "cannot set the canonical stamp directory mode"
+	chown root:root "$stamp_dir" || die "cannot set the canonical stamp directory owner"
+	if [ -L "$stamp_dir" ] || [ ! -d "$stamp_dir" ]; then
+		die "canonical stamp directory is not a real directory: $stamp_dir"
+	fi
+	[ "$(stat -c %u -- "$stamp_dir")" = 0 ] \
+		|| die "canonical stamp directory is not owned by root: $stamp_dir"
+	stamp_mode="$(stat -c %a -- "$stamp_dir")"
+	if (( 8#$stamp_mode & 0022 )); then
+		die "canonical stamp directory is group or world writable: $stamp_dir"
+	fi
+	if (( (8#$stamp_mode & 0005) != 0005 )); then
+		die "canonical stamp directory is not world-readable and traversable: $stamp_dir"
+	fi
+
 	DEPLOY_STAMP_PATH="$STAMP" \
 	DEPLOY_MIRROR_DIR="$EVIDENCE_DIR" \
 	DEPLOY_COMMIT="$COMMIT" \
@@ -508,18 +702,54 @@ write_stamp() {
 	DEPLOY_SHA="$ARTIFACT_SHA" \
 	DEPLOY_BACKUP="$DATA_TAR" \
 	DEPLOY_CODE="$CODE_TAR" \
-	DEPLOY_TESTS_RAN="$1" \
-	DEPLOY_TESTS_SKIPPED="$2" \
-	DEPLOY_CHECK_SERVICES="$3" \
-	DEPLOY_CHECK_HEALTH="$4" \
-	DEPLOY_CHECK_UI="$5" \
-	DEPLOY_CHECK_SETUP="$6" \
-	DEPLOY_CHECK_PERMS="$7" \
-	DEPLOY_OWNER="$SOURCE_OWNER" \
+	DEPLOY_TESTS_RAN="$TESTS_RAN" \
+	DEPLOY_TESTS_SKIPPED="$TESTS_SKIPPED" \
+	DEPLOY_CHECK_SERVICES="$CHECK_SERVICES" \
+	DEPLOY_CHECK_HEALTH="$CHECK_HEALTH" \
+	DEPLOY_CHECK_UI="$CHECK_UI" \
+	DEPLOY_CHECK_SETUP="$CHECK_SETUP" \
+	DEPLOY_CHECK_HEADERS="$CHECK_HEADERS" \
+	DEPLOY_CHECK_PERMS="$CHECK_PERMS" \
+	DEPLOY_INSTALLED_VERSION="$INSTALLED_VERSION" \
 	python3 <<'PY'
 import datetime
 import json
 import os
+import stat
+import sys
+import tempfile
+
+
+def secure_write(path, document, uid, gid, mode):
+    directory = os.path.dirname(path) or "."
+    if os.path.realpath(directory) != os.path.abspath(directory):
+        raise RuntimeError(f"refusing a symlinked directory: {directory}")
+    if os.path.lexists(path):
+        current = os.lstat(path)
+        if stat.S_ISLNK(current.st_mode):
+            raise RuntimeError(f"refusing a symlinked stamp path: {path}")
+        if not stat.S_ISREG(current.st_mode):
+            raise RuntimeError(f"stamp path is not a regular file: {path}")
+    handle, temporary = tempfile.mkstemp(prefix=".live-deploy-", dir=directory)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(document, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        if os.geteuid() == 0:
+            os.chown(temporary, uid, gid)
+        os.replace(temporary, path)
+        control = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(control)
+        finally:
+            os.close(control)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
 
 document = {
     "tool": "teralab-deploy-local",
@@ -527,6 +757,7 @@ document = {
     "commit": os.environ["DEPLOY_COMMIT"],
     "branch": os.environ["DEPLOY_BRANCH"],
     "version": os.environ["DEPLOY_VERSION"],
+    "installedVersion": os.environ["DEPLOY_INSTALLED_VERSION"],
     "deployedAt": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
     "artifact": os.environ["DEPLOY_ARTIFACT"],
     "artifactSha256": os.environ["DEPLOY_SHA"],
@@ -541,26 +772,28 @@ document = {
         "health": os.environ["DEPLOY_CHECK_HEALTH"] == "1",
         "ui": os.environ["DEPLOY_CHECK_UI"] == "1",
         "setupClosed": os.environ["DEPLOY_CHECK_SETUP"] == "1",
+        "securityHeaders": os.environ["DEPLOY_CHECK_HEADERS"] == "1",
         "installPerms": os.environ["DEPLOY_CHECK_PERMS"] == "1",
     },
 }
 
-mirror_dir = os.environ["DEPLOY_MIRROR_DIR"]
-os.makedirs(mirror_dir, exist_ok=True)
-mirror = os.path.join(mirror_dir, f"deploy-{os.environ['DEPLOY_COMMIT']}.json")
-with open(mirror, "w", encoding="utf-8") as handle:
-    json.dump(document, handle, indent=2, sort_keys=True)
-    handle.write("\n")
-os.chmod(mirror, 0o644)
-os.chown(mirror, int(os.environ["DEPLOY_OWNER_UID"]), int(os.environ["DEPLOY_OWNER_GID"]))
+# The user-owned mirror is convenience only; it is never trusted by verify.
+try:
+    mirror_dir = os.environ["DEPLOY_MIRROR_DIR"]
+    os.makedirs(mirror_dir, exist_ok=True)
+    mirror = os.path.join(mirror_dir, f"deploy-{os.environ['DEPLOY_COMMIT']}.json")
+    secure_write(
+        mirror,
+        document,
+        int(os.environ["DEPLOY_OWNER_UID"]),
+        int(os.environ["DEPLOY_OWNER_GID"]),
+        0o644,
+    )
+except (OSError, RuntimeError) as error:
+    print(f"deploy-local: warning: cannot write the evidence mirror: {error}", file=sys.stderr)
 
-# The canonical pass stamp is written last, after the readable mirror exists.
-path = os.environ["DEPLOY_STAMP_PATH"]
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump(document, handle, indent=2, sort_keys=True)
-    handle.write("\n")
-os.chmod(path, 0o644)
-os.chown(path, 0, 0)
+# Canonical, root-owned stamp, written last and atomically.
+secure_write(os.environ["DEPLOY_STAMP_PATH"], document, 0, 0, 0o644)
 PY
 }
 
@@ -584,6 +817,7 @@ BRANCH="$(safe_git rev-parse --abbrev-ref HEAD)"
 
 DIRTY="$(safe_git status --porcelain --untracked-files=no)"
 [ -z "$DIRTY" ] || die "tracked tree is dirty; commit or stash the changes before deploying"
+check_untracked_build_files
 
 VERSION_FILE="$SOURCE/TERALAB_VERSION"
 [ -f "$VERSION_FILE" ] || die "TERALAB_VERSION is missing from $SOURCE"
@@ -689,11 +923,25 @@ CURRENT_HEAD="$(safe_git rev-parse HEAD)"
 	|| die "HEAD moved during the build ($CURRENT_HEAD); refused to install"
 DIRTY="$(safe_git status --porcelain --untracked-files=no)"
 [ -z "$DIRTY" ] || die "tracked tree changed during the build; refused to install"
+check_untracked_build_files
 
 # ---------------------------------------------------------------------------
-# Backup
+# Pre-stop re-scan and stop
+# ---------------------------------------------------------------------------
+FAIL_STAGE="pre-stop"
+scan_lab_engines
+scan_containers
+
+FAIL_STAGE="stop"
+log "stopping ${SERVICES[*]}"
+SERVICES_STOPPED=1
+systemctl stop teralab-agent apache2 php8.4-fpm
+
+# ---------------------------------------------------------------------------
+# Backup (services are stopped so the database snapshot is write-free)
 # ---------------------------------------------------------------------------
 FAIL_STAGE="backup"
+[ -d /etc/teralab ] || die "configuration directory is missing: /etc/teralab"
 STAMP_ID="$(date +%Y%m%d%H%M%S)"
 BRANCH_SAFE="$(printf '%s' "$BRANCH" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
 [ -n "$BRANCH_SAFE" ] || BRANCH_SAFE="branch"
@@ -702,8 +950,28 @@ CODE_TAR="$BACKUP_DIR/teralab-$STAMP_ID-pre-$BRANCH_SAFE-code.tgz"
 ROOT_REL="${ROOT#/}"
 
 mkdir -p "$BACKUP_DIR"
+
+# With the services stopped the tar is already a write-free snapshot. When
+# sqlite3 is available, additionally prove the database is intact before
+# installing over it.
+if command -v sqlite3 >/dev/null 2>&1 && [ -f "$DATA/database.sdb" ]; then
+	DEPLOY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/teralab-deploy.XXXXXX")" \
+		|| die "cannot create a temporary directory for the database check"
+	if ! sqlite3 "$DATA/database.sdb" ".backup '$DEPLOY_TMP/database.sdb'" >/dev/null 2>&1; then
+		die "sqlite3 could not take a consistent database copy"
+	fi
+	integrity="$(sqlite3 "$DEPLOY_TMP/database.sdb" 'PRAGMA integrity_check;' 2>/dev/null)" \
+		|| die "sqlite3 integrity check could not run"
+	integrity="$(printf '%s' "$integrity" | tr -d '\r')"
+	[ "$integrity" = "ok" ] || die "database integrity check failed: $integrity"
+	rm -f -- "$DEPLOY_TMP/database.sdb"
+	log "database integrity check: ok"
+else
+	log "sqlite3 is unavailable; relying on the stopped-service database snapshot"
+fi
+
 log "backing up configuration and runtime data to $DATA_TAR"
-tar -czf "$DATA_TAR" --ignore-failed-read -C / etc/teralab \
+tar -czf "$DATA_TAR" -C / etc/teralab \
 	|| die "cannot back up /etc/teralab"
 for entry in database.sdb database.sdb-wal database.sdb-shm labs logs backups; do
 	if [ -e "$DATA/$entry" ]; then
@@ -726,17 +994,19 @@ log "both backups verified"
 # Install
 # ---------------------------------------------------------------------------
 FAIL_STAGE="install"
-log "stopping ${SERVICES[*]}"
-SERVICES_STOPPED=1
-systemctl stop teralab-agent apache2 php8.4-fpm
-
 log "installing $ARTIFACT"
 DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall \
 	-o Dpkg::Options::=--force-confold "$ARTIFACT" \
 	|| die "apt-get install --reinstall failed; use the printed rollback command"
 
-systemctl enable apache2 php8.4-fpm teralab-agent
-systemctl start apache2 php8.4-fpm
+INSTALLED_VERSION="$(dpkg-query -W -f='${Version}' teralab 2>/dev/null)" \
+	|| die "cannot read the installed dpkg version"
+[ "$INSTALLED_VERSION" = "$DEB_VERSION" ] \
+	|| die "installed dpkg version '$INSTALLED_VERSION' does not match '$DEB_VERSION'"
+
+systemctl enable php8.4-fpm apache2 teralab-agent
+systemctl start php8.4-fpm
+systemctl start apache2
 systemctl restart teralab-agent
 SERVICES_STOPPED=0
 
@@ -767,8 +1037,7 @@ FAIL_STAGE="stamp"
 DEPLOY_OWNER_UID="$(id -u "$SOURCE_OWNER")"
 DEPLOY_OWNER_GID="$(id -g "$SOURCE_OWNER")"
 export DEPLOY_OWNER_UID DEPLOY_OWNER_GID
-write_stamp "$TESTS_RAN" "$TESTS_SKIPPED" \
-	"$CHECK_SERVICES" "$CHECK_HEALTH" "$CHECK_UI" "$CHECK_SETUP" "$CHECK_PERMS" \
+write_stamp \
 	|| die "cannot write the deploy stamp"
 
 MIRROR="$EVIDENCE_DIR/deploy-$COMMIT.json"

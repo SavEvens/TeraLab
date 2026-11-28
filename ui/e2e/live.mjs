@@ -62,6 +62,8 @@ let consoleToken = ''
 let labId = ''
 let browser = null
 let socket = null
+let cleanupPromise = null
+let aborting = false
 
 function secrets() {
   return [password, consoleToken, session?.csrf, session?.cookie].filter(
@@ -190,6 +192,42 @@ async function cleanupLab() {
     cleanup.gone = false
   }
 }
+
+/**
+ * Stop/delete/purge the disposable lab and close the socket and browser.
+ * Memoised so the normal `finally` and a SIGTERM/SIGINT handler never run the
+ * destructive cleanup twice concurrently.
+ */
+async function cleanupAll() {
+  if (!cleanupPromise) {
+    cleanupPromise = (async () => {
+      try {
+        await cleanupLab()
+      } catch (error) {
+        cleanup.error = safe(error.message)
+        cleanup.gone = false
+      }
+      try { await browser?.close() } catch {}
+      browser = null
+    })()
+  }
+  return cleanupPromise
+}
+
+async function abort(signal) {
+  if (aborting) return
+  aborting = true
+  failure = failure || new Error(`aborted by ${signal}`)
+  failureDetail = failureDetail || failure.message
+  console.error(`LIVE_E2E_ABORTED ${signal}`)
+  await cleanupAll().catch(() => {})
+  process.exit(1)
+}
+
+// Keep the listeners installed while cleanup runs: a second signal must not
+// terminate the process before the disposable lab is gone.
+process.on('SIGTERM', () => { void abort('SIGTERM') })
+process.on('SIGINT', () => { void abort('SIGINT') })
 
 async function runApiChecks() {
   next('health')
@@ -418,14 +456,7 @@ try {
   failureDetail = error?.cause?.message ? `${error.message}: ${error.cause.message}` : error.message
   checks.push({ name: current, pass: false, detail: safe(failureDetail).slice(0, 800) })
 } finally {
-  try {
-    await cleanupLab()
-  } catch (error) {
-    cleanup.error = safe(error.message)
-    cleanup.gone = false
-  }
-  try { await browser?.close() } catch {}
-  browser = null
+  await cleanupAll()
 }
 
 if (labId) {

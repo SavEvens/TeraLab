@@ -10,6 +10,7 @@ on:
       - "feat/**"
       - "fix/**"
       - "security/**"
+      - "chore/**"
   pull_request:
   workflow_dispatch:
 

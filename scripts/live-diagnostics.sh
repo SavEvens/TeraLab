@@ -51,6 +51,19 @@ redact() {
 		-e 's/([?&](token|password|secret|csrf)=)[^&[:space:]]+/\1<redacted>/Ig'
 }
 
+# A root-run helper must be a regular, root-owned file that the service user
+# cannot rewrite. Never execute a user-owned or symlinked script as root.
+safe_root_script() {
+	local path="$1" mode
+	[ -f "$path" ] && [ ! -L "$path" ] || return 1
+	[ "$(stat -c %u -- "$path" 2>/dev/null)" = 0 ] || return 1
+	mode="$(stat -c %a -- "$path" 2>/dev/null)" || return 1
+	if (( 8#$mode & 0022 )); then
+		return 1
+	fi
+	return 0
+}
+
 printf 'TeraLab live diagnostics\n'
 printf 'Generated: %s\n' "$(date -Is 2>/dev/null || date)"
 printf 'Host: %s  User: %s\n\n' "$(hostname 2>/dev/null || echo unknown)" "$(id -un 2>/dev/null || echo unknown)"
@@ -122,16 +135,21 @@ else
 	fail "ui: $URL/ui/ is not reachable"
 fi
 
-# 4. Install permission matrix, when a copy of the checker is available.
+# 4. Install permission matrix, when a root-installed copy of the checker is
+#    available. The source copy is user-owned and is never executed as root.
 perms=""
 for candidate in \
 	"$HELPER/check-install-perms" \
 	"$ROOT/scripts/check-install-perms.sh" \
 	"$(dirname "$0")/../scripts/check-install-perms.sh"; do
-	if [ -f "$candidate" ]; then
+	if [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then
+		continue
+	fi
+	if safe_root_script "$candidate"; then
 		perms="$candidate"
 		break
 	fi
+	skip "install perms: refusing unsafe helper $candidate (must be root-owned, regular, and not group/world writable)"
 done
 if [ -n "$perms" ]; then
 	if output="$(bash "$perms" --root "$ROOT" --data "$DATA" --etc "$ETC_DIR" 2>&1)"; then
@@ -140,7 +158,7 @@ if [ -n "$perms" ]; then
 		fail "install perms: $(printf '%s' "$output" | redact | tail -n 1)"
 	fi
 else
-	skip "install perms: check-install-perms.sh is not installed"
+	skip "install perms: no safe check-install-perms.sh is installed"
 fi
 
 # 5. Ownership and mode matrix (names and modes only; no file contents).

@@ -5,15 +5,18 @@
 # Run the live TeraLab regression suite and act as the pre-merge gate.
 #
 # A smoke run executes ui/e2e/live.mjs against the installed host. A full run
-# adds ui/e2e/apache.mjs. Both write authoritative evidence to
-# $EVIDENCE_DIR/<commit>.json. `--verify` runs no tests: it fails closed unless
-# the deploy stamp and the evidence describe the current commit, branch, and
-# version, the evidence is fresh, the required suites passed, and the host is
-# healthy. It is read-only and needs no root.
+# adds ui/e2e/apache.mjs. Both write evidence to $EVIDENCE_DIR/<commit>.json.
+# `--verify` runs no tests: it fails closed unless the single root-owned canonical
+# stamp at /var/lib/teralab-live/live-deploy.json and the evidence describe the
+# current commit, branch, and version, the evidence is fresh, the required
+# suites passed, and the host is healthy. It is read-only and needs no root.
 #
-# The deploy stamp is read from /var/lib/teralab/live-deploy.json when the
-# caller can read it; otherwise the readable mirror
-# $EVIDENCE_DIR/deploy-<commit>.json written by the deploy helper is used.
+# The user-owned deploy-<commit>.json mirror is a convenience copy only. Verify
+# never reads it and never trusts it. `--stamp FILE` is an explicit
+# testing/diagnostic override and is never valid for a merge gate.
+#
+# `--validate-only` is an internal, unprivileged test mode used by the workflow
+# tool tests. It validates explicit evidence/stamp files but is not a gate.
 #
 # Secrets are passed to the Node suite through the environment and are never
 # printed or written to the evidence file.
@@ -29,12 +32,15 @@ VERIFY_COMMIT=""
 EVIDENCE_DIR="${TERALAB_EVIDENCE_DIR:-/home/savanna/teralab-work/live-validation}"
 OUT=""
 URL="${TERALAB_LIVE_URL:-http://127.0.0.1}"
-URL_SET=0
 PASSWORD_FILE="${TERALAB_ADMIN_PASSWORD_FILE:-}"
 ADMIN_USER="${TERALAB_ADMIN_USER:-admin}"
 TIMEOUT=""
 REQUIRE_FULL=0
-CANONICAL_STAMP="/var/lib/teralab/live-deploy.json"
+ALLOW_SHORT=0
+VALIDATE_EVIDENCE=""
+STAMP_OVERRIDE=""
+CANONICAL_STAMP="/var/lib/teralab-live/live-deploy.json"
+CANONICAL_STAMP_DIR="/var/lib/teralab-live"
 
 usage() {
 	cat <<EOF
@@ -50,7 +56,7 @@ Modes:
                      commit (default: HEAD).
 
 Options:
-  --url URL              Base URL (default: $URL)
+  --url URL              Base URL for health and suites (default: $URL)
   --password-file FILE   File containing the admin password
                          (default: \$TERALAB_ADMIN_PASSWORD_FILE)
   --evidence-dir DIR     Evidence directory
@@ -58,18 +64,27 @@ Options:
   --out FILE             Override the evidence JSON path
   --timeout SECONDS      Per-suite timeout (default: 600 smoke, 1800 full)
   --require-full         Require (or run) the full suite
+  --allow-short          Internal test flag: accept durationMs < 1000
+  --stamp FILE           Testing/diagnostic override of the canonical deploy
+                         stamp; never valid for a merge gate
+                         (default: $CANONICAL_STAMP)
   -h, --help             Show this help
+
+Internal test options (never a merge gate):
+  --validate-only        Validate explicit --evidence/--stamp files and exit.
+  --evidence FILE        Evidence file for --validate-only.
 
 Environment:
   TERALAB_ADMIN_PASSWORD       Admin password, when no file is used
   TERALAB_TEST_IMAGE           qcow2 fixture for --full
   TERALAB_TEST_ISO             ISO fixture for --full
   TERALAB_EVIDENCE_MAX_AGE     Maximum evidence age for --verify (default 7d)
-  TERALAB_DEPLOY_STAMP         Override the deploy-stamp path (tests only)
 
 The smoke run requires a clean tracked tree, active teralab-agent/apache2/
 php8.4-fpm services, a password source, and a health version equal to
-TERALAB_VERSION. --verify needs no password and no root.
+TERALAB_VERSION. --verify needs no password and no root. Unless --stamp is
+given for testing, it reads only the root-owned canonical stamp at
+$CANONICAL_STAMP.
 EOF
 }
 
@@ -108,7 +123,6 @@ while [ "$#" -gt 0 ]; do
 		--url)
 			need_value "$@"
 			URL="$2"
-			URL_SET=1
 			shift 2
 			;;
 		--password-file)
@@ -135,6 +149,24 @@ while [ "$#" -gt 0 ]; do
 			REQUIRE_FULL=1
 			shift
 			;;
+		--allow-short)
+			ALLOW_SHORT=1
+			shift
+			;;
+		--validate-only)
+			MODE="validate-only"
+			shift
+			;;
+		--evidence)
+			need_value "$@"
+			VALIDATE_EVIDENCE="$2"
+			shift 2
+			;;
+		--stamp)
+			need_value "$@"
+			STAMP_OVERRIDE="$2"
+			shift 2
+			;;
 		-h|--help)
 			usage
 			exit 0
@@ -146,6 +178,19 @@ while [ "$#" -gt 0 ]; do
 			;;
 	esac
 done
+
+if [ "$MODE" != "validate-only" ] && [ -n "$VALIDATE_EVIDENCE" ]; then
+	die "--evidence is only valid with --validate-only"
+fi
+if [ "$MODE" = "smoke" ] || [ "$MODE" = "full" ]; then
+	[ -z "$STAMP_OVERRIDE" ] || die "--stamp is a verify/validate-only testing override"
+fi
+if [ "$MODE" = "validate-only" ] && { [ -z "$VALIDATE_EVIDENCE" ] || [ -z "$STAMP_OVERRIDE" ]; }; then
+	die "--validate-only requires --evidence and --stamp"
+fi
+if [ "$ALLOW_SHORT" -eq 1 ] && { [ "$MODE" = "smoke" ] || [ "$MODE" = "full" ]; }; then
+	die "--allow-short is a verify/validate-only test flag"
+fi
 
 case "$URL" in
 	http://*|https://*) ;;
@@ -186,79 +231,44 @@ VERSION_FILE="$ROOT/TERALAB_VERSION"
 VERSION="$(tr -d '[:space:]' <"$VERSION_FILE")"
 [ -n "$VERSION" ] || die "TERALAB_VERSION is empty"
 
-if [ "$MODE" = "verify" ]; then
-	[ -n "$CURRENT_BRANCH" ] || die "cannot determine the current branch"
-	[ "$CURRENT_BRANCH" != "HEAD" ] || die "detached HEAD; check out the candidate branch"
+MAX_AGE_RAW="${TERALAB_EVIDENCE_MAX_AGE:-7d}"
+case "$MAX_AGE_RAW" in
+	*d) MAX_AGE_NUMBER="${MAX_AGE_RAW%d}" MAX_AGE_UNIT=86400 ;;
+	*h) MAX_AGE_NUMBER="${MAX_AGE_RAW%h}" MAX_AGE_UNIT=3600 ;;
+	*m) MAX_AGE_NUMBER="${MAX_AGE_RAW%m}" MAX_AGE_UNIT=60 ;;
+	*s) MAX_AGE_NUMBER="${MAX_AGE_RAW%s}" MAX_AGE_UNIT=1 ;;
+	*) MAX_AGE_NUMBER="$MAX_AGE_RAW" MAX_AGE_UNIT=1 ;;
+esac
+case "$MAX_AGE_NUMBER" in
+	''|*[!0-9]*) die "invalid TERALAB_EVIDENCE_MAX_AGE: $MAX_AGE_RAW" ;;
+esac
+MAX_AGE=$(( MAX_AGE_NUMBER * MAX_AGE_UNIT ))
+[ "$MAX_AGE" -gt 0 ] || die "TERALAB_EVIDENCE_MAX_AGE must be positive"
 
-	TARGET_COMMIT="${VERIFY_COMMIT:-$CURRENT_COMMIT}"
-	case "$TARGET_COMMIT" in
-		*[!0-9a-f]*) die "not a commit id: $TARGET_COMMIT" ;;
-	esac
-	[ "${#TARGET_COMMIT}" -eq 40 ] || die "expected a full 40-character commit id: $TARGET_COMMIT"
-	[ "$TARGET_COMMIT" = "$CURRENT_COMMIT" ] \
-		|| die "candidate $TARGET_COMMIT is not the checked-out HEAD $CURRENT_COMMIT"
-
-	[ -d "$EVIDENCE_DIR" ] || die "evidence directory does not exist: $EVIDENCE_DIR"
-	EVIDENCE="${OUT:-$EVIDENCE_DIR/$TARGET_COMMIT.json}"
-	[ -f "$EVIDENCE" ] || die "evidence not found for $TARGET_COMMIT: $EVIDENCE"
-	[ -r "$EVIDENCE" ] || die "evidence is not readable: $EVIDENCE"
-
-	STAMP="${TERALAB_DEPLOY_STAMP:-}"
-	if [ -n "$STAMP" ]; then
-		if [ ! -f "$STAMP" ] || [ ! -r "$STAMP" ]; then
-			die "deploy stamp not readable: $STAMP"
-		fi
-	else
-		if [ -r "$CANONICAL_STAMP" ]; then
-			STAMP="$CANONICAL_STAMP"
-		else
-			STAMP="$EVIDENCE_DIR/deploy-$TARGET_COMMIT.json"
-			if [ ! -f "$STAMP" ] || [ ! -r "$STAMP" ]; then
-				die "deploy stamp not found: $CANONICAL_STAMP is not readable and $STAMP is missing"
-			fi
-		fi
-	fi
-
-	MAX_AGE_RAW="${TERALAB_EVIDENCE_MAX_AGE:-7d}"
-	case "$MAX_AGE_RAW" in
-		*d) MAX_AGE_NUMBER="${MAX_AGE_RAW%d}" MAX_AGE_UNIT=86400 ;;
-		*h) MAX_AGE_NUMBER="${MAX_AGE_RAW%h}" MAX_AGE_UNIT=3600 ;;
-		*m) MAX_AGE_NUMBER="${MAX_AGE_RAW%m}" MAX_AGE_UNIT=60 ;;
-		*s) MAX_AGE_NUMBER="${MAX_AGE_RAW%s}" MAX_AGE_UNIT=1 ;;
-		*) MAX_AGE_NUMBER="$MAX_AGE_RAW" MAX_AGE_UNIT=1 ;;
-	esac
-	case "$MAX_AGE_NUMBER" in
-		''|*[!0-9]*) die "invalid TERALAB_EVIDENCE_MAX_AGE: $MAX_AGE_RAW" ;;
-	esac
-	MAX_AGE=$(( MAX_AGE_NUMBER * MAX_AGE_UNIT ))
-	[ "$MAX_AGE" -gt 0 ] || die "TERALAB_EVIDENCE_MAX_AGE must be positive"
-
-	printf 'live-check: verifying %s\n' "$TARGET_COMMIT"
-	printf '  evidence: %s\n' "$EVIDENCE"
-	printf '  stamp:    %s\n' "$STAMP"
-
-	REQUIRE_FULL_FLAG=0
-	[ "$REQUIRE_FULL" -eq 1 ] && REQUIRE_FULL_FLAG=1
-	EVIDENCE_URL="$(python3 - "$EVIDENCE" <<'PY' 2>/dev/null || true
+# validate_static is shared by the real --verify gate and the internal
+# --validate-only test mode. It never contacts the host.
+validate_static() {
+	local evidence_path="$1" stamp_path="$2" commit="$3" branch="$4"
+	local version="$5" max_age="$6" require_full="$7" allow_short="$8"
+	python3 - "$evidence_path" "$stamp_path" "$commit" "$branch" "$version" \
+		"$max_age" "$require_full" "$allow_short" <<'PY'
 import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    data = json.load(handle)
-url = data.get("url", "")
-print(url if isinstance(url, str) else "")
-PY
-)"
-
-	if ! python3 - "$EVIDENCE" "$STAMP" "$TARGET_COMMIT" "$CURRENT_BRANCH" "$VERSION" "$MAX_AGE" "$REQUIRE_FULL_FLAG" <<'PY'
-import json
-import re
 import sys
 from datetime import datetime, timedelta, timezone
 
-evidence_path, stamp_path, commit, branch, version, max_age_raw, require_full_raw = sys.argv[1:8]
+(
+    evidence_path,
+    stamp_path,
+    commit,
+    branch,
+    version,
+    max_age_raw,
+    require_full_raw,
+    allow_short_raw,
+) = sys.argv[1:9]
 max_age = int(max_age_raw)
 require_full = require_full_raw == "1"
+allow_short = allow_short_raw == "1"
 errors = []
 
 
@@ -271,7 +281,7 @@ def load(path, label):
         with open(path, encoding="utf-8") as handle:
             value = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        fail(f"{label} is not valid JSON: {exc}")
+        fail(f"{label} is not readable valid JSON: {exc}")
         return None
     if not isinstance(value, dict):
         fail(f"{label} is not a JSON object")
@@ -307,13 +317,15 @@ if evidence is not None:
         fail(f"evidence branch {evidence.get('branch')!r} does not match {branch}")
     if evidence.get("version") != version:
         fail(f"evidence version {evidence.get('version')!r} does not match {version}")
-    if evidence.get("deployStamp") != f"deploy-{commit}.json":
-        fail("evidence deployStamp does not name deploy-<commit>.json")
+    if evidence.get("deployStamp") != "live-deploy.json":
+        fail("evidence deployStamp does not name the canonical live-deploy.json")
     if not isinstance(evidence.get("url"), str) or not evidence["url"]:
         fail("evidence url is missing")
     duration = evidence.get("durationMs")
-    if not isinstance(duration, int) or duration < 0:
+    if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0:
         fail("evidence durationMs is missing or invalid")
+    elif duration < 1000 and not allow_short:
+        fail(f"evidence durationMs {duration} is implausibly short (minimum 1000)")
     page_errors = evidence.get("pageErrors")
     if not isinstance(page_errors, list):
         fail("evidence pageErrors is not a list")
@@ -353,6 +365,15 @@ if stamp is not None:
             fail("deploy stamp reports tests.skipped (the gate requires a tested deploy)")
         if tests.get("ran") is not True:
             fail("deploy stamp does not report tests.ran: true")
+    checks = stamp.get("checks")
+    if not isinstance(checks, dict):
+        fail("deploy stamp checks is missing")
+    else:
+        for key in ("services", "health", "ui", "setupClosed", "installPerms"):
+            if checks.get(key) is not True:
+                fail(f"deploy stamp check {key!r} is not true")
+        if "securityHeaders" in checks and checks["securityHeaders"] is not True:
+            fail("deploy stamp check 'securityHeaders' is not true")
     deployed_at = parse_time(stamp.get("deployedAt"), "deploy stamp deployedAt")
     if evidence is not None and evidence_started is not None and deployed_at is not None:
         if evidence_started < deployed_at:
@@ -360,10 +381,10 @@ if stamp is not None:
     if evidence is not None and evidence_started is not None:
         now = datetime.now(timezone.utc)
         age = now - evidence_started
-        if age > timedelta(seconds=max_age):
+        if age < timedelta(0):
+            fail("evidence startedAt is in the future")
+        elif age > timedelta(seconds=max_age):
             fail(f"evidence is {age} old; limit is {max_age} seconds")
-        if age < timedelta(seconds=-300):
-            fail("evidence started more than five minutes in the future")
 
 if errors:
     for message in errors:
@@ -371,16 +392,97 @@ if errors:
     sys.exit(1)
 print("verify: stamp and evidence fields OK")
 PY
-	then
+}
+
+if [ "$MODE" = "validate-only" ]; then
+	if [ ! -f "$VALIDATE_EVIDENCE" ] || [ ! -r "$VALIDATE_EVIDENCE" ]; then
+		die "validate-only evidence is not readable: $VALIDATE_EVIDENCE"
+	fi
+	if [ ! -f "$STAMP_OVERRIDE" ] || [ ! -r "$STAMP_OVERRIDE" ]; then
+		die "validate-only stamp is not readable: $STAMP_OVERRIDE"
+	fi
+	if ! validate_static "$VALIDATE_EVIDENCE" "$STAMP_OVERRIDE" \
+		"$CURRENT_COMMIT" "$CURRENT_BRANCH" "$VERSION" "$MAX_AGE" \
+		"$REQUIRE_FULL" "$ALLOW_SHORT"; then
+		die "validate-only rejected the evidence/stamp pair"
+	fi
+	printf 'live-check: validate-only OK (not a merge gate)\n'
+	exit 0
+fi
+
+if [ "$MODE" = "verify" ]; then
+	[ -n "$CURRENT_BRANCH" ] || die "cannot determine the current branch"
+	[ "$CURRENT_BRANCH" != "HEAD" ] || die "detached HEAD; check out the candidate branch"
+
+	TARGET_COMMIT="${VERIFY_COMMIT:-$CURRENT_COMMIT}"
+	case "$TARGET_COMMIT" in
+		*[!0-9a-f]*) die "not a commit id: $TARGET_COMMIT" ;;
+	esac
+	[ "${#TARGET_COMMIT}" -eq 40 ] || die "expected a full 40-character commit id: $TARGET_COMMIT"
+	[ "$TARGET_COMMIT" = "$CURRENT_COMMIT" ] \
+		|| die "candidate $TARGET_COMMIT is not the checked-out HEAD $CURRENT_COMMIT"
+
+	[ -d "$EVIDENCE_DIR" ] || die "evidence directory does not exist: $EVIDENCE_DIR"
+	EVIDENCE="${OUT:-$EVIDENCE_DIR/$TARGET_COMMIT.json}"
+	[ -f "$EVIDENCE" ] || die "evidence not found for $TARGET_COMMIT: $EVIDENCE"
+	[ -r "$EVIDENCE" ] || die "evidence is not readable: $EVIDENCE"
+
+	STAMP="$CANONICAL_STAMP"
+	if [ -n "$STAMP_OVERRIDE" ]; then
+		STAMP="$STAMP_OVERRIDE"
+		if [ -L "$STAMP" ] || [ ! -f "$STAMP" ] || [ ! -r "$STAMP" ]; then
+			die "deploy stamp override is not a readable regular file: $STAMP"
+		fi
+		printf 'live-check: WARNING: using a non-canonical deploy stamp override; not valid for a merge gate\n' >&2
+	else
+		if [ ! -d "$CANONICAL_STAMP_DIR" ] || [ -L "$CANONICAL_STAMP_DIR" ]; then
+			die "canonical deploy stamp directory is missing or unsafe: $CANONICAL_STAMP_DIR; run /usr/local/libexec/teralab/deploy-local to publish it"
+		fi
+		canonical_dir_uid="$(stat -c %u -- "$CANONICAL_STAMP_DIR")" \
+			|| die "cannot stat the canonical stamp directory"
+		[ "$canonical_dir_uid" = 0 ] \
+			|| die "canonical stamp directory is not owned by root: $CANONICAL_STAMP_DIR"
+		canonical_dir_mode="$(stat -c %a -- "$CANONICAL_STAMP_DIR")" \
+			|| die "cannot read the canonical stamp directory mode"
+		if (( 8#$canonical_dir_mode & 0022 )); then
+			die "canonical stamp directory is group or world writable: $CANONICAL_STAMP_DIR"
+		fi
+		if (( (8#$canonical_dir_mode & 0005) != 0005 )); then
+			die "canonical stamp directory is not world-readable and traversable: $CANONICAL_STAMP_DIR"
+		fi
+
+		if [ -L "$STAMP" ] || [ ! -f "$STAMP" ] || [ ! -r "$STAMP" ]; then
+			die "canonical deploy stamp is missing or unreadable: $STAMP"
+		fi
+		canonical_uid="$(stat -c %u -- "$STAMP")" || die "cannot stat the canonical deploy stamp"
+		[ "$canonical_uid" = 0 ] || die "canonical deploy stamp is not owned by root: $STAMP"
+		canonical_mode="$(stat -c %a -- "$STAMP")" || die "cannot read the canonical deploy stamp mode"
+		if (( 8#$canonical_mode & 0022 )); then
+			die "canonical deploy stamp is group or world writable: $STAMP"
+		fi
+		if (( (8#$canonical_mode & 0004) != 0004 )); then
+			die "canonical deploy stamp is not world-readable: $STAMP"
+		fi
+	fi
+
+	printf 'live-check: verifying %s\n' "$TARGET_COMMIT"
+	printf '  evidence: %s\n' "$EVIDENCE"
+	STAMP_LABEL="canonical"
+	if [ -n "$STAMP_OVERRIDE" ]; then
+		STAMP_LABEL="testing override"
+	fi
+	printf '  stamp:    %s (%s)\n' "$STAMP" "$STAMP_LABEL"
+
+	REQUIRE_FULL_FLAG=0
+	[ "$REQUIRE_FULL" -eq 1 ] && REQUIRE_FULL_FLAG=1
+
+	if ! validate_static "$EVIDENCE" "$STAMP" "$TARGET_COMMIT" "$CURRENT_BRANCH" \
+		"$VERSION" "$MAX_AGE" "$REQUIRE_FULL_FLAG" "$ALLOW_SHORT"; then
 		die "evidence/stamp validation failed for $TARGET_COMMIT"
 	fi
 
-	HEALTH_URL="$URL"
-	if [ "$URL_SET" -eq 0 ] && [ -n "$EVIDENCE_URL" ]; then
-		HEALTH_URL="${EVIDENCE_URL%/}"
-	fi
-	HEALTH_JSON="$(curl -fsS --max-time 15 "$HEALTH_URL/api/v2/health" 2>/dev/null)" \
-		|| die "health endpoint is not reachable at $HEALTH_URL/api/v2/health"
+	HEALTH_JSON="$(curl -fsS --max-time 15 "$URL/api/v2/health" 2>/dev/null)" \
+		|| die "health endpoint is not reachable at $URL/api/v2/health"
 	read -r HEALTH_STATUS HEALTH_VERSION <<<"$(
 		printf '%s' "$HEALTH_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status",""), d.get("version",""))'
 	)"
@@ -588,7 +690,7 @@ document = {
     "durationMs": int(os.environ["LIVE_DURATION_MS"]),
     "suites": suites,
     "pageErrors": redact(page_errors),
-    "deployStamp": f"deploy-{os.environ['LIVE_COMMIT']}.json",
+    "deployStamp": "live-deploy.json",
 }
 
 path = os.environ["LIVE_EVIDENCE"]
