@@ -484,7 +484,7 @@ run_as_owner() {
 	runuser -u "$SOURCE_OWNER" -- \
 		env HOME="$SOURCE_HOME" USER="$SOURCE_OWNER" LOGNAME="$SOURCE_OWNER" \
 		PATH="$OWNER_PATH" TMPDIR="${TMPDIR:-/tmp}" \
-		bash -c 'cd "$1" || exit 1; shift; exec "$@"' bash "$SOURCE" "$@"
+		bash -c 'umask 022; cd "$1" || exit 1; shift; exec "$@"' bash "$SOURCE" "$@"
 }
 
 check_dir_writable() {

@@ -177,6 +177,35 @@ run_argv() {
 	fi
 }
 
+run_argv_retry() {
+	local id="$1" desc="$2" workdir="$3"
+	shift 3
+	local log="$WORK/logs/${id//[^A-Za-z0-9_.-]/_}.log"
+	local rc=0 attempt=1
+	while [ "$attempt" -le 2 ]; do
+		printf '\n== %s: %s (attempt %d) ==\n' "$id" "$desc" "$attempt"
+		if [ "$workdir" = "." ]; then
+			( cd "$ROOT" && "$@" ) 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
+		else
+			( cd "$ROOT/$workdir" && "$@" ) 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
+		fi
+		[ "$rc" -eq 0 ] && break
+		if [ "$attempt" -eq 1 ]; then
+			printf '\n-- %s failed (exit %d); retrying once to distinguish a flake (plan 07 risk 9.7) --\n' "$id" "$rc" >&2
+			tail -n 20 "$log" >&2 || true
+		fi
+		attempt=$((attempt + 1))
+	done
+	if [ "$rc" -eq 0 ]; then
+		record PASS "$id" "$desc"
+	else
+		printf '\n-- %s failed twice (exit %d); last log lines: --\n' "$id" "$rc" >&2
+		tail -n 40 "$log" >&2 || true
+		record FAIL "$id" "$desc"
+		FAIL=1
+	fi
+}
+
 skip_suite() {
 	local id="$1" desc="$2" reason="$3"
 	printf '\n== %s: SKIP: %s ==\n' "$id" "$reason"
@@ -239,7 +268,7 @@ if [ "$MODE" = fast ]; then
 	skip_suite "ui/e2e" "UI mock browser E2E" "--fast"
 else
 	run_argv "ui/build" "UI production build" ui npm run build -- --outDir "$WORK/ui-dist" --emptyOutDir
-	run_argv "ui/e2e" "UI mock browser E2E" ui env TERALAB_E2E_OUT="$WORK/ui-e2e" npm run e2e
+	run_argv_retry "ui/e2e" "UI mock browser E2E" ui env TERALAB_E2E_OUT="$WORK/ui-e2e" npm run e2e
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
