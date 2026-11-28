@@ -50,6 +50,7 @@ for file in \
 	scripts/check-artifact-policy.sh \
 	scripts/php-lint.sh \
 	scripts/check-secrets.sh \
+	scripts/check-install-perms.sh \
 	scripts/dev-vm.sh; do
 	[ -f "$file" ] || continue
 	check_file "$file"

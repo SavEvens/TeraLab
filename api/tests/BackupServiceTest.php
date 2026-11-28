@@ -133,6 +133,44 @@ final class BackupServiceTest extends TestCase
         @unlink($archive['path']);
     }
 
+    public function testBackupArchiveAndDirectoryAreOwnerOnly(): void
+    {
+        $archive = $this->backup->create();
+        clearstatcache();
+
+        self::assertFileExists($archive['path']);
+        self::assertSame(0600, fileperms($archive['path']) & 0777);
+        self::assertSame(0700, fileperms($this->root . '/data/backups') & 0777);
+        @unlink($archive['path']);
+    }
+
+    public function testRestoreStagingIsOwnerOnly(): void
+    {
+        $zipPath = $this->root . '/staged.zip';
+        $zip = new ZipArchive();
+        self::assertTrue($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true);
+        $zip->addFromString('database.sdb', 'staged database bytes');
+        $zip->close();
+        $contents = file_get_contents($zipPath);
+        self::assertIsString($contents);
+        $upload = new UploadedFile(
+            (new StreamFactory())->createStream($contents),
+            'backup.zip',
+            'application/zip',
+            strlen($contents),
+            UPLOAD_ERR_OK,
+        );
+
+        $result = $this->backup->restore($upload);
+        clearstatcache();
+
+        self::assertTrue($result['database']);
+        $directory = $this->root . '/data/restore';
+        self::assertSame(0700, fileperms($directory) & 0777);
+        self::assertSame(0600, fileperms($directory . '/database.sdb') & 0777);
+        self::assertSame(0600, fileperms($directory . '/pending') & 0777);
+    }
+
     private function linkedPath(string $id): string
     {
         $directory = $this->config->imagesDir . '/qemu/' . $id;

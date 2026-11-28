@@ -19,12 +19,14 @@ if command -v systemctl >/dev/null 2>&1; then
 	systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 
-# Every directory, user, secret, symlink, enablement, start and reload step.
-# A genuine failure (for example a missing www-data group) fails the install.
+# Every directory, identity, secret, helper, drop-in, symlink, enablement,
+# start and reload step. A genuine failure (for example a missing php8.4-fpm
+# installation) fails the install.
 /opt/teralab/packaging/teralab/apply-state.sh --package
 
-# PHP-FPM is the packaged SAPI. apply-state.sh enables mod_proxy_fcgi and the
-# php8.4-fpm Apache configuration for both install paths; only the mod_php
+# PHP-FPM is the packaged SAPI. apply-state.sh writes the teralab pool for
+# source installs, enables php8.4-fpm here, and enables mod_proxy_fcgi plus the
+# TeraLab Apache configuration for both install paths; only the mod_php
 # conflict is package-specific.
 
 # Debian's php8.4 metapackage enables mod_php, which conflicts with the

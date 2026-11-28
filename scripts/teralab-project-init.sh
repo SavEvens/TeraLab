@@ -32,12 +32,14 @@ run ./scripts/check-artifact-policy.sh --tracked
 run ./scripts/check-licence-headers.sh
 run ./scripts/php-lint.sh
 run ./scripts/check-secrets.sh
+run ./scripts/check-install-perms.sh
 if command -v shellcheck >/dev/null 2>&1; then
 	run shellcheck \
 		scripts/check-licence-headers.sh \
 		scripts/check-artifact-policy.sh \
 		scripts/php-lint.sh \
 		scripts/check-secrets.sh \
+		scripts/check-install-perms.sh \
 		scripts/dev-vm.sh \
 		scripts/setup-runtime-paths.sh \
 		packaging/dynamips/build.sh \
@@ -47,7 +49,8 @@ if command -v shellcheck >/dev/null 2>&1; then
 		packaging/teralab/postinst.sh \
 		packaging/teralab/prerm.sh \
 		packaging/teralab/postrm.sh \
-		packaging/teralab/teralab-firewall
+		packaging/teralab/teralab-firewall \
+		packaging/teralab/fpm-socket-acl
 fi
 
 if [ "$MODE" = "--full" ]; then

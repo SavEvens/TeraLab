@@ -24,6 +24,11 @@ the kernel remain separate components with their own licences.
 - Optional, for Turnstile: outbound HTTPS (443) from the web tier and from the
   visitor's browser to `challenges.cloudflare.com`, plus `allow_url_fopen=On`
   and the `openssl` extension in the PHP used by Apache
+- `acl` (`setfacl`): used for the `teralab-vm` traverse/read ACLs and for the
+  Apache client ACL on the TeraLab FastCGI socket. The package depends on it;
+  a source install must provide it. If a filesystem does not support ACLs the
+  installer falls back to the documented `0711` data-root mode and keeps the
+  database `0600`
 
 PHP upload limits must exceed your largest image. The installer writes
 `/etc/php/8.4/{apache2,fpm,cli}/conf.d/99-teralab-uploads.ini` with
@@ -43,7 +48,7 @@ needed on the target host.
 sudo apt-get install ./teralab_<version>_amd64.deb
 ```
 
-`apt-get install ./file.deb` resolves the dependencies: `apache2`,
+`apt-get install ./file.deb` resolves the dependencies: `acl`, `apache2`,
 `php8.4-fpm`, `php8.4-cli`, `php8.4-sqlite3`, `php8.4-mbstring`,
 `php8.4-xml`, `qemu-system-x86`, `qemu-utils` and `logrotate`; `vpcs` is
 recommended and `teralab-dynamips` is suggested. `php8.4-cli` provides the
@@ -51,7 +56,7 @@ recommended and `teralab-dynamips` is suggested. `php8.4-cli` provides the
 `dpkg -i` instead, install those packages first:
 
 ```sh
-sudo apt-get install apache2 php8.4-fpm php8.4-cli php8.4-sqlite3 \
+sudo apt-get install acl apache2 php8.4-fpm php8.4-cli php8.4-sqlite3 \
     php8.4-mbstring php8.4-xml qemu-system-x86 qemu-utils logrotate
 sudo dpkg -i teralab_<version>_amd64.deb
 sudo apt-get -f install
@@ -59,19 +64,28 @@ sudo apt-get -f install
 
 The package's `postinst` then:
 
-1. checks PHP, QEMU and the `www-data` group;
-2. creates the `teralab-vm` user, the `/etc/teralab` layout and
-   `/var/lib/teralab/{labs,images,run,logs}`, and generates
-   `/etc/teralab/agent.secret` once (it is never overwritten);
-3. enables the Apache modules (`proxy`, `proxy_wstunnel`, `rewrite`,
-   `proxy_fcgi`, `setenvif`) and both the TeraLab and `php8.4-fpm`
-   configurations, and starts the agent and the lab bridge firewall units;
-4. disables mod_php (`php8.4`) if the host had it enabled and reports it;
-5. restarts `php8.4-fpm` and reloads Apache when they are active.
+1. checks PHP, QEMU and PHP-FPM;
+2. creates the `teralab` group, the system user `teralab-api` (primary group
+   `teralab`), the `teralab-vm` fallback engine user and the `teralab-images`
+   group, and never adds `www-data` to any of them;
+3. creates the `/etc/teralab` layout and the `/var/lib/teralab` data matrix
+   from the table below, including the owner-only database and the image-store
+   group modes, and generates `/etc/teralab/agent.secret` once (`root:teralab
+   0640`; it is never overwritten);
+4. installs the root-owned firewall helper at
+   `/usr/local/libexec/teralab/teralab-firewall` and the generated agent
+   identity drop-in with the real `teralab-api` UID and `teralab-images` GID;
+5. enables the Apache modules (`proxy`, `proxy_wstunnel`, `rewrite`,
+   `proxy_fcgi`, `setenvif`) and the TeraLab configuration, enables
+   `php8.4-fpm` so the `teralab` pool is loaded, and starts the agent and the
+   lab bridge firewall units;
+6. disables mod_php (`php8.4`) if the host had it enabled and reports it;
+7. restarts `php8.4-fpm` and reloads Apache when they are active.
 
-The Apache configuration, the three PHP upload-limit drop-ins, both systemd
-units, the logrotate configuration and `/usr/share/doc/teralab/copyright` are
-dpkg conffiles, so local edits survive upgrades. The package does **not** ship
+The Apache configuration, the three PHP upload-limit drop-ins, the
+`/etc/php/8.4/fpm/pool.d/teralab.conf` pool, both systemd units, the logrotate
+configuration and `/usr/share/doc/teralab/copyright` are dpkg conffiles, so
+local edits survive upgrades. The package does **not** ship
 `/etc/teralab/config.php`; create that file yourself only when you need
 overrides. `/etc/teralab/agent.secret` and `/var/lib/teralab` are operator
 state and are never shipped, replaced or deleted.
@@ -98,7 +112,7 @@ still runs.
 The source installer is still supported and is the upgrade path from v1.1:
 
 ```sh
-sudo apt-get install apache2 php8.4-fpm php8.4-cli php8.4-sqlite3 \
+sudo apt-get install acl apache2 php8.4-fpm php8.4-cli php8.4-sqlite3 \
     php8.4-mbstring php8.4-xml qemu-system-x86 qemu-utils composer rsync
 sudo packaging/teralab/install.sh
 ```
@@ -106,35 +120,169 @@ sudo packaging/teralab/install.sh
 The installer:
 
 1. verifies PHP/QEMU and installs Composer dependencies once;
-2. creates the `teralab-vm` system user and adds it to `kvm`;
-3. copies the tree to `/opt/teralab` and builds `/opt/teralab/bin/teralab-agent`;
-4. creates `/etc/teralab/agent.secret` if missing (never overwrites it);
-5. creates `/var/lib/teralab/{labs,images,run}` and `/run/teralab`;
+2. creates the service identities (`teralab`, `teralab-api`, `teralab-vm`,
+   `teralab-images`) and adds `teralab-vm` to `kvm` and `teralab-images`;
+3. copies the tree to `/opt/teralab`, builds
+   `/opt/teralab/bin/teralab-agent`, then makes the whole install tree
+   `root:root` with `chmod -R go-w` (no build-user-owned code);
+4. creates `/etc/teralab/agent.secret` if missing (never overwrites it) and
+   tightens it to `root:teralab 0640`;
+5. creates the `/var/lib/teralab` matrix, the `/etc/teralab/templates`
+   directory and `/run/teralab`;
 6. builds the Vue UI and installs it at `html/ui`;
-7. links `/opt/unetlab -> /opt/teralab` for legacy paths;
-8. writes the Apache configuration and enables the agent unit and, when
-   systemd is available, the lab bridge firewall unit;
-9. with `--ksm`, also installs and starts the KSM unit and the two memory-merge
-   drop-ins (see below). A default install does not.
+7. installs the root-owned firewall helper under
+   `/usr/local/libexec/teralab/`, the Apache configuration and the
+   `/etc/php/8.4/fpm/pool.d/teralab.conf` pool;
+8. links `/opt/unetlab -> /opt/teralab` for legacy paths;
+9. writes the generated agent identity drop-in and enables the agent unit and,
+   when systemd is available, the lab bridge firewall unit;
+10. enables and reloads `php8.4-fpm` and reloads Apache;
+11. with `--ksm`, also installs and starts the KSM unit and the two
+    memory-merge drop-ins (see below). A default install does not.
 
 Options: `--root`, `--data`, `--source`, `--agent-binary`, `--no-systemd`,
 `--ksm`.
+
+### Service identities and file permissions
+
+TeraLab never serves the API as `www-data`. Apache (worker user `www-data`)
+proxies only the TeraLab vhost to a dedicated PHP-FPM pool, and that pool runs
+as `teralab-api:teralab`. The agent stays root because it is the privileged
+broker, but its Unix socket and secret are in the `teralab` group, which
+`www-data` is never a member of.
+
+| Identity | Kind | Purpose |
+|---|---|---|
+| `teralab` | system group | API/FPM group, agent socket group, secret group |
+| `teralab-api` | system user, home `/nonexistent`, shell `nologin`, supplementary member of `teralab-images` | PHP-FPM pool identity, image-file owner and the agent's only allowed peer UID |
+| `teralab-images` | system group | read/execute on the image store for engine identities |
+| `teralab-vm` | system user | fallback engine identity (`TERALAB_PER_LAB_UID=0`) |
+| `www-data` | Apache worker user | HTTP only; not in `teralab`, cannot read the secret or the agent socket |
+
+The installer and the package apply the same matrix:
+
+| Path | Owner | Mode | Notes |
+|---|---|---|---|
+| `/opt/teralab` | `root:root` | dirs `0755`, files `0644`, executables `0755` | no group/world write |
+| `/usr/local/libexec/teralab/teralab-firewall` | `root:root` | `0755` | root-executed helper |
+| `/usr/local/libexec/teralab/fpm-socket-acl` | `root:root` | `0755` | narrows Apache's FastCGI socket access to a named ACL |
+| `/etc/teralab` | `root:teralab` | `0750` | configuration root |
+| `/etc/teralab/agent.secret` | `root:teralab` | `0640` | never world-readable |
+| `/etc/teralab/templates` | `teralab-api:teralab` | `0750` | admin-written custom templates |
+| `/etc/php/8.4/fpm/pool.d/teralab.conf` | `root:root` | `0644` | dpkg conffile |
+| `/var/lib/teralab` | `teralab-api:teralab` | `0750` | ACL fallback `0711` |
+| `/var/lib/teralab/database.sdb`, `-wal`, `-shm` | `teralab-api:teralab` | `0600` | explicit, not umask-dependent |
+| `/var/lib/teralab/labs` | `teralab-api:teralab` | `0750` | API only |
+| `/var/lib/teralab/templates` | `teralab-api:teralab` | `0750` | reserved; custom templates live in `/etc/teralab/templates` |
+| `/var/lib/teralab/backups` | `teralab-api:teralab` | `0700` | admin backups |
+| `/var/lib/teralab/restore` | `teralab-api:teralab` | `0700` | staged restore |
+| `/var/lib/teralab/logs` | `teralab-api:teralab` | `0750` | API/agent logs |
+| `/var/lib/teralab/images` | `teralab-api:teralab` | dirs `0755`; files `teralab-api:teralab-images` `0640`, `.bin` `0750` | engines read through `teralab-images` |
+| `/var/lib/teralab/images/tmp` | `teralab-api:teralab` | `2770` | upload staging |
+| `/var/lib/teralab/run` | `root:root` | `0711` | engines traverse only |
+| `/var/lib/teralab/state` | `root:root` | `0700` | trusted agent state |
+| `/run/teralab` | `root:teralab` | `0750` | agent socket directory |
+
+If you create `/etc/teralab/config.php`, make it readable by the API identity,
+for example `root:teralab 0640`; `/etc/teralab` itself is not world-readable.
+
+Fresh image uploads are written by the API as `0640` with group
+`teralab-images` (`.bin` IOL/Dynamips images as `0750`), inside `0755`
+directories; the `images/tmp` upload-staging directory is `2770`. The
+installer's `apply-state.sh` applies the same modes and group to existing
+image-store files on every install and upgrade.
+
+The `www-data` FastCGI socket ACL is a deliberate residual of the shared
+Apache model: a compromised Apache worker can connect to the pool socket and
+execute PHP as `teralab-api`. That is not a regression — before this change
+the API ran directly as `www-data` — but it is the shared-Apache trust
+boundary, not a per-vhost sandbox. The agent secret and `/run/teralab` socket
+remain outside it.
+
+`teralab-vm` gets an execute-only POSIX ACL on `/var/lib/teralab`, read/execute
+on `images`, and execute on `run`. The `teralab-images` group gets an
+execute-only entry on the data root as well, so per-lab numeric UIDs (which
+carry that supplementary GID) can reach the image and run paths without being
+able to list the data root. Neither gets read access to the labs or the
+database. If the filesystem rejects ACLs (or `setfacl` cannot apply them), the
+installer falls back to mode `0711` on the data root and keeps the database
+`0600`; the database is never left group- or world-readable. `setfacl` itself
+is a required host tool because the FastCGI socket hook also uses it.
+
+Agent engine identities also receive `TERALAB_IMAGE_GID=<teralab-images gid>`
+through
+`/etc/systemd/system/teralab-agent.service.d/10-teralab-identity.conf`, so the
+per-lab numeric UIDs can read image files without world-readable images. The
+same drop-in supplies
+`TERALAB_AGENT_ALLOWED_UIDS=<teralab-api uid>` and the socket group; it is
+rewritten on every install and upgrade.
+
+Verify the matrix after an install or upgrade:
+
+```sh
+sudo scripts/check-install-perms.sh   # from a source checkout
+```
+
+The check is read-only and exits non-zero when the database is group/world
+readable, code or a root helper (or its directory) is group/world writable, the
+tree is not root-owned, `www-data` is in `teralab` or can read the secret, or
+the state directory is writable by an engine or the API identity.
 
 ## Apache
 
 ```sh
 sudo a2enmod proxy proxy_fcgi setenvif proxy_wstunnel rewrite
-sudo a2enconf php8.4-fpm teralab
-sudo systemctl restart php8.4-fpm
+sudo a2enconf teralab            # the TeraLab configuration is required
+sudo a2enconf php8.4-fpm         # optional: default handler for other vhosts
+sudo systemctl enable --now php8.4-fpm
+sudo systemctl reload php8.4-fpm
 sudo systemctl reload apache2
 ```
 
+The TeraLab configuration routes only its own directories to the dedicated
+pool socket with a directory-scoped handler:
+
+```apache
+<FilesMatch "\.php$">
+    SetHandler "proxy:unix:/run/php/php8.4-fpm-teralab.sock|fcgi://localhost"
+</FilesMatch>
+```
+
+The pool is `/etc/php/8.4/fpm/pool.d/teralab.conf` (`[teralab]`, `user =
+teralab-api`, `group = teralab`, socket owner/group `teralab-api:teralab`,
+mode `0660`, `pm = ondemand`, small worker bounds). php-fpm 8.4 has no
+per-pool umask, so `UMask=0077` is set on the `php8.4-fpm.service` drop-in
+generated by `apply-state.sh`; the API also pins database, backup and restore
+modes explicitly rather than relying on it. That service-wide setting affects
+every pool on the host, so run a dedicated `php8.4-fpm` for TeraLab (or accept
+owner-only files in other pools). A reload applies the pool but not the new
+umask; the package postinst restarts `php8.4-fpm`, while a source install
+applies the umask on the next full restart (the API's explicit modes do not
+depend on it). The
+distro-wide `php8.4-fpm` configuration is optional: it only supplies a default
+handler for other vhosts, and the TeraLab handler wins inside this vhost.
+Do not add other vhosts to the `teralab` pool.
+
+Apache's workers still run as `www-data` and need connect permission on the
+FastCGI socket. The pool deliberately does **not** use php-fpm's
+`listen.acl_users`: when that directive is set, php-fpm ignores
+`listen.owner` and `listen.group`, so the socket would no longer be
+`teralab-api:teralab`. Instead, a `php8.4-fpm.service` drop-in runs
+`/usr/local/libexec/teralab/fpm-socket-acl` from `ExecStartPost`; it adds a
+named user ACL (`u:www-data:rw-`) to
+`/run/php/php8.4-fpm-teralab.sock` and leaves the owner/group/mode intact. A
+graceful php-fpm reload inherits the socket, so the ACL survives reloads; a
+full restart reapplies it. This is a socket ACL only: `www-data` stays out of
+the `teralab` group and cannot read `/etc/teralab/agent.secret` or connect to
+`/run/teralab/agent.sock`. Verify with
+`getfacl /run/php/php8.4-fpm-teralab.sock`.
+
 `apply-state.sh` (called by the installer and by the package's `postinst`)
-enables these and reloads Apache and PHP-FPM; the explicit `restart` above is
-only needed when you enabled FPM after it was last started. Without a PHP
-handler Apache would serve `api/public/index.php` as a file, so the script
-refuses to enable the site when neither PHP-FPM nor mod_php is available.
-`curl -i http://127.0.0.1/api/v2/health` must return JSON, not PHP source.
+enables these, writes the source-install pool, enables `php8.4-fpm`, and
+reloads or starts it and Apache. Without a PHP handler Apache would serve
+`api/public/index.php` as a file, so the script refuses to enable the site
+when PHP-FPM is unavailable. `curl -i http://127.0.0.1/api/v2/health` must
+return JSON, not PHP source.
 
 `/ws/console`, `/ws/vnc`, and `/ws/tcp` proxy to the loopback agent gateway.
 The agent is the only privileged process; the web tier never starts QEMU.
@@ -334,7 +482,8 @@ and every visitor shares one rate-limit bucket.
 
 ## Engines
 
-- QEMU: distribution package, unprivileged `teralab-vm`, cgroup limits.
+- QEMU: distribution package, unprivileged `teralab-vm` (or a per-lab numeric
+  UID), cgroup limits; images are read through the `teralab-images` group.
 - VPCS: `apt-get install vpcs`.
 - IOL: supply an x86-64 `.bin` and `iourc`; set `TERALAB_IOL_IOURC` if not
   `/etc/teralab/iourc`.
@@ -607,11 +756,14 @@ exists, best effort. `tl+` matches only TeraLab lab bridges (their names all
 start with `tl`), so Docker's `docker0` rules are untouched. The rule is
 idempotent and survives service restarts via the systemd unit.
 
-On a host installed with `--no-systemd`, or to re-apply the rule after a
-firewall manager reloads the `FORWARD` chain, run:
+The unit executes the root-owned helper
+`/usr/local/libexec/teralab/teralab-firewall`; `/opt/teralab/packaging/teralab/`
+keeps the source copy only and is never the execution path. On a host installed
+with `--no-systemd`, or to re-apply the rule after a firewall manager reloads
+the `FORWARD` chain, run:
 
 ```sh
-sudo /opt/teralab/packaging/teralab/teralab-firewall
+sudo /usr/local/libexec/teralab/teralab-firewall
 sudo systemctl enable --now teralab-firewall.service   # systemd hosts
 ```
 
@@ -826,12 +978,18 @@ sudo systemctl disable --now teralab-ksm 2>/dev/null || true   # only with --ksm
 sudo rm -rf /opt/teralab /etc/teralab /var/lib/teralab
 sudo rm -f /etc/apache2/conf-available/teralab.conf \
     /etc/apache2/conf-enabled/teralab.conf \
+    /etc/php/8.4/fpm/pool.d/teralab.conf \
+    /usr/local/libexec/teralab/teralab-firewall \
+    /usr/local/libexec/teralab/fpm-socket-acl \
+    /etc/systemd/system/php8.4-fpm.service.d/10-teralab-socket-acl.conf \
     /etc/systemd/system/teralab-agent.service \
     /etc/systemd/system/teralab-firewall.service \
     /etc/systemd/system/teralab-ksm.service \
     /etc/systemd/system/docker.service.d/ksm.conf \
-    /etc/systemd/system/teralab-agent.service.d/ksm.conf
+    /etc/systemd/system/teralab-agent.service.d/ksm.conf \
+    /etc/systemd/system/teralab-agent.service.d/10-teralab-identity.conf
 sudo systemctl daemon-reload
+sudo systemctl reload php8.4-fpm 2>/dev/null || true
 sudo iptables -D FORWARD -i tl+ -o tl+ -j ACCEPT 2>/dev/null || true
 sudo ip6tables -D FORWARD -i tl+ -o tl+ -j ACCEPT 2>/dev/null || true
 ```

@@ -9,7 +9,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/teralab/packaging/teralab/teralab-firewall
+# Root-owned helper, installed by apply-state.sh and the Debian package.
+# /opt/teralab/packaging/teralab/teralab-firewall is the source copy only.
+ExecStart=/usr/local/libexec/teralab/teralab-firewall
 RemainAfterExit=yes
 
 [Install]

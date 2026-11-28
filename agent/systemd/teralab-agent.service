@@ -15,8 +15,15 @@ ExecStart=/opt/teralab/bin/teralab-agent
 Environment=TERALAB_AGENT_SOCKET=/run/teralab/agent.sock
 Environment=TERALAB_AGENT_CONSOLE=127.0.0.1:8091
 Environment=TERALAB_AGENT_SECRET_FILE=/etc/teralab/agent.secret
-Environment=TERALAB_AGENT_ALLOWED_UIDS=33
-Environment=TERALAB_AGENT_SOCKET_GROUP=www-data
+# The peer UID is the dedicated teralab-api identity. apply-state.sh writes
+# the real UID into
+# /etc/systemd/system/teralab-agent.service.d/10-teralab-identity.conf and
+# overrides this empty assignment. The agent treats a present-but-empty
+# TERALAB_AGENT_ALLOWED_UIDS as a configuration error, so a missing drop-in
+# stops the agent instead of falling back to www-data (33). Only an absent
+# variable uses the built-in documented default 33 (direct/test invocations).
+Environment=TERALAB_AGENT_ALLOWED_UIDS=
+Environment=TERALAB_AGENT_SOCKET_GROUP=teralab
 Environment=TERALAB_RUN_DIR=/var/lib/teralab/run
 Environment=TERALAB_STATE_DIR=/var/lib/teralab/state
 Environment=TERALAB_IMAGES_DIR=/var/lib/teralab/images
@@ -30,7 +37,8 @@ Environment=TERALAB_VM_USER=teralab-vm
 Environment=TERALAB_PER_LAB_UID=1
 Environment=TERALAB_LAB_UID_FIRST=200000
 Environment=TERALAB_LAB_UID_SLOTS=64
-# Optional numeric gid of the shared image store (0 = no supplementary gid).
+# Numeric gid of the shared image store. apply-state.sh writes the real
+# teralab-images gid into the identity drop-in (0 means no supplementary gid).
 Environment=TERALAB_IMAGE_GID=0
 Environment=TERALAB_NETWORK_BACKEND=auto
 Environment=TERALAB_QEMU_SANDBOX=1
@@ -46,7 +54,9 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/teralab /run/teralab
+# state/ is under the data root, but it is listed explicitly so the agent can
+# keep its trusted registry there under ProtectSystem=strict.
+ReadWritePaths=/var/lib/teralab /var/lib/teralab/state /run/teralab
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=no

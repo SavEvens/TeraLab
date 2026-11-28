@@ -34,7 +34,8 @@ Options:
 
 Dependencies: rsync, composer (when api/vendor is absent), Go (when no agent
 binary is supplied), Node/npm (to build the Vue UI when ui/dist is absent).
-apply-state.sh checks php >= 8.4 with sqlite3, qemu-system-x86_64 and qemu-img.
+apply-state.sh checks php >= 8.4 with sqlite3, php8.4-fpm with setfacl (the acl
+package), qemu-system-x86_64 and qemu-img.
 EOF
 }
 
@@ -57,6 +58,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 command -v rsync >/dev/null || { echo "rsync is required" >&2; exit 1; }
+command -v setfacl >/dev/null || { echo "setfacl is required (install the acl package)" >&2; exit 1; }
 
 if [ ! -d "$SOURCE/api" ]; then
 	printf 'source tree not found: %s\n' "$SOURCE" >&2
@@ -99,6 +101,13 @@ else
 	command -v go >/dev/null || { echo "go is required to build teralab-agent (or use --agent-binary)" >&2; exit 1; }
 	( cd "$ROOT/agent" && go build -o "$ROOT/bin/teralab-agent" ./cmd/teralab-agent )
 fi
+
+# The installed tree is product code, never build-user state. It must not be
+# writable by the API identity, the engine identities or www-data: a
+# privileged process (the agent) executes and loads files from here.
+chown -R root:root "$ROOT"
+chmod -R go-w "$ROOT"
+chmod 0755 "$ROOT/bin/teralab-agent"
 
 apply_args=(--root "$ROOT" --data "$DATA")
 if [ "$INSTALL_SYSTEMD" -eq 0 ]; then

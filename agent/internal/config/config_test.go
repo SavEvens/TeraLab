@@ -4,6 +4,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -89,6 +90,75 @@ func TestLoadRejectsInvalidUID(t *testing.T) {
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid UID to be rejected")
 	}
+}
+
+// TestLoadRejectsEmptyAllowedUIDs pins the Phase 04 fail-closed contract: the
+// shipped unit sets the variable empty until the identity drop-in supplies the
+// API UID, so an empty value must stop the agent instead of falling back to
+// www-data (33).
+func TestLoadRejectsEmptyAllowedUIDs(t *testing.T) {
+	for _, value := range []string{"", "   ", ",", " , ", "\t\n"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+			t.Setenv("TERALAB_AGENT_ALLOWED_UIDS", value)
+			cfg, err := Load()
+			if err == nil {
+				t.Fatalf("value %q was accepted with UIDs %#v", value, cfg.AllowedUIDs)
+			}
+			if !strings.Contains(err.Error(), "TERALAB_AGENT_ALLOWED_UIDS") {
+				t.Fatalf("error should name the variable: %v", err)
+			}
+			if strings.Contains(err.Error(), "invalid allowed UID") {
+				t.Fatalf("empty value should report an empty list, not a parse error: %v", err)
+			}
+		})
+	}
+}
+
+// TestLoadDefaultsAllowedUIDsWhenUnset keeps the documented default for direct
+// invocations that never set the variable. The shipped unit always sets it, so
+// this default cannot mask a missing identity drop-in.
+func TestLoadDefaultsAllowedUIDsWhenUnset(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	unsetEnv(t, "TERALAB_AGENT_ALLOWED_UIDS")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if len(cfg.AllowedUIDs) != 1 || !cfg.AllowedUIDs[33] {
+		t.Fatalf("unset variable must keep the documented uid 33 default, got %#v", cfg.AllowedUIDs)
+	}
+}
+
+func TestLoadParsesAllowedUIDList(t *testing.T) {
+	t.Setenv("TERALAB_AGENT_SECRET", strings.Repeat("s", 32))
+	t.Setenv("TERALAB_AGENT_ALLOWED_UIDS", " 1000, 33 ,1000,")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if len(cfg.AllowedUIDs) != 2 || !cfg.AllowedUIDs[1000] || !cfg.AllowedUIDs[33] {
+		t.Fatalf("allowed UIDs not parsed and deduplicated: %#v", cfg.AllowedUIDs)
+	}
+}
+
+// unsetEnv removes key for the duration of the test. t.Setenv cannot express
+// "absent", which is exactly the distinction allowedAgentUIDs has to make.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	previous, present := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if present {
+			_ = os.Setenv(key, previous)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }
 
 func TestLoadBridgeGroupFwdMask(t *testing.T) {

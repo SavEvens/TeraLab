@@ -332,7 +332,11 @@ final class LegacyAddonsImporter
         $size = @filesize($real);
         $size = is_int($size) ? $size : 0;
         $id = $class['kind'] . '-' . substr($sha256, 0, 16);
-        $directory = $this->config->imagesDir . '/' . $class['kind'] . '/' . $id;
+        $imagesRoot = $this->config->imagesDir;
+        $kindDirectory = $imagesRoot . '/' . $class['kind'];
+        $createdImagesRoot = !is_dir($imagesRoot);
+        $createdKindDirectory = !is_dir($kindDirectory);
+        $directory = $kindDirectory . '/' . $id;
         // Ownership flags: a failure may only undo what this call created.
         // A link or directory that already existed belongs to another row
         // (an earlier or concurrent import of the same checksum).
@@ -345,6 +349,17 @@ final class LegacyAddonsImporter
             if (!$createdDirectory && !is_dir($directory)) {
                 return $this->failed($relative, 'Cannot create the image store directory.');
             }
+        }
+        // mkdir() is filtered by the process umask; FPM runs with 0077, which
+        // would leave the store untraversable for the engine user.
+        if (!is_link($directory)) {
+            @chmod($directory, 0755);
+        }
+        if ($createdKindDirectory && !is_link($kindDirectory)) {
+            @chmod($kindDirectory, 0755);
+        }
+        if ($createdImagesRoot && !is_link($imagesRoot)) {
+            @chmod($imagesRoot, 0755);
         }
         $storePath = $directory . '/' . ImageReference::portable($name);
 
