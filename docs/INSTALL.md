@@ -47,6 +47,18 @@ documentation. PHP-FPM is the packaged SAPI; the package disables mod_php if
 the host had it enabled and reports it. Composer, Go and Node are not
 needed on the target host.
 
+The package owns `/opt/teralab`; do not place files there. Every update,
+including a reinstall, is the same command with the new artifact:
+
+```sh
+sudo apt-get install ./teralab_<version>_amd64.deb
+```
+
+`apply-state.sh` removes anything dpkg does not own from the install tree, so
+a tree that once came from a source checkout converges to the packaged
+inventory. Configuration and data live in `/etc/teralab` and
+`/var/lib/teralab` and are never pruned.
+
 ```sh
 sudo apt-get install ./teralab_<version>_amd64.deb
 ```

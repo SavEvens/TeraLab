@@ -157,6 +157,26 @@ if [ -d "$ROOT" ]; then
 	chmod -R go-w "$ROOT"
 fi
 
+# In package mode the .deb is the only owner of the install tree. Remove files
+# left behind by an older source install or a previous bundle so dpkg -L is the
+# complete inventory: no dev vendor, caches, old UI assets or source trees.
+# dpkg reports "half-configured" while postinst runs, so only require that the
+# package is known and has a file list.
+if [ "$PACKAGE_MODE" -eq 1 ] && command -v dpkg-query >/dev/null 2>&1 \
+	&& dpkg-query -L teralab >/dev/null 2>&1; then
+	prune_dir="$(mktemp -d)"
+	dpkg-query -L teralab | grep "^$ROOT/" | sort -u > "$prune_dir/package"
+	if [ -x "$SCRIPT_DIR/prune-tree.sh" ]; then
+		removed="$("$SCRIPT_DIR/prune-tree.sh" "$ROOT" "$prune_dir/package" | tail -n 1)"
+		if [ "${removed:-0}" -gt 0 ]; then
+			printf 'removed %s files not owned by the teralab package from %s\n' "$removed" "$ROOT"
+		fi
+	else
+		printf 'warning: %s is missing; not pruning the install tree\n' "$SCRIPT_DIR/prune-tree.sh" >&2
+	fi
+	rm -rf "$prune_dir"
+fi
+
 # www-data must never share the TeraLab trust boundary. Remove a stale
 # membership left by an older install instead of failing the upgrade.
 if id -nG www-data 2>/dev/null | tr ' ' '\n' | grep -qx "$SERVICE_GROUP"; then
