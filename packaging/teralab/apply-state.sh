@@ -86,6 +86,9 @@ case "$DATA" in
 	/*) ;;
 	*) printf -- '--data must be an absolute path\n' >&2; exit 2 ;;
 esac
+case "$DATA/" in
+	"$ROOT/"*) printf -- '--data must not equal or live under --root\n' >&2; exit 2 ;;
+esac
 
 if [ "$(id -u)" -ne 0 ]; then
 	printf 'run as root\n' >&2
@@ -165,9 +168,9 @@ fi
 if [ "$PACKAGE_MODE" -eq 1 ] && command -v dpkg-query >/dev/null 2>&1 \
 	&& dpkg-query -L teralab >/dev/null 2>&1; then
 	prune_dir="$(mktemp -d)"
-	dpkg-query -L teralab | grep "^$ROOT/" | sort -u > "$prune_dir/package"
+	dpkg-query -L teralab | grep -F -- "$ROOT/" | sort -u > "$prune_dir/package"
 	if [ -x "$SCRIPT_DIR/prune-tree.sh" ]; then
-		removed="$("$SCRIPT_DIR/prune-tree.sh" "$ROOT" "$prune_dir/package" | tail -n 1)"
+		removed="$("$SCRIPT_DIR/prune-tree.sh" "$ROOT" "$prune_dir/package")"
 		if [ "${removed:-0}" -gt 0 ]; then
 			printf 'removed %s files not owned by the teralab package from %s\n' "$removed" "$ROOT"
 		fi
