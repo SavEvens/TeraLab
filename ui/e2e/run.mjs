@@ -852,6 +852,8 @@ try {
     loginMs,
     editorMs,
     consoleMs,
+    consoleUrls: mock.wsUrls,
+    consoleProtocols: mock.wsProtocols,
     terminalBounds,
     canvasMenu: canvasMenu.replace(/\s+/g, ' ').trim(),
     nodeMenu: nodeMenu.replace(/\s+/g, ' ').trim(),
@@ -1111,6 +1113,13 @@ try {
   if (editorChrome.overlap) throw new Error(`Vue Flow chrome overlaps the toolbar/status bar: ${JSON.stringify(editorChrome)}`)
   if (chromeLayoutConsole.overlap) throw new Error(`Vue Flow chrome overlaps the toolbar with the console open: ${JSON.stringify(chromeLayoutConsole)}`)
   if (resizeFrames.length) throw new Error(`console sent resize frames: ${JSON.stringify(resizeFrames)}`)
+  if (!mock.wsUrls.length) throw new Error('console never opened a WebSocket')
+  if (mock.wsUrls.some((url) => /[?&](?:access_?|auth_?)?token=/i.test(url))) {
+    throw new Error(`console token leaked into the WebSocket URL: ${JSON.stringify(mock.wsUrls)}`)
+  }
+  if (mock.wsProtocols.some((protocol) => !/^teralab\.console\.[A-Za-z0-9._~!#$%&'*+\-^`|]+$/.test(protocol || ''))) {
+    throw new Error(`console did not use the capability subprotocol: ${JSON.stringify(mock.wsProtocols)}`)
+  }
   if (!(heightAfter > heightBefore + 50)) throw new Error(`dock drag did not resize the console body: ${heightBefore} -> ${heightAfter}`)
   if (!(Number.parseFloat(cssHeightAfter) > Number.parseFloat(cssHeightBefore))) throw new Error(`--console-h did not change: ${cssHeightBefore} -> ${cssHeightAfter}`)
   if (!dockStoredHeight || Number(dockStoredHeight) !== Math.round(Number.parseFloat(cssHeightAfter))) {

@@ -221,6 +221,25 @@ final class SetupTest extends TestCase
         self::assertSame('admin@example.test', $this->json($accepted)['user']['email']);
     }
 
+    public function testSetupRejectsOversizedPasswordAndControlUsername(): void
+    {
+        $password = 'Aa1!' . str_repeat('x', 300);
+        $response = $this->postSetup([
+            'username' => 'admin',
+            'password' => $password,
+        ]);
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertArrayHasKey('password', $this->json($response)['details']);
+        self::assertSame(0, $this->userCount());
+
+        $username = $this->postSetup([
+            'username' => "admin\n",
+            'password' => self::PASSWORD,
+        ]);
+        self::assertSame(422, $username->getStatusCode(), (string) $username->getBody());
+        self::assertSame(0, $this->userCount());
+    }
+
     /**
      * @param array<string, mixed> $body
      */

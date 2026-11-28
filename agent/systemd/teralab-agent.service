@@ -14,6 +14,10 @@ Group=root
 ExecStart=/opt/teralab/bin/teralab-agent
 Environment=TERALAB_AGENT_SOCKET=/run/teralab/agent.sock
 Environment=TERALAB_AGENT_CONSOLE=127.0.0.1:8091
+# Browser origins accepted by the console WebSocket handshake. Empty keeps the
+# same-origin default; behind a reverse proxy set the public origin(s), e.g.
+# Environment=TERALAB_CONSOLE_ALLOWED_ORIGINS=https://lab.example
+Environment=TERALAB_CONSOLE_ALLOWED_ORIGINS=
 Environment=TERALAB_AGENT_SECRET_FILE=/etc/teralab/agent.secret
 # The peer UID is the dedicated teralab-api identity. apply-state.sh writes
 # the real UID into

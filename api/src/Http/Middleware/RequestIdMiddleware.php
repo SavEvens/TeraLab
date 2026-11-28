@@ -16,7 +16,7 @@ final class RequestIdMiddleware implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $requestId = $request->getHeaderLine('X-Request-Id');
-        if (preg_match('/^[A-Za-z0-9._-]{8,64}$/', $requestId) !== 1) {
+        if (preg_match('/^[A-Za-z0-9._-]{8,64}\z/', $requestId) !== 1) {
             $requestId = bin2hex(random_bytes(8));
         }
 

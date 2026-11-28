@@ -9,6 +9,7 @@ namespace TeraLab\Api\Auth;
 use PDO;
 use Psr\Http\Message\ServerRequestInterface;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Http\RouteId;
 use TeraLab\Api\Labs\LabRepository;
 
 final class AccessService
@@ -98,6 +99,7 @@ final class AccessService
      */
     public function assertLabAccessWithRole(array $user, string $labId, string $minimum): array
     {
+        $labId = RouteId::lab($labId);
         $lab = $this->labs->findById($labId);
         if ($lab === null) {
             throw new HttpException(404, 'Lab not found.');

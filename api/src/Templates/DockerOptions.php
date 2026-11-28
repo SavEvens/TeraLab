@@ -69,6 +69,13 @@ final class DockerOptions
     public const CONFIG_PATH_PATTERN = '~^/[A-Za-z0-9_./-]{1,200}\z~';
 
     /**
+     * Container paths that expose host or kernel state. A startup config is
+     * injected by the agent, so pointing it at these would give a template a
+     * way to overwrite kernel interfaces; reject them at save and start.
+     */
+    public const DENIED_CONFIG_PREFIXES = ['/proc', '/sys', '/dev'];
+
+    /**
      * Validate `options.docker` when present.
      *
      * @param array<string, mixed> $options
@@ -319,6 +326,14 @@ final class DockerOptions
                 throw new HttpException(
                     422,
                     'Template option docker.config_path must not contain parent directory segments.',
+                );
+            }
+        }
+        foreach (self::DENIED_CONFIG_PREFIXES as $prefix) {
+            if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
+                throw new HttpException(
+                    422,
+                    'Template option docker.config_path must not target host or kernel pseudo-filesystems.',
                 );
             }
         }

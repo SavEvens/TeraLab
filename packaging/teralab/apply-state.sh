@@ -353,8 +353,12 @@ elif [ ! -f "$FPM_POOL_DIR/teralab.conf" ]; then
 fi
 
 if command -v a2enmod >/dev/null 2>&1; then
-	a2enmod proxy proxy_wstunnel rewrite >/dev/null 2>&1 \
-		|| printf 'warning: could not enable Apache modules proxy, proxy_wstunnel and rewrite\n' >&2
+	# mod_headers carries the XFO/CSP/Referrer-Policy/nosniff/Permissions-Policy
+	# response headers for /ui, /themes, /images and /about.php. The packaged
+	# Apache configuration fails "apache2ctl -t" without it, so this must
+	# succeed; a failure is reported and the reload below will surface it.
+	a2enmod proxy proxy_wstunnel rewrite headers >/dev/null 2>&1 \
+		|| printf 'warning: could not enable Apache modules proxy, proxy_wstunnel, rewrite and headers; the teralab configuration needs mod_headers and Apache will fail a configuration test without it\n' >&2
 	# The TeraLab configuration pins its own PHP-FPM socket in a
 	# directory-scoped SetHandler, so .php is executed, never served as a
 	# file, and it never falls back to the shared pool. The distro-wide
@@ -373,7 +377,7 @@ if command -v a2enmod >/dev/null 2>&1; then
 		printf 'warning: no PHP-FPM pool directory (%s); not enabling the TeraLab Apache configuration, because its SetHandler would point at a missing socket\n' "$FPM_POOL_DIR" >&2
 	fi
 else
-	printf 'warning: a2enmod not found; enable mod_proxy, mod_proxy_wstunnel, mod_rewrite, mod_proxy_fcgi and mod_setenvif, and the teralab configuration, manually\n' >&2
+	printf 'warning: a2enmod not found; enable mod_proxy, mod_proxy_wstunnel, mod_rewrite, mod_headers, mod_proxy_fcgi and mod_setenvif, and the teralab configuration, manually\n' >&2
 	printf 'warning: ensure %s loads and %s exists\n' "$FPM_POOL_DIR/teralab.conf" "$FPM_SOCKET" >&2
 	PHP_HANDLER=1
 fi

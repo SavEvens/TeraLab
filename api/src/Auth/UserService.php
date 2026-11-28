@@ -20,7 +20,7 @@ use TeraLab\Api\Labs\LabService;
  */
 final class UserService
 {
-    private const USERNAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$/';
+    private const USERNAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}\z/';
 
     private const ROLES = ['admin', 'editor', 'user'];
 

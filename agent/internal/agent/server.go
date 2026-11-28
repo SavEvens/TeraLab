@@ -37,7 +37,10 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 		logger:  logger,
 		manager: manager,
 		tokens:  tokens,
-		gateway: console.New(cfg.ConsoleAddr, manager, tokens),
+		gateway: console.New(cfg.ConsoleAddr, manager, tokens, console.Options{
+			AllowedOrigins: cfg.ConsoleAllowedOrigins,
+			Logger:         logger,
+		}),
 	}
 }
 

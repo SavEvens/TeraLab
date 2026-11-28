@@ -17,6 +17,19 @@ final class TemplateRepository
 {
     private const KINDS = ['qemu', 'vpcs', 'iol', 'dynamips', 'docker'];
 
+    /** Templates are small YAML documents; anything larger is not a template. */
+    public const MAX_YAML_BYTES = 262144;
+
+    public const MAX_YAML_DEPTH = 16;
+
+    public const MAX_YAML_ALIASES = 8;
+
+    public const MAX_NAME_BYTES = 128;
+
+    public const MAX_OPTION_KEYS = 64;
+
+    public const MAX_DEFAULT_KEYS = 16;
+
     private readonly IconPolicy $icons;
 
     public function __construct(private readonly Config $config, ?IconPolicy $icons = null)
@@ -57,7 +70,7 @@ final class TemplateRepository
      */
     public function find(string $id): ?array
     {
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/', $id) !== 1) {
             return null;
         }
         $builtin = $this->builtinDir() . '/' . $id . '.yaml';
@@ -81,7 +94,7 @@ final class TemplateRepository
      */
     public function saveCustom(string $id, string $yaml): array
     {
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/', $id) !== 1) {
             throw new HttpException(422, 'Invalid template id.');
         }
         if (is_file($this->builtinDir() . '/' . $id . '.yaml')) {
@@ -175,7 +188,7 @@ final class TemplateRepository
 
     public function deleteCustom(string $id): void
     {
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/', $id) !== 1) {
             throw new HttpException(422, 'Invalid template id.');
         }
         if (is_file($this->builtinDir() . '/' . $id . '.yaml')) {
@@ -237,8 +250,17 @@ final class TemplateRepository
      */
     private function parse(string $yaml): array
     {
+        if (strlen($yaml) > self::MAX_YAML_BYTES) {
+            throw new HttpException(
+                422,
+                'The template is larger than ' . intdiv(self::MAX_YAML_BYTES, 1024) . ' KiB.',
+            );
+        }
+        if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $yaml) === 1) {
+            throw new HttpException(422, 'The template contains control characters.');
+        }
         try {
-            $parsed = Yaml::parse($yaml);
+            $parsed = Yaml::parse($yaml, 0, self::MAX_YAML_DEPTH, self::MAX_YAML_ALIASES);
         } catch (ParseException $exception) {
             throw new HttpException(422, 'Invalid YAML: ' . $exception->getMessage());
         }
@@ -259,11 +281,18 @@ final class TemplateRepository
             throw new HttpException(422, 'Template schema must be 1.');
         }
         $id = $template['id'] ?? null;
-        if (!is_string($id) || preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
+        if (!is_string($id) || preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/', $id) !== 1) {
             throw new HttpException(422, 'Invalid template id.');
         }
-        if (!is_string($template['name'] ?? null) || trim((string) $template['name']) === '') {
+        $name = $template['name'] ?? null;
+        if (!is_string($name) || trim($name) === '') {
             throw new HttpException(422, 'Template name is required.');
+        }
+        if (strlen($name) > self::MAX_NAME_BYTES
+            || preg_match('//u', $name) !== 1
+            || preg_match('/[\x00-\x1F\x7F]/', $name) === 1
+        ) {
+            throw new HttpException(422, 'Invalid template name.');
         }
         if (!in_array($template['kind'] ?? null, self::KINDS, true)) {
             throw new HttpException(422, 'Invalid template kind.');
@@ -275,6 +304,12 @@ final class TemplateRepository
         if (!is_array($defaults)) {
             throw new HttpException(422, 'Template defaults must be a mapping.');
         }
+        if (count($defaults) > self::MAX_DEFAULT_KEYS) {
+            throw new HttpException(
+                422,
+                'Template defaults allow at most ' . self::MAX_DEFAULT_KEYS . ' keys.',
+            );
+        }
         foreach (['cpu', 'ram', 'ethernet', 'serial'] as $key) {
             if (isset($defaults[$key]) && !is_int($defaults[$key])) {
                 throw new HttpException(422, 'Template default ' . $key . ' must be an integer.');
@@ -283,6 +318,12 @@ final class TemplateRepository
         $options = $template['options'] ?? [];
         if (!is_array($options)) {
             throw new HttpException(422, 'Template options must be a mapping.');
+        }
+        if (count($options) > self::MAX_OPTION_KEYS) {
+            throw new HttpException(
+                422,
+                'Template options allow at most ' . self::MAX_OPTION_KEYS . ' keys.',
+            );
         }
         QemuOptions::validate($options);
         QemuDisks::validate($options);

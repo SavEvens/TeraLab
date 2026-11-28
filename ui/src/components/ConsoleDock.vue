@@ -33,8 +33,8 @@
       <template v-for="tab in state.tabs" :key="tab.id">
         <div v-show="tab.id === state.active" class="console-pane">
           <button class="ghost close" aria-label="Close console" @click="closeConsole(tab.id)">×</button>
-          <TelnetConsole v-if="tab.kind !== 'vnc'" :ws-path="tab.wsPath" />
-          <VncConsole v-else :ws-path="tab.wsPath" :password="tab.password" />
+          <TelnetConsole v-if="tab.kind !== 'vnc'" :ws-path="tab.wsPath" :token="tab.token" />
+          <VncConsole v-else :ws-path="tab.wsPath" :token="tab.token" :password="tab.password" />
         </div>
       </template>
     </div>

@@ -15,7 +15,8 @@ the kernel remain separate components with their own licences.
 - Go 1.27+ (only when no prebuilt agent is supplied)
 - Node 22.12+ or 24+ and npm (to build the Vue UI; prebuilt `ui/dist` is used when present)
 - Apache 2.4 with `mod_proxy`, `mod_proxy_fcgi`, `mod_proxy_wstunnel`,
-  `mod_setenvif`, and `mod_rewrite`
+  `mod_setenvif`, `mod_rewrite`, and `mod_headers` (the browser security
+  headers and CSP come from `mod_headers`)
 - Optional: `openvswitch-switch` for LACP forwarding
 - Optional: Docker Engine (`docker` CLI and daemon) for `kind: docker` nodes
 - Optional: KSM for memory deduplication (`--ksm`); needs kernel 6.4+ and
@@ -23,7 +24,9 @@ the kernel remain separate components with their own licences.
   [Kernel same-page merging](#kernel-same-page-merging-ksm-optional)
 - Optional, for Turnstile: outbound HTTPS (443) from the web tier and from the
   visitor's browser to `challenges.cloudflare.com`, plus `allow_url_fopen=On`
-  and the `openssl` extension in the PHP used by Apache
+  and the `openssl` extension in the PHP used by Apache. The packaged CSP
+  allows that origin for the Turnstile script, widget iframe and XHR; see
+  [Turnstile and the CSP](#turnstile-and-the-csp)
 - `acl` (`setfacl`): used for the `teralab-vm` traverse/read ACLs and for the
   Apache client ACL on the TeraLab FastCGI socket. The package depends on it;
   a source install must provide it. If a filesystem does not support ACLs the
@@ -78,7 +81,7 @@ The package's `postinst` then:
 4. installs the root-owned firewall helper at
    `/usr/local/libexec/teralab/teralab-firewall` and the generated agent
    identity drop-in with the real `teralab-api` UID and `teralab-images` GID;
-5. enables the Apache modules (`proxy`, `proxy_wstunnel`, `rewrite`,
+5. enables the Apache modules (`proxy`, `proxy_wstunnel`, `rewrite`, `headers`,
    `proxy_fcgi`, `setenvif`) and the TeraLab configuration, enables
    `php8.4-fpm` so the `teralab` pool is loaded, and starts the agent and the
    lab bridge firewall units;
@@ -259,7 +262,7 @@ so a host that has never run setup still passes.
 ## Apache
 
 ```sh
-sudo a2enmod proxy proxy_fcgi setenvif proxy_wstunnel rewrite
+sudo a2enmod proxy proxy_fcgi setenvif proxy_wstunnel rewrite headers
 sudo a2enconf teralab            # the TeraLab configuration is required
 sudo a2enconf php8.4-fpm         # optional: default handler for other vhosts
 sudo systemctl enable --now php8.4-fpm
@@ -314,6 +317,122 @@ return JSON, not PHP source.
 
 `/ws/console`, `/ws/vnc`, and `/ws/tcp` proxy to the loopback agent gateway.
 The agent is the only privileged process; the web tier never starts QEMU.
+
+### Console tokens and WebSocket origin
+
+`POST /api/v2/labs/{lab}/nodes/{node}/console` returns the console path and a
+short-lived capability. The UI offers the capability as a WebSocket
+subprotocol and never in the URL:
+
+```
+Sec-WebSocket-Protocol: teralab.console.<token>
+```
+
+The token is 256 bits of randomness, valid for 60 seconds
+(`agent/internal/token/store.go`, `DefaultTTL`), and is not consumed by a
+handshake, so a reconnect inside the window works. It is not written to Apache
+or agent access logs, is never persisted, and is revoked when the node stops or
+is wiped. The gateway rejects a capability supplied as a query parameter, a
+handshake without an `Origin` header, and an origin that is not allowed.
+
+With no allowlist the handshake is same-origin only: the browser's `Origin`
+host (`scheme://host[:port]`) must match the request `Host`. The packaged
+Apache configuration therefore sets
+
+```apache
+ProxyPreserveHost On
+```
+
+next to the `/ws/` `ProxyPass` lines, because otherwise mod_proxy rewrites
+`Host` to `127.0.0.1:8091` and every console connection would be rejected. If
+your edge rewrites `Host` (a load balancer that does not preserve it), keep the
+header, or list the public origin explicitly. The packaged agent unit ships the
+variable empty, which keeps the same-origin default:
+
+```sh
+sudo systemctl edit teralab-agent.service
+# [Service]
+# Environment=TERALAB_CONSOLE_ALLOWED_ORIGINS=https://lab.example
+sudo systemctl restart teralab-agent    # open consoles reconnect
+```
+
+The value is a comma-separated list of `scheme://host[:port]` entries (no
+paths, queries or wildcards); a non-empty list replaces the same-origin
+default, so include every hostname users may open. Cloudflare forwards the
+original `Host`, so the default works there unchanged.
+
+## Response headers and CSP
+
+Apache adds a fixed set of browser-facing security headers to `/ui/`,
+`/themes`, `/images` and `/about.php` from
+`/etc/apache2/conf-available/teralab.conf`:
+
+| Header | Value |
+| --- | --- |
+| `X-Frame-Options` | `DENY` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `no-referrer` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), usb=(), payment=()` |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src 'self' wss: https://challenges.cloudflare.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'` |
+
+The policy allows the built Vue bundle, xterm/Vue inline styles, same-origin
+API calls, the `/ws/console`, `/ws/vnc` and `/ws/tcp` sockets, and Cloudflare
+Turnstile. `'self'` covers a same-origin `ws://` socket on a plain-HTTP
+deployment and `wss://` on a TLS one, so the consoles work either way. `/api`
+responses are not touched: the Slim middleware
+(`api/src/Http/Middleware/SecurityHeadersMiddleware.php`) keeps its own,
+stricter `default-src 'none'` policy and `Cache-Control: no-store`.
+
+`mod_headers` is required. The installer and the package enable it
+(`a2enmod headers`); the configuration deliberately fails `apache2ctl -t`
+without it instead of serving the UI unprotected. Confirm the headers after a
+deploy:
+
+```sh
+curl -sI http://127.0.0.1/ui/ | grep -Ei 'frame-options|content-security|referrer|permissions|x-content'
+curl -sI http://127.0.0.1/about.php | grep -Ei 'content-security'
+curl -sI http://127.0.0.1/api/v2/health | grep -i content-security   # default-src 'none'
+```
+
+`ServerTokens Prod`, `ServerSignature Off` and `TraceEnable Off` are set by the
+same file. They are server-config directives, so they apply to the whole Apache
+instance (Debian's `conf-enabled/security.conf` is loaded first and these
+values win). Remove those three lines on a shared Apache whose other vhosts
+need a different banner or need the `TRACE` method.
+
+### HSTS
+
+HSTS is not sent by Apache in the default deployment: TLS terminates at the
+edge (Cloudflare or a load balancer) and Apache sees plain HTTP, where
+`Strict-Transport-Security` is ignored and can pin a broken HTTPS setup. Set it
+at the TLS edge instead:
+
+```
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+```
+
+Only when Apache terminates TLS itself, enable the guarded block that ships
+commented out in `teralab.conf`:
+
+```apache
+<If "%{HTTPS} == 'on'">
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+</If>
+```
+
+### Turnstile and the CSP
+
+Turnstile loads `https://challenges.cloudflare.com/turnstile/v0/api.js`, renders
+its widget in an iframe from `https://challenges.cloudflare.com`, and posts to
+that origin. The packaged policy names that origin in `script-src` (the
+loader), `frame-src` (the widget) and `connect-src` (its XHR) — keep all three
+when Turnstile is enabled, or login and setup break. The API host also needs
+outbound HTTPS to `challenges.cloudflare.com` (see Requirements). If you use a
+different Turnstile hostname, add it to all three directives.
+
+After changing the policy, re-test login and setup with Turnstile enabled and
+open a console (telnet/VNC) from `/ui/`; the browser console must stay free of
+CSP violations.
 
 ## TLS and cookies
 

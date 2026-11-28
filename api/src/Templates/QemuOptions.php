@@ -48,18 +48,18 @@ final class QemuOptions
     public const RAW_KEY = 'qemu_options';
 
     /** Conservative shape shared with the agent: no spaces, no shell characters. */
-    private const PATTERN = '/^[A-Za-z0-9_.+-]{1,64}$/';
+    private const PATTERN = '/^[A-Za-z0-9_.+-]{1,64}\z/';
 
     /** Same machine grammar as the agent (pc/q35 aliases and versioned names). */
-    private const MACHINE_PATTERN = '~^((pc|q35)(-[0-9]+(\.[0-9]+)*)?|(pc-i440fx|pc-q35)-[0-9]+(\.[0-9]+)*)$~';
+    private const MACHINE_PATTERN = '~^((pc|q35)(-[0-9]+(\.[0-9]+)*)?|(pc-i440fx|pc-q35)-[0-9]+(\.[0-9]+)*)\z~';
 
-    private const BOOT_PATTERN = '~^order=[a-z]{1,4}$~';
+    private const BOOT_PATTERN = '~^order=[a-z]{1,4}\z~';
 
-    private const ICOUNT_PATTERN = '~^[0-9]{1,6}$~';
+    private const ICOUNT_PATTERN = '~^[0-9]{1,6}\z~';
 
     /** Per-field overrides: a CPU model may carry a comma-separated feature list. */
     private const PATTERNS = [
-        'cpu_model' => '/^[A-Za-z0-9_.+,-]{1,64}$/',
+        'cpu_model' => '/^[A-Za-z0-9_.+,-]{1,64}\z/',
         'machine' => self::MACHINE_PATTERN,
     ];
 

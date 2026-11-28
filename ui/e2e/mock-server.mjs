@@ -829,7 +829,7 @@ export function startMockServer(port = 8099) {
         data: {
           kind: 'telnet',
           token: 'mock',
-          ws_path: `/ws/console?token=mock&lab=${encodeURIComponent(nodeConsoleMatch[1])}&node=${encodeURIComponent(nodeConsoleMatch[2])}`,
+          ws_path: `/ws/console?lab=${encodeURIComponent(nodeConsoleMatch[1])}&node=${encodeURIComponent(nodeConsoleMatch[2])}`,
           expires_in: 300
         }
       })
@@ -979,13 +979,39 @@ export function startMockServer(port = 8099) {
     return send(response, 404, { message: 'not found' })
   })
 
-  const wss = new WebSocketServer({ server, path: '/ws' })
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    // The UI sends the console capability as `teralab.console.<token>` in
+    // Sec-WebSocket-Protocol. Echo it back: a browser aborts the handshake when
+    // it requested a subprotocol and the server selects none.
+    handleProtocols: (protocols) => {
+      for (const protocol of protocols) {
+        if (/^teralab\.console\.[A-Za-z0-9._~!#$%&'*+\-^`|]+$/.test(protocol)) return protocol
+      }
+      return false
+    },
+    // Query tokens are rejected so a regression that puts the capability back
+    // in the URL fails the E2E instead of silently passing.
+    verifyClient: (info, done) => {
+      const url = new URL(info.req.url || '/', 'http://127.0.0.1')
+      if (url.searchParams.has('token')) {
+        done(false, 401, 'query console tokens are not accepted')
+        return
+      }
+      done(true)
+    }
+  })
   // Record the frames each console connection sends so e2e can assert that the
   // telnet console no longer writes resize control JSON into the device stream.
   const wsMessages = []
-  wss.on('connection', (socket) => {
+  const wsUrls = []
+  const wsProtocols = []
+  wss.on('connection', (socket, request) => {
     const messages = []
     wsMessages.push(messages)
+    wsUrls.push(request.url)
+    wsProtocols.push(request.headers['sec-websocket-protocol'])
     socket.send('hello from mock console\r\n')
     socket.on('message', (message) => {
       messages.push(Buffer.isBuffer(message) ? message.toString('utf8') : String(message))
@@ -998,6 +1024,8 @@ export function startMockServer(port = 8099) {
       server,
       wss,
       wsMessages,
+      wsUrls,
+      wsProtocols,
       close: () => {
         for (const client of wss.clients) client.terminate()
         wss.close()

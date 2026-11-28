@@ -300,6 +300,24 @@ final class Phase1ApiTest extends TestCase
         self::assertStringStartsWith('PK', (string) $backup->getBody());
     }
 
+    public function testTokenNamesAreBoundedAndControlFree(): void
+    {
+        $max = str_repeat('t', 128);
+        $created = $this->request('POST', '/api/v2/system/tokens', ['name' => $max]);
+        self::assertSame(201, $created->getStatusCode(), (string) $created->getBody());
+        self::assertSame($max, $this->json($created)['data']['name']);
+
+        foreach ([str_repeat('t', 129), "bad\nname", "bad\x7fname"] as $name) {
+            $response = $this->request('POST', '/api/v2/system/tokens', ['name' => $name]);
+            self::assertSame(422, $response->getStatusCode(), var_export($name, true));
+        }
+
+        self::assertSame(
+            422,
+            $this->request('DELETE', '/api/v2/system/tokens/not-a-token')->getStatusCode(),
+        );
+    }
+
     public function testOversizedMultipartGetsActionableError(): void
     {
         $response = $this->request(

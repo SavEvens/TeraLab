@@ -197,6 +197,14 @@ final class ImageApiTest extends TestCase
 
     public function testImageDisplayNameRejectsControlCharactersAndLength(): void
     {
+        $max = str_repeat('a', 128);
+        $accepted = $this->request('POST', '/api/v2/images', [], [], $this->uploaded("QFI\xfb" . str_repeat('e', 64), 'max.qcow2'), [
+            'kind' => 'qemu',
+            'name' => $max,
+        ]);
+        self::assertSame(201, $accepted->getStatusCode(), (string) $accepted->getBody());
+        self::assertSame($max, $this->json($accepted)['data']['name']);
+
         foreach ([str_repeat('a', 129), "bad\nname", '   '] as $name) {
             $upload = $this->request('POST', '/api/v2/images', [], [], $this->uploaded("QFI\xfb" . str_repeat('d', 64), 'named.qcow2'), [
                 'kind' => 'qemu',

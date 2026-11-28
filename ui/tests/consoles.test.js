@@ -4,12 +4,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openConsole, closeConsole, activateConsole, consoleState } from '../src/stores/consoles'
 
-function consoleResponse() {
+function consoleResponse(data = {}) {
   return {
     ok: true,
     status: 200,
     text: async () => JSON.stringify({
-      data: { kind: 'telnet', ws_path: '/ws/console?token=lab-token', expires_in: 300, password: '' }
+      data: {
+        kind: 'telnet',
+        token: 'lab-token',
+        ws_path: '/ws/console?token=lab-token&lab=lab1&node=2',
+        expires_in: 300,
+        password: '',
+        ...data
+      }
     })
   }
 }
@@ -40,11 +47,32 @@ describe('console store', () => {
       nodeId: 'node/2',
       name: 'R2',
       kind: 'telnet',
-      wsPath: '/ws/console?token=lab-token',
+      token: 'lab-token',
       password: ''
     })
+    // The capability is kept out of the path that becomes the WebSocket URL.
+    expect(tab.wsPath).toBe('/ws/console?lab=lab1&node=2')
+    expect(tab.wsPath).not.toContain('lab-token')
     expect(consoleState.tabs).toEqual([tab])
     expect(consoleState.active).toBe(tab.id)
+  })
+
+  it('ignores a legacy token in ws_path', async () => {
+    const tab = await openConsole('lab1', { id: '1', name: 'R1' }, undefined)
+
+    expect(tab.token).toBe('lab-token')
+    expect(tab.wsPath).toBe('/ws/console?lab=lab1&node=2')
+  })
+
+  it('keeps a clean ws_path unchanged and accepts a token-only legacy path', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => consoleResponse({ ws_path: '/ws/console' })))
+    const clean = await openConsole('lab1', { id: '1' })
+    expect(clean.wsPath).toBe('/ws/console')
+
+    vi.stubGlobal('fetch', vi.fn(async () => consoleResponse({ ws_path: '/ws/console?token=lab-token' })))
+    const legacy = await openConsole('lab2', { id: '2' })
+    expect(legacy.wsPath).toBe('/ws/console')
+    expect(legacy.token).toBe('lab-token')
   })
 
   it('reuses the tab for the same lab and node and keeps close/activate behaviour', async () => {

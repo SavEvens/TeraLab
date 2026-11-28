@@ -27,7 +27,11 @@ final class TokenService
     public function create(string $userId, string $name, array $scopes, ?int $expiresIn): array
     {
         $name = trim($name);
-        if ($name === '' || strlen($name) > 128) {
+        if ($name === ''
+            || strlen($name) > 128
+            || preg_match('//u', $name) !== 1
+            || preg_match('/[\x00-\x1F\x7F]/', $name) === 1
+        ) {
             throw new HttpException(422, 'Token name is required.');
         }
         $scopes = array_values(array_intersect($scopes ?: ['read', 'write'], ['read', 'write']));

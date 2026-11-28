@@ -35,7 +35,8 @@ final class NodeController
     {
         $user = $this->access->user($request);
         $lab = $this->access->assertLabAccessWithRole($user, $args['id'] ?? '', 'editor');
-        $session = $this->labs->openConsole((string) $lab['id'], $args['node'] ?? '');
+        $userId = isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
+        $session = $this->labs->openConsole((string) $lab['id'], $args['node'] ?? '', $userId);
         $token = $session['token'] ?? null;
         if (!is_string($token) || $token === '') {
             throw new HttpException(502, 'The agent did not return a console token.');
@@ -51,11 +52,15 @@ final class NodeController
             $path = $this->config->consoleTcpPath;
         }
 
+        // The token is a capability. It must never travel in a URL or query
+        // string: access logs and browser history would retain it. The client
+        // offers it as the WebSocket subprotocol instead.
         $data = [
             'kind' => $kind,
             'token' => $token,
             'expires_in' => $session['expires_in'] ?? 0,
-            'ws_path' => $path . '?token=' . rawurlencode($token),
+            'ws_path' => $path,
+            'subprotocol' => 'teralab.console.' . $token,
         ];
         if ($kind === 'vnc') {
             $data['password'] = $session['password'] ?? '';

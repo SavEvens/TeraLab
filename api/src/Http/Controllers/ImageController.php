@@ -14,6 +14,7 @@ use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Http\RouteId;
 use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\Image\ImageStore;
 use TeraLab\Api\Image\LegacyAddonsImporter;
@@ -45,7 +46,7 @@ final class ImageController
      */
     public function show(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
-        $image = $this->store->find($args['id'] ?? '');
+        $image = $this->store->find(RouteId::image($args['id'] ?? ''));
         if ($image === null) {
             throw new HttpException(404, 'Image not found.');
         }
@@ -167,6 +168,7 @@ final class ImageController
     {
         $this->assertNotGuest($request);
         $this->access->requireRole($this->access->user($request), 'admin');
+        $id = RouteId::image($args['id'] ?? '');
         $nodeImages = [];
         try {
             $status = $this->agent->status();
@@ -187,7 +189,7 @@ final class ImageController
 
         // Lab files reference images by name; deleting a referenced image
         // would leave those labs unstartable.
-        $image = $this->store->find($args['id'] ?? '');
+        $image = $this->store->find($id);
         $reference = is_array($image) && is_string($image['reference'] ?? null) ? $image['reference'] : '';
         $imagePath = is_array($image) && is_string($image['path'] ?? null) ? (string) $image['path'] : '';
         foreach ($this->labs->all() as $lab) {
@@ -214,7 +216,7 @@ final class ImageController
 
         $user = $request->getAttribute('user');
         $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
-        $this->store->delete($args['id'] ?? '', $nodeImages);
+        $this->store->delete($id, $nodeImages);
         $this->audit->log($userId, $this->ip($request), 'image.delete', (string) ($args['id'] ?? ''), 'success', [
             'reference' => $image['reference'] ?? null,
             'sha256' => $image['sha256'] ?? null,
@@ -231,16 +233,21 @@ final class ImageController
         $this->assertNotGuest($request);
         $this->access->requireRole($this->access->user($request), 'admin');
         $body = Json::body($request);
+        $id = RouteId::image($args['id'] ?? '');
         $name = $body['name'] ?? null;
         $reference = $body['reference'] ?? null;
         if (!is_string($name) && !is_string($reference)) {
             throw new HttpException(422, 'name or reference is required.');
         }
         if (!is_string($name)) {
-            $existing = $this->store->find($args['id'] ?? '');
+            $existing = $this->store->find($id);
             $name = is_array($existing) ? (string) ($existing['name'] ?? '') : '';
         }
-        $image = $this->store->rename($args['id'] ?? '', $name, is_string($reference) ? $reference : null);
+        $image = $this->store->rename(
+            $id,
+            $name,
+            is_string($reference) ? $reference : null,
+        );
         $user = $request->getAttribute('user');
         $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
         $this->audit->log($userId, $this->ip($request), 'image.rename', (string) $image['id'], 'success', [
@@ -268,7 +275,7 @@ final class ImageController
         if (!is_string($template) || $template === '') {
             throw new HttpException(422, 'template is required.');
         }
-        $image = $this->store->mapTemplate($args['id'] ?? '', $template);
+        $image = $this->store->mapTemplate(RouteId::image($args['id'] ?? ''), $template);
         $user = $request->getAttribute('user');
         $userId = is_array($user) && isset($user['id']) && is_string($user['id']) ? $user['id'] : null;
         $this->audit->log($userId, $this->ip($request), 'image.template', (string) $image['id'], 'success', ['template' => $template]);

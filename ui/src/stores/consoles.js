@@ -2,7 +2,7 @@
 // Copyright (C) 2026 TeraLab contributors
 
 import { reactive } from 'vue'
-import { api } from '../api'
+import { api, consoleWsPath } from '../api'
 
 export const consoleState = reactive({
   tabs: [],
@@ -25,7 +25,10 @@ export async function openConsole(labId, node, name) {
     nodeId: node.id,
     name: name || node.name || node.id,
     kind: data.kind,
-    wsPath: data.ws_path,
+    // The capability stays in memory and is sent as a WebSocket subprotocol;
+    // it is never appended to wsPath, a URL, a log or the DOM.
+    token: typeof data.token === 'string' ? data.token : '',
+    wsPath: consoleWsPath(data.ws_path),
     password: data.password || ''
   }
   consoleState.tabs.push(tab)

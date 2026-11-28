@@ -211,7 +211,7 @@ final class ImageStore
         if ($image === null) {
             throw new HttpException(404, 'Image not found.');
         }
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $template) !== 1) {
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/', $template) !== 1) {
             throw new HttpException(422, 'Invalid template id.');
         }
         if ($this->templates !== null) {

@@ -11,6 +11,7 @@ use RuntimeException;
 use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
+use TeraLab\Api\Http\RouteId;
 use TeraLab\Api\Image\ImageReferences;
 use TeraLab\Api\Policy\IconPolicy;
 use TeraLab\Api\Policy\PicturePolicy;
@@ -26,6 +27,15 @@ final class LabService
 {
     private const TRASH_TTL = 2592000; // 30 days
     private const MAX_UNL_BYTES = 10485760;
+
+    /** Public aliases so callers and tests can assert the documented caps. */
+    public const MAX_NODES = LabLimits::MAX_NODES;
+    public const MAX_NETWORKS = LabLimits::MAX_NETWORKS;
+    public const MAX_INTERFACES = LabLimits::MAX_INTERFACES;
+    public const MAX_NAME_BYTES = LabLimits::MAX_NAME_BYTES;
+    public const MAX_DESCRIPTION_BYTES = LabLimits::MAX_DESCRIPTION_BYTES;
+    public const MAX_BODY_BYTES = LabLimits::MAX_BODY_BYTES;
+    public const MAX_CONFIG_BYTES = LabLimits::MAX_CONFIG_BYTES;
 
     /** Default snapshot cap when the settings service is not injected (tests/CLI). */
     private const DEFAULT_SNAPSHOT_COUNT_CAP = 3;
@@ -90,8 +100,8 @@ final class LabService
             'id' => $this->uuid(),
             'name' => $name,
             'author' => $author ?? '',
-            'description' => $this->text($input['description'] ?? ''),
-            'body' => $this->text($input['body'] ?? ''),
+            'description' => $this->text($input['description'] ?? '', 'description', LabLimits::MAX_DESCRIPTION_BYTES),
+            'body' => $this->text($input['body'] ?? '', 'body', LabLimits::MAX_BODY_BYTES),
             'version' => '1',
             'revision' => 1,
             'node_list' => $nodes,
@@ -132,8 +142,8 @@ final class LabService
         }
 
         $lab['name'] = self::labName($input['name'] ?? $lab['name']);
-        $lab['description'] = $this->text($input['description'] ?? $lab['description']);
-        $lab['body'] = $this->text($input['body'] ?? $lab['body']);
+        $lab['description'] = $this->text($input['description'] ?? $lab['description'], 'description', LabLimits::MAX_DESCRIPTION_BYTES);
+        $lab['body'] = $this->text($input['body'] ?? $lab['body'], 'body', LabLimits::MAX_BODY_BYTES);
         $nodes = array_key_exists('nodes', $input)
             ? $this->normalizeNodes($input['nodes'])
             : $this->labNodes($lab);
@@ -181,6 +191,7 @@ final class LabService
         }
 
         $lab = $this->parser->parseXml($xml);
+        $this->assertLabBounds($lab);
         $prepared = $this->demoGuard?->prepareImport($ownerId, $lab);
         if ($prepared !== null) {
             $lab = $prepared['lab'];
@@ -323,8 +334,8 @@ final class LabService
 
         $revision++;
         $lab['name'] = self::labName($payload['name'] ?? $lab['name']);
-        $lab['description'] = $this->text($payload['description'] ?? '');
-        $lab['body'] = $this->text($payload['body'] ?? '');
+        $lab['description'] = $this->text($payload['description'] ?? '', 'description', LabLimits::MAX_DESCRIPTION_BYTES);
+        $lab['body'] = $this->text($payload['body'] ?? '', 'body', LabLimits::MAX_BODY_BYTES);
         $yamlAuthor = $payload['author'] ?? null;
         if (is_string($yamlAuthor) && $yamlAuthor !== '') {
             $lab['author'] = $yamlAuthor;
@@ -397,7 +408,11 @@ final class LabService
     {
         [$lab] = $this->loadById($id);
         $name = trim($name);
-        if ($name === '' || strlen($name) > 128) {
+        if ($name === ''
+            || strlen($name) > LabLimits::MAX_NAME_BYTES
+            || preg_match('//u', $name) !== 1
+            || preg_match(LabLimits::FORBIDDEN_NAME_PATTERN, $name) === 1
+        ) {
             throw new HttpException(422, 'Snapshot name is required.');
         }
 
@@ -437,6 +452,7 @@ final class LabService
      */
     public function restoreSnapshot(string $id, string $snapshotID, ?string $userId = null, bool $isAdmin = false): array
     {
+        $snapshotID = RouteId::snapshot($snapshotID);
         [$lab, $path] = $this->loadById($id);
         if ($userId !== null) {
             $this->locks->assertEditable((string) $lab['id'], $userId, $isAdmin);
@@ -459,6 +475,7 @@ final class LabService
 
     public function deleteSnapshot(string $id, string $snapshotID): void
     {
+        $snapshotID = RouteId::snapshot($snapshotID);
         [$lab] = $this->loadById($id);
         if (!$this->snapshotRepository()->delete((string) $lab['id'], $snapshotID)) {
             throw new HttpException(404, 'Snapshot not found.');
@@ -501,7 +518,7 @@ final class LabService
     {
         [$lab, $oldPath] = $this->loadById($id);
         $folder = trim($folder, '/');
-        if ($folder !== '' && preg_match('#^[A-Za-z0-9][A-Za-z0-9_./-]{0,127}$#', $folder) !== 1) {
+        if ($folder !== '' && preg_match('#^[A-Za-z0-9][A-Za-z0-9_./-]{0,127}\z#', $folder) !== 1) {
             throw new HttpException(422, 'Invalid lab folder.');
         }
         if (str_contains($folder, '..')) {
@@ -957,12 +974,15 @@ final class LabService
      *
      * @return array<string, mixed>
      */
-    public function openConsole(string $id, string $nodeID): array
+    public function openConsole(string $id, string $nodeID, ?string $userId = null): array
     {
         [$lab] = $this->loadById($id);
         $node = $this->findNode($lab, $nodeID);
 
-        return $this->agent->openConsole($this->agentNodeID((string) $lab['id'], (string) $node['id']));
+        return $this->agent->openConsole(
+            $this->agentNodeID((string) $lab['id'], (string) $node['id']),
+            $userId,
+        );
     }
 
     /**
@@ -1025,9 +1045,7 @@ final class LabService
      */
     private function loadById(string $id): array
     {
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $id) !== 1) {
-            throw new HttpException(422, 'Invalid lab id.');
-        }
+        $id = RouteId::lab($id);
         $root = realpath($this->config->labsDir);
         if ($root === false || !is_dir($root)) {
             throw new HttpException(404, 'Lab not found.');
@@ -1111,6 +1129,73 @@ final class LabService
         }
 
         return $networks;
+    }
+
+    /**
+     * Validate the shape of a lab parsed from an uploaded .unl without
+     * rewriting it. Legacy fields are preserved; only the caps that protect
+     * the compiler, the writer and the agent are enforced.
+     *
+     * @param array<string, mixed> $lab
+     */
+    private function assertLabBounds(array $lab): void
+    {
+        self::labName($lab['name'] ?? '');
+        $this->text($lab['description'] ?? '', 'description', LabLimits::MAX_DESCRIPTION_BYTES);
+        $this->text($lab['body'] ?? '', 'body', LabLimits::MAX_BODY_BYTES);
+
+        $networks = $this->labNetworks($lab);
+        if (count($networks) > LabLimits::MAX_NETWORKS) {
+            throw new HttpException(422, 'At most ' . LabLimits::MAX_NETWORKS . ' networks are allowed per lab.');
+        }
+        $networkIDs = [];
+        foreach ($networks as $network) {
+            $id = (string) ($network['id'] ?? '');
+            if ($id === '') {
+                continue;
+            }
+            if (strlen($id) > LabLimits::MAX_FIELD_BYTES
+                || preg_match('//u', $id) !== 1
+                || preg_match(LabLimits::FORBIDDEN_NAME_PATTERN, $id) === 1
+            ) {
+                throw new HttpException(422, 'Invalid network id.');
+            }
+            if (isset($networkIDs[$id])) {
+                throw new HttpException(422, 'Duplicate network id: ' . mb_strcut($id, 0, 64, 'UTF-8'));
+            }
+            $networkIDs[$id] = true;
+            $this->label($network['name'] ?? ('Net-' . $id), 'Net-' . $id, 'Network "' . mb_strcut($id, 0, 64, 'UTF-8') . '"');
+        }
+
+        $nodes = $this->labNodes($lab);
+        if (count($nodes) > LabLimits::MAX_NODES) {
+            throw new HttpException(422, 'At most ' . LabLimits::MAX_NODES . ' nodes are allowed per lab.');
+        }
+        foreach ($nodes as $node) {
+            $id = (string) ($node['id'] ?? '');
+            if ($id !== '' && (strlen($id) > LabLimits::MAX_FIELD_BYTES
+                || preg_match('//u', $id) !== 1
+                || preg_match(LabLimits::FORBIDDEN_NAME_PATTERN, $id) === 1)) {
+                throw new HttpException(422, 'Invalid node id.');
+            }
+            $context = 'Node "' . ($id !== '' ? mb_strcut($id, 0, 64, 'UTF-8') : 'unnamed') . '"';
+            $this->label($node['name'] ?? $id, $id !== '' ? $id : 'node', $context);
+            $this->text($node['config'] ?? '', $context . ' config', LabLimits::MAX_CONFIG_BYTES);
+
+            $interfaces = is_array($node['interfaces'] ?? null) ? $node['interfaces'] : [];
+            if (count($interfaces) > LabLimits::MAX_INTERFACES) {
+                throw new HttpException(
+                    422,
+                    $context . ' has more than ' . LabLimits::MAX_INTERFACES . ' interfaces.',
+                );
+            }
+            foreach ($interfaces as $interface) {
+                if (!is_array($interface)) {
+                    continue;
+                }
+                $this->field($interface['network_id'] ?? '', $context . ' interface network id');
+            }
+        }
     }
 
     /**
@@ -1600,6 +1685,7 @@ final class LabService
      */
     private function findNode(array $lab, string $nodeID): array
     {
+        $nodeID = RouteId::node($nodeID);
         foreach ($this->labNodes($lab) as $node) {
             if ((string) $node['id'] === $nodeID || (string) $node['name'] === $nodeID) {
                 return $node;
@@ -1924,7 +2010,10 @@ final class LabService
             throw new HttpException(422, 'Lab name is required.');
         }
         $name = trim($value);
-        if (strlen($name) > 128 || preg_match('/[\/\\\\\x00-\x1f]/', $name) === 1) {
+        if (strlen($name) > LabLimits::MAX_NAME_BYTES
+            || preg_match('//u', $name) !== 1
+            || preg_match('/[\/\\\\\x00-\x1F\x7F]/', $name) === 1
+        ) {
             throw new HttpException(422, 'Invalid lab name.');
         }
 
@@ -1947,16 +2036,67 @@ final class LabService
         $tags = [];
         foreach ($value as $tag) {
             if (is_string($tag) && trim($tag) !== '') {
-                $tags[] = mb_strcut(trim($tag), 0, 32, 'UTF-8');
+                $tags[] = mb_strcut(trim($tag), 0, LabLimits::MAX_TAG_BYTES, 'UTF-8');
             }
         }
 
-        return implode(',', array_slice($tags, 0, 20));
+        return implode(',', array_slice($tags, 0, LabLimits::MAX_TAG_COUNT));
     }
 
-    private function text(mixed $value): string
+    private function text(mixed $value, string $context, int $maxBytes): string
     {
-        return is_string($value) ? $value : '';
+        if (!is_string($value)) {
+            return '';
+        }
+        if (strlen($value) > $maxBytes) {
+            throw new HttpException(
+                422,
+                ucfirst($context) . ' is larger than ' . intdiv($maxBytes, 1024) . ' KiB.',
+            );
+        }
+        if (preg_match('//u', $value) !== 1
+            || preg_match(LabLimits::FORBIDDEN_TEXT_PATTERN, $value) === 1
+        ) {
+            throw new HttpException(422, ucfirst($context) . ' contains unsupported control characters.');
+        }
+
+        return $value;
+    }
+
+    /**
+     * A bounded label, falling back to a server-generated value when absent.
+     */
+    private function label(mixed $value, string $fallback, string $context): string
+    {
+        if (!is_string($value) || trim($value) === '') {
+            return mb_strcut($fallback, 0, LabLimits::MAX_NAME_BYTES, 'UTF-8');
+        }
+        if (strlen($value) > LabLimits::MAX_NAME_BYTES
+            || preg_match('//u', $value) !== 1
+            || preg_match(LabLimits::FORBIDDEN_NAME_PATTERN, $value) === 1
+        ) {
+            throw new HttpException(422, $context . ' name is invalid.');
+        }
+
+        return $value;
+    }
+
+    /**
+     * Short, control-free metadata fields (types, console modes, references).
+     */
+    private function field(mixed $value, string $context, int $maxBytes = LabLimits::MAX_FIELD_BYTES): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+        if (strlen($value) > $maxBytes
+            || preg_match('//u', $value) !== 1
+            || preg_match(LabLimits::FORBIDDEN_NAME_PATTERN, $value) === 1
+        ) {
+            throw new HttpException(422, $context . ' is invalid.');
+        }
+
+        return $value;
     }
 
     private function iconPolicy(): IconPolicy
@@ -1977,6 +2117,9 @@ final class LabService
         if (!is_array($input)) {
             throw new HttpException(422, 'nodes must be a list.');
         }
+        if (count($input) > LabLimits::MAX_NODES) {
+            throw new HttpException(422, 'At most ' . LabLimits::MAX_NODES . ' nodes are allowed per lab.');
+        }
         $nodes = [];
         $seen = [];
         foreach ($input as $raw) {
@@ -1984,30 +2127,61 @@ final class LabService
                 throw new HttpException(422, 'Each node must be an object.');
             }
             $id = isset($raw['id']) ? (string) $raw['id'] : '';
-            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/', $id) !== 1) {
+            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}\z/', $id) !== 1) {
                 throw new HttpException(422, 'Invalid node id.');
             }
             if (isset($seen[$id])) {
                 throw new HttpException(422, 'Duplicate node id: ' . $id);
             }
             $seen[$id] = true;
-            $type = (string) ($raw['type'] ?? 'qemu');
-            $label = (string) ($raw['name'] ?? $id);
-            $icon = $this->iconPolicy()->validate($raw['icon'] ?? '', 'Node "' . $label . '" icon');
-            $image = (string) ($raw['image'] ?? '');
+            $context = 'Node "' . $id . '"';
+            $type = $this->field($raw['type'] ?? 'qemu', $context . ' type', LabLimits::MAX_TYPE_BYTES);
+            if ($type === '') {
+                $type = 'qemu';
+            }
+            $name = $this->label($raw['name'] ?? $id, $id, $context);
+            $template = $this->field($raw['template'] ?? '', $context . ' template', 64);
+            if ($template !== '' && preg_match(LabLimits::ID_PATTERN, $template) !== 1) {
+                throw new HttpException(422, $context . ' template is invalid.');
+            }
+            $icon = $this->iconPolicy()->validate($raw['icon'] ?? '', 'Node "' . $name . '" icon');
+            $image = $this->field($raw['image'] ?? '', $context . ' image');
             if ($type === 'picture') {
-                $image = $this->picturePolicy()->validate($raw['image'] ?? '', 'Node "' . $label . '" image');
+                $image = $this->picturePolicy()->validate($raw['image'] ?? '', 'Node "' . $name . '" image');
+            }
+
+            $rawInterfaces = $raw['interfaces'] ?? [];
+            if (!is_array($rawInterfaces)) {
+                throw new HttpException(422, $context . ' interfaces must be a list.');
+            }
+            if (count($rawInterfaces) > LabLimits::MAX_INTERFACES) {
+                throw new HttpException(
+                    422,
+                    $context . ' has more than ' . LabLimits::MAX_INTERFACES . ' interfaces.',
+                );
             }
             $interfaces = [];
-            foreach (($raw['interfaces'] ?? []) as $interface) {
+            foreach ($rawInterfaces as $interface) {
                 if (!is_array($interface)) {
                     continue;
                 }
                 $interfaces[] = [
                     'id' => (int) ($interface['id'] ?? 0),
-                    'name' => (string) ($interface['name'] ?? ''),
-                    'type' => (string) ($interface['type'] ?? 'ethernet'),
-                    'network_id' => (string) ($interface['network_id'] ?? ''),
+                    'name' => $this->field(
+                        $interface['name'] ?? '',
+                        $context . ' interface name',
+                        LabLimits::MAX_NAME_BYTES,
+                    ),
+                    'type' => $this->field(
+                        $interface['type'] ?? 'ethernet',
+                        $context . ' interface type',
+                        LabLimits::MAX_TYPE_BYTES,
+                    ),
+                    'network_id' => $this->field(
+                        $interface['network_id'] ?? '',
+                        $context . ' interface network id',
+                        LabLimits::MAX_FIELD_BYTES,
+                    ),
                     'attributes' => $this->normalizeAttributes($interface['attributes'] ?? [], ['id', 'name', 'type', 'network_id']),
                 ];
             }
@@ -2025,30 +2199,30 @@ final class LabService
             }
             $nodes[] = [
                 'id' => $id,
-                'name' => (string) ($raw['name'] ?? $id),
+                'name' => $name,
                 'type' => $type,
-                'template' => (string) ($raw['template'] ?? ''),
+                'template' => $template,
                 'icon' => $icon,
                 'image' => $image,
-                'iso' => (string) ($raw['iso'] ?? ''),
-                'kernel' => (string) ($raw['kernel'] ?? ''),
-                'initrd' => (string) ($raw['initrd'] ?? ''),
-                'append' => (string) ($raw['append'] ?? ''),
-                'console' => (string) ($raw['console'] ?? 'telnet'),
+                'iso' => $this->field($raw['iso'] ?? '', $context . ' iso'),
+                'kernel' => $this->field($raw['kernel'] ?? '', $context . ' kernel'),
+                'initrd' => $this->field($raw['initrd'] ?? '', $context . ' initrd'),
+                'append' => $this->field($raw['append'] ?? '', $context . ' append', LabLimits::MAX_APPEND_BYTES),
+                'console' => $this->field($raw['console'] ?? 'telnet', $context . ' console', LabLimits::MAX_TYPE_BYTES),
                 'cpu' => max(1, (int) ($raw['cpu'] ?? 1)),
                 'ram' => max(64, (int) ($raw['ram'] ?? 512)),
                 'ethernet' => count($interfaces),
                 'serial' => max(0, min(8, (int) ($raw['serial'] ?? 0))),
-                'uuid' => (string) ($raw['uuid'] ?? ''),
-                'platform' => (string) ($raw['platform'] ?? ''),
-                'nic' => (string) ($raw['nic'] ?? ''),
-                'machine' => (string) ($raw['machine'] ?? ''),
+                'uuid' => $this->field($raw['uuid'] ?? '', $context . ' uuid', 64),
+                'platform' => $this->field($raw['platform'] ?? '', $context . ' platform', LabLimits::MAX_TYPE_BYTES),
+                'nic' => $this->field($raw['nic'] ?? '', $context . ' nic', LabLimits::MAX_TYPE_BYTES),
+                'machine' => $this->field($raw['machine'] ?? '', $context . ' machine', LabLimits::MAX_TYPE_BYTES),
                 'nvram' => max(0, min(4096, (int) ($raw['nvram'] ?? 0))),
                 'delay' => max(0, min(3600, (int) ($raw['delay'] ?? 0))),
                 'sat' => max(-1, min(1024, (int) ($raw['sat'] ?? -1))),
-                'config' => (string) ($raw['config'] ?? ''),
-                'left' => max(0, (int) ($raw['left'] ?? 0)),
-                'top' => max(0, (int) ($raw['top'] ?? 0)),
+                'config' => $this->text($raw['config'] ?? '', $context . ' config', LabLimits::MAX_CONFIG_BYTES),
+                'left' => max(0, min(1000000, (int) ($raw['left'] ?? 0))),
+                'top' => max(0, min(1000000, (int) ($raw['top'] ?? 0))),
                 'interfaces' => $interfaces,
                 'extra_xml' => $this->normalizeFragments($raw['extra_xml'] ?? []),
                 'attributes' => $attributes,
@@ -2066,17 +2240,29 @@ final class LabService
         if (!is_array($input)) {
             throw new HttpException(422, 'networks must be a list.');
         }
+        if (count($input) > LabLimits::MAX_NETWORKS) {
+            throw new HttpException(422, 'At most ' . LabLimits::MAX_NETWORKS . ' networks are allowed per lab.');
+        }
         $networks = [];
+        $seen = [];
         foreach ($input as $raw) {
             if (!is_array($raw)) {
-                continue;
+                throw new HttpException(422, 'Each network must be an object.');
             }
             $id = isset($raw['id']) ? (string) $raw['id'] : '';
             if ($id === '') {
                 continue;
             }
+            if (preg_match(LabLimits::ID_PATTERN, $id) !== 1) {
+                throw new HttpException(422, 'Invalid network id.');
+            }
+            if (isset($seen[$id])) {
+                throw new HttpException(422, 'Duplicate network id: ' . $id);
+            }
+            $seen[$id] = true;
+            $context = 'Network "' . $id . '"';
             $attributes = $this->normalizeAttributes($raw['attributes'] ?? [], ['id', 'name', 'type', 'left', 'top']);
-            $networkLabel = (string) ($raw['name'] ?? ('Net-' . $id));
+            $networkLabel = $this->label($raw['name'] ?? ('Net-' . $id), 'Net-' . $id, $context);
             if (array_key_exists('icon', $raw) || array_key_exists('icon', $attributes)) {
                 $icon = $this->iconPolicy()->validate(
                     $raw['icon'] ?? $attributes['icon'] ?? '',
@@ -2091,9 +2277,9 @@ final class LabService
             $networks[] = [
                 'id' => $id,
                 'name' => $networkLabel,
-                'type' => (string) ($raw['type'] ?? 'bridge'),
-                'left' => max(0, (int) ($raw['left'] ?? 0)),
-                'top' => max(0, (int) ($raw['top'] ?? 0)),
+                'type' => $this->field($raw['type'] ?? 'bridge', $context . ' type', LabLimits::MAX_TYPE_BYTES) ?: 'bridge',
+                'left' => max(0, min(1000000, (int) ($raw['left'] ?? 0))),
+                'top' => max(0, min(1000000, (int) ($raw['top'] ?? 0))),
                 'attributes' => $attributes,
             ];
         }
@@ -2117,14 +2303,14 @@ final class LabService
         $attributes = [];
         foreach ($input as $name => $value) {
             if (!is_string($name)
-                || preg_match('/^[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/', $name) !== 1
+                || preg_match('/^[A-Za-z_][A-Za-z0-9_.:-]{0,63}\z/', $name) !== 1
                 || in_array($name, $managed, true)
                 || !is_scalar($value)
             ) {
                 continue;
             }
             $text = (string) $value;
-            if (strlen($text) <= 255) {
+            if (strlen($text) <= 255 && preg_match(LabLimits::FORBIDDEN_NAME_PATTERN, $text) !== 1) {
                 $attributes[$name] = $text;
             }
         }

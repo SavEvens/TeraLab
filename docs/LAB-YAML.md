@@ -247,7 +247,7 @@ the editor owns them like any other lab.
 
 `config` is inline text only. There is no `config_file`, include, or multi-file
 upload in this release. Use a YAML block scalar (`|`) for multi-line configs.
-The text must be UTF-8, may be empty, and may not exceed 1 MB. Configs are
+The text must be UTF-8, may be empty, and may not exceed 64 KiB. Configs are
 compiled into the lab's normal base64 config storage; the `.unl` format is not
 changed.
 
@@ -318,7 +318,7 @@ but a network without two attachments will not be stored.
 | Declared networks | 64 | Hard error. |
 | Declared + generated networks | 64 | Hard error. |
 | Interfaces per node | 16 | Hard error for `ports` or a linked index above the limit. |
-| Inline config | 1 MB | Hard error; must be UTF-8. |
+| Inline config | 64 KiB | Hard error; must be UTF-8. |
 | Node/network key | 64 bytes | Hard error. |
 | Lab name | 128 bytes | Hard error. |
 | `cpu` | ≥ 1 | Clamped. |
@@ -367,7 +367,7 @@ network, link, or port wherever one is involved.
 | Missing template | `Node "R1": template is required (set "template" on the node or in "defaults").` |
 | Unknown template | `Node "R1": template "does-not-exist" was not found.` |
 | Bad port count | `Node "A": ports must be 0 or more.` / `Node "A": at most 16 ports are allowed.` |
-| Bad config | `Node "A": config is larger than 1 MB.` / `Node "A": config must be UTF-8 text.` |
+| Bad config | `Node "A": config is larger than 64 KiB.` / `Node "A": config must be UTF-8 text.` |
 | Malformed node links | `Node "A": links must map interface names to network keys.` |
 | Unknown network reference | `Node "A": network "missing" is not declared.` |
 | Unparseable interface | `Node "A": interface "foo" cannot be parsed.` |

@@ -15,10 +15,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { wsUrl } from '../api'
+import { wsUrl, consoleSubprotocol } from '../api'
 import { notify } from '../stores/toasts'
 
-const props = defineProps({ wsPath: { type: String, required: true } })
+const props = defineProps({
+  wsPath: { type: String, required: true },
+  token: { type: String, default: '' }
+})
 const host = ref(null)
 const status = ref('connecting')
 let terminal
@@ -45,10 +48,26 @@ function connect() {
   if (disposed) return
   clearTimeout(reconnectTimer)
   socket?.close()
+  const protocol = consoleSubprotocol(props.token)
+  if (!protocol) {
+    // Never fall back to a query token: a missing or malformed capability is a
+    // hard failure the user resolves by reopening the console tab.
+    status.value = 'token unavailable'
+    notify('error', 'Console token unavailable. Close and reopen the console.')
+    return
+  }
   status.value = 'connecting'
-  socket = new WebSocket(wsUrl(props.wsPath))
+  let opened = false
+  try {
+    socket = new WebSocket(wsUrl(props.wsPath), [protocol])
+  } catch {
+    status.value = 'connection failed'
+    notify('error', 'Console connection failed')
+    return
+  }
   socket.binaryType = 'arraybuffer'
   socket.onopen = () => {
+    opened = true
     attempts = 0
     status.value = 'connected'
     terminal.writeln('\x1b[32m[connected]\x1b[0m')
@@ -59,13 +78,22 @@ function connect() {
   }
   socket.onclose = () => {
     if (disposed) return
+    if (!opened) {
+      // The handshake itself was refused (expired capability or blocked
+      // origin). Retrying the same token cannot succeed, so ask the user to
+      // reopen the console instead of looping.
+      status.value = 'handshake rejected'
+      terminal.writeln('\r\n\x1b[31m[handshake rejected: expired token or blocked origin]\x1b[0m')
+      terminal.writeln('\x1b[33m[close and reopen the console to get a new token]\x1b[0m')
+      notify('error', 'Console handshake rejected: the token expired or the origin is not allowed. Close and reopen the console.')
+      return
+    }
     status.value = 'disconnected'
     terminal.writeln('\r\n\x1b[33m[disconnected]\x1b[0m')
     scheduleReconnect()
   }
   socket.onerror = () => {
     status.value = 'error'
-    notify('error', 'Console connection failed')
   }
 }
 

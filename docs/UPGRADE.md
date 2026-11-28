@@ -49,6 +49,25 @@ What changes:
   `/etc/systemd/system/teralab-agent.service.d/10-teralab-identity.conf`,
   supplies the real `teralab-api` UID, `teralab-images` GID and `teralab`
   socket group to the agent.
+- The packaged Apache configuration now sends browser-facing security headers
+  (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, a `Permissions-Policy` that denies camera,
+  microphone, geolocation, USB and payment, and a Content-Security-Policy) for
+  `/ui/`, `/themes`, `/images` and `/about.php`, and sets `ServerTokens Prod`,
+  `ServerSignature Off` and `TraceEnable Off` for the Apache instance.
+  `mod_headers` is now enabled by `apply-state.sh`. API responses keep their
+  own, stricter headers. See
+  [INSTALL.md § Response headers and CSP](INSTALL.md#response-headers-and-csp).
+  HSTS is not sent by Apache (it is set at the TLS edge); this release adds no
+  on-disk format change.
+- Console capabilities no longer travel in a URL. The API returns the console
+  path plus a 60-second token and the UI sends it as the WebSocket subprotocol
+  `teralab.console.<token>`; the gateway rejects a query token, a missing
+  `Origin`, and an origin outside the allowlist. Same-origin is the default,
+  `TERALAB_CONSOLE_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`)
+  overrides it, and the packaged Apache configuration now sets
+  `ProxyPreserveHost On` so the browser's `Host` reaches the agent. See
+  [INSTALL.md § Console tokens and WebSocket origin](INSTALL.md#console-tokens-and-websocket-origin).
 
 The full matrix is in
 [INSTALL.md § Service identities and file permissions](INSTALL.md#service-identities-and-file-permissions).
@@ -81,7 +100,13 @@ sudo apt-get install ./teralab_<new-version>_amd64.deb
 sudo scripts/check-install-perms.sh   # from a matching source checkout
 systemctl status teralab-agent php8.4-fpm
 curl -fsS http://127.0.0.1/api/v2/health
+curl -sI http://127.0.0.1/ui/ | grep -i content-security-policy
 ```
+
+The last line must print the CSP; if it is empty, Apache reloaded an old copy of
+`/etc/apache2/conf-available/teralab.conf` (see *Conffile prompts*) or
+`mod_headers` is not enabled. Then open `/ui/` and confirm the browser console
+has no CSP violations, log in, and open a console.
 
 If `apt-get` reports that `php8.4-fpm` could not reload, inspect the pool with
 `php-fpm8.4 -t` and `journalctl -u php8.4-fpm`; do not leave Apache enabled
@@ -196,6 +221,15 @@ directory-scoped `SetHandler` for
 `/run/php/php8.4-fpm-teralab.sock`; without it the API would use the shared
 pool. The generated identity drop-in is not a conffile and is rewritten by
 `apply-state.sh` on every run.
+
+This release's `teralab.conf` also adds the response headers and CSP described
+in [INSTALL.md § Response headers and CSP](INSTALL.md#response-headers-and-csp),
+the `ServerTokens`/`ServerSignature`/`TraceEnable` lines, and
+`ProxyPreserveHost On` before the `/ws/` proxies. If you keep a locally edited
+version, merge the `Header always set` block, `<LocationMatch>` section and
+`ProxyPreserveHost On` by hand; otherwise the UI keeps serving without the
+headers and the consoles fail the origin check. `apply-state.sh` enables
+`mod_headers` on both install paths, so no manual `a2enmod` is needed.
 
 For source installs, continue with the steps below.
 

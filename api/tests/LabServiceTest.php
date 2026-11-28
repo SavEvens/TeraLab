@@ -110,6 +110,124 @@ final class LabServiceTest extends TestCase
         }
     }
 
+    public function testTopologyCountCapsAreEnforcedAtMaxAndMaxPlusOne(): void
+    {
+        $service = $this->service();
+
+        $nodes = [];
+        for ($index = 0; $index < LabService::MAX_NODES; $index++) {
+            $nodes[] = $this->node((string) ($index + 1), 'N' . ($index + 1), 'vpcs', '', []);
+        }
+        $max = $service->create(['name' => 'Max nodes', 'nodes' => $nodes]);
+        self::assertCount(LabService::MAX_NODES, $max['node_list']);
+        $nodes[] = $this->node((string) (LabService::MAX_NODES + 1), 'N-over', 'vpcs', '', []);
+        try {
+            $service->create(['name' => 'Too many nodes', 'nodes' => $nodes]);
+            self::fail('max+1 nodes must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('At most 64 nodes', $exception->getMessage());
+        }
+
+        $networks = [];
+        for ($index = 0; $index < LabService::MAX_NETWORKS; $index++) {
+            $networks[] = ['id' => (string) $index, 'name' => 'Net-' . $index];
+        }
+        // Empty networks are pruned, but the request itself is accepted.
+        $service->create(['name' => 'Max networks', 'networks' => $networks, 'nodes' => []]);
+        $networks[] = ['id' => (string) LabService::MAX_NETWORKS, 'name' => 'Net-over'];
+        try {
+            $service->create(['name' => 'Too many networks', 'networks' => $networks, 'nodes' => []]);
+            self::fail('max+1 networks must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('At most 64 networks', $exception->getMessage());
+        }
+
+        $interfaces = [];
+        for ($index = 0; $index < LabService::MAX_INTERFACES; $index++) {
+            $interfaces[] = ['id' => $index, 'name' => 'eth' . $index, 'network_id' => ''];
+        }
+        $node = $this->node('1', 'PC1', 'vpcs', '', []);
+        $node['interfaces'] = $interfaces;
+        $service->create(['name' => 'Max interfaces', 'nodes' => [$node]]);
+        $interfaces[] = ['id' => LabService::MAX_INTERFACES, 'name' => 'eth-over', 'network_id' => ''];
+        $node['interfaces'] = $interfaces;
+        try {
+            $service->create(['name' => 'Too many interfaces', 'nodes' => [$node]]);
+            self::fail('max+1 interfaces must be rejected');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+            self::assertStringContainsString('more than 16 interfaces', $exception->getMessage());
+        }
+    }
+
+    public function testLabelsAndTextFieldsAreBoundedAndControlFree(): void
+    {
+        $service = $this->service();
+        $name128 = str_repeat('a', LabService::MAX_NAME_BYTES);
+        $node = $this->node('1', $name128, 'vpcs', '', []);
+        $lab = $service->create(['name' => $name128, 'nodes' => [$node]]);
+        self::assertSame($name128, $lab['name']);
+        self::assertSame($name128, $lab['node_list'][0]['name']);
+
+        foreach ([
+            ['name' => str_repeat('b', LabService::MAX_NAME_BYTES + 1), 'nodes' => []],
+            ['name' => "bad\nlab", 'nodes' => []],
+            ['name' => 'Bad node', 'nodes' => [$this->node('1', str_repeat('b', 129), 'vpcs', '', [])]],
+            ['name' => 'Bad node control', 'nodes' => [$this->node('1', "bad\nname", 'vpcs', '', [])]],
+            ['name' => 'Bad network', 'networks' => [['id' => '0', 'name' => str_repeat('c', 129)]], 'nodes' => []],
+            ['name' => 'Bad network control', 'networks' => [['id' => '0', 'name' => "bad\tname"]], 'nodes' => []],
+        ] as $payload) {
+            try {
+                $service->create($payload);
+                self::fail('expected rejection for ' . var_export($payload['name'], true));
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+
+        $description = str_repeat('d', LabService::MAX_DESCRIPTION_BYTES);
+        $body = str_repeat('e', LabService::MAX_BODY_BYTES);
+        $accepted = $service->create(['name' => 'Max text', 'description' => $description, 'body' => $body]);
+        self::assertSame($description, $accepted['description']);
+        self::assertSame($body, $accepted['body']);
+
+        foreach ([
+            ['description' => $description . 'x'],
+            ['body' => $body . 'x'],
+            ['description' => "bad\x00text"],
+            ['body' => "bad\x7ftext"],
+        ] as $payload) {
+            try {
+                $service->create(['name' => 'Bad text', 'nodes' => []] + $payload);
+                self::fail('expected rejection for an over-cap or control-bearing text field');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+    }
+
+    public function testNodeConfigIsBoundedAndControlFree(): void
+    {
+        $service = $this->service();
+        $config = str_repeat('c', LabService::MAX_CONFIG_BYTES);
+        $node = $this->node('1', 'PC1', 'vpcs', '', []);
+        $node['config'] = $config;
+        $lab = $service->create(['name' => 'Max config', 'nodes' => [$node]]);
+        self::assertSame($config, $lab['node_list'][0]['config']);
+
+        foreach ([$config . 'x', "hostname PC1\x00\n"] as $bad) {
+            $node['config'] = $bad;
+            try {
+                $service->create(['name' => 'Bad config', 'nodes' => [$node]]);
+                self::fail('expected rejection for an invalid config');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+    }
+
     public function testExportImportRoundTripPreservesTopology(): void
     {
         $service = $this->service();
@@ -1210,6 +1328,31 @@ final class LabServiceTest extends TestCase
         self::assertSame(['node_unsupported'], $byNode['SW1'] ?? []);
     }
 
+    public function testSnapshotNamesAreBoundedAndControlFree(): void
+    {
+        $service = $this->service(null, new SnapshotRepository($this->pdo));
+        $lab = $service->create(['name' => 'Snapshot Names', 'nodes' => []]);
+        $max = str_repeat('s', LabService::MAX_NAME_BYTES);
+        $snapshot = $service->createSnapshot((string) $lab['id'], $max, null);
+        self::assertSame($max, $snapshot['name']);
+
+        foreach ([str_repeat('s', LabService::MAX_NAME_BYTES + 1), "bad\nname", "bad\x7fname"] as $name) {
+            try {
+                $service->createSnapshot((string) $lab['id'], $name, null);
+                self::fail('expected rejection for a snapshot name');
+            } catch (HttpException $exception) {
+                self::assertSame(422, $exception->status);
+            }
+        }
+
+        try {
+            $service->deleteSnapshot((string) $lab['id'], 'not-a-snapshot');
+            self::fail('expected rejection for a malformed snapshot id');
+        } catch (HttpException $exception) {
+            self::assertSame(422, $exception->status);
+        }
+    }
+
     public function testGuestLabByteCapRejectsBeforeWritingForCreateImportAndApply(): void
     {
         $settings = new SettingsService($this->pdo);
@@ -1217,10 +1360,13 @@ final class LabServiceTest extends TestCase
         $this->template('vpcs', "schema: 1\nid: vpcs\nname: Vpcs\nkind: vpcs\n");
         $guest = $this->insertUser('guest-bytes', 'editor', 1, time() + 600);
         $service = $this->service($this->demoGuard(), new SnapshotRepository($this->pdo));
-        $big = str_repeat('a', 1048576 + 2048);
+        $fragment = str_repeat('f', 65520);
+        $node = $this->node('1', 'PC1', 'vpcs', '', []);
+        $node['template'] = 'vpcs';
+        $node['extra_xml'] = array_fill(0, 20, '<x>' . $fragment . '</x>');
 
         try {
-            $service->create(['name' => 'Too Big', 'description' => $big], 'guest', $guest);
+            $service->create(['name' => 'Too Big', 'nodes' => [$node]], 'guest', $guest);
             self::fail('an over-cap create must be rejected');
         } catch (HttpException $exception) {
             self::assertSame(422, $exception->status);
@@ -1228,7 +1374,8 @@ final class LabServiceTest extends TestCase
         }
         self::assertSame([], glob($this->config->labsDir . '/*.unl') ?: []);
 
-        $yaml = "schema: 1\nname: Too Big YAML\nnodes:\n  PC1:\n    template: vpcs\ndescription: " . $big . "\n";
+        $padding = str_repeat("# padding padding padding padding\n", 40000);
+        $yaml = "schema: 1\nname: Too Big YAML\nnodes:\n  PC1:\n    template: vpcs\n" . $padding;
         try {
             $service->importYaml($yaml, 'too-big.yaml', null, $guest);
             self::fail('an over-cap YAML import must be rejected');
@@ -1244,7 +1391,7 @@ final class LabServiceTest extends TestCase
         try {
             $service->applyYaml(
                 (string) $lab['id'],
-                "schema: 1\nname: Apply Target\nnodes:\n  PC1:\n    template: vpcs\nbody: " . $big . "\n",
+                "schema: 1\nname: Apply Target\nnodes:\n  PC1:\n    template: vpcs\n" . $padding,
                 null,
                 null,
                 $guest,
@@ -1282,7 +1429,13 @@ final class LabServiceTest extends TestCase
         foreach ($service->snapshots((string) $lab['id']) as $snapshot) {
             $service->deleteSnapshot((string) $lab['id'], (string) $snapshot['id']);
         }
-        $fat = $service->create(['name' => 'Fat Lab', 'body' => str_repeat('b', 700000)], 'guest', null);
+        $nodes = [];
+        for ($index = 1; $index <= 12; $index++) {
+            $node = $this->node((string) $index, 'N' . $index, 'vpcs', '', []);
+            $node['config'] = str_repeat('c', 60000);
+            $nodes[] = $node;
+        }
+        $fat = $service->create(['name' => 'Fat Lab', 'nodes' => $nodes], 'guest', null);
         $service->createSnapshot((string) $fat['id'], 'first', null);
         try {
             $service->createSnapshot((string) $fat['id'], 'second', null);

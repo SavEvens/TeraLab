@@ -378,10 +378,10 @@ final class LabYamlCompilerTest extends TestCase
 
     public function testConfigAndInputCaps(): void
     {
-        $large = str_repeat('x', 1048577);
+        $large = str_repeat('x', 65537);
         $yaml = "schema: 1\nname: Big config\ndefaults: {template: vpcs}\nnodes:\n  A:\n    config: \""
             . $large . "\"\n";
-        self::assertStringContainsString('larger than 1 MB', $this->compileError($yaml));
+        self::assertStringContainsString('larger than 64 KiB', $this->compileError($yaml));
 
         self::assertStringContainsString(
             'larger than 10 MB',
@@ -455,6 +455,16 @@ final class LabYamlCompilerTest extends TestCase
             $yaml .= '  N' . $index . ": *node\n";
         }
         self::assertStringContainsString('At most 64 nodes', $this->compileError($yaml));
+    }
+
+    public function testYamlNestingDepthIsBounded(): void
+    {
+        $nested = "'x'";
+        for ($index = 0; $index < LabYamlCompiler::MAX_YAML_DEPTH + 2; $index++) {
+            $nested = '[' . $nested . ']';
+        }
+        $yaml = "schema: 1\nname: Deep\ndefaults: {template: vpcs}\nnodes: {A: {}}\ntags: " . $nested . "\n";
+        self::assertStringContainsString('Invalid YAML', $this->compileError($yaml));
     }
 
     public function testGridLayoutIsDeterministic(): void

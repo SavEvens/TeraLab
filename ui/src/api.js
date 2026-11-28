@@ -172,3 +172,36 @@ export function wsUrl(path) {
   if (/^wss?:\/\//.test(path)) return path
   return `${protocol}//${window.location.host}${path}`
 }
+
+// Console capabilities travel in the WebSocket subprotocol handshake, never in
+// the URL: query strings are written to Apache and agent access logs, while
+// the Sec-WebSocket-Protocol header is not. The agent accepts
+// `teralab.console.<token>` and rejects a query token.
+export const CONSOLE_PROTOCOL_PREFIX = 'teralab.console.'
+// A WebSocket subprotocol must be an HTTP token (RFC 6455 / RFC 7230). The
+// agent issues hex capabilities; anything else is refused here so a malformed
+// value cannot throw inside the WebSocket constructor.
+const CONSOLE_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
+const CONSOLE_TOKEN_QUERY = /^(?:access_?|auth_?)?token$/i
+
+export function consoleSubprotocol(token) {
+  if (typeof token !== 'string' || token === '' || !CONSOLE_TOKEN_PATTERN.test(token)) return ''
+  return `${CONSOLE_PROTOCOL_PREFIX}${token}`
+}
+
+// Defensive fallback for an older API that still embeds the capability in
+// `ws_path`: drop token query parameters before the path reaches a URL.
+export function consoleWsPath(path) {
+  if (typeof path !== 'string' || path === '') return ''
+  try {
+    const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+    const url = new URL(path, base)
+    for (const key of [...url.searchParams.keys()]) {
+      if (CONSOLE_TOKEN_QUERY.test(key)) url.searchParams.delete(key)
+    }
+    if (/^wss?:\/\//i.test(path)) return url.toString()
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    return path
+  }
+}

@@ -13,6 +13,7 @@ use TeraLab\Api\Auth\AuditLogger;
 use TeraLab\Api\Config;
 use TeraLab\Api\Http\HttpException;
 use TeraLab\Api\Http\Json;
+use TeraLab\Api\Http\RouteId;
 use TeraLab\Api\Http\RequestIp;
 use TeraLab\Api\System\DemoGuard;
 use TeraLab\Api\System\DemoPolicy;
@@ -47,7 +48,7 @@ final class TemplateController
     public function show(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $this->access->user($request);
-        $template = $this->templates->find($args['id'] ?? '');
+        $template = $this->templates->find(RouteId::template($args['id'] ?? ''));
         if ($template === null) {
             throw new HttpException(404, 'Template not found.');
         }
@@ -66,7 +67,7 @@ final class TemplateController
         if (!is_string($yaml) || trim($yaml) === '') {
             throw new HttpException(422, 'yaml is required.');
         }
-        $template = $this->templates->saveCustom($args['id'] ?? '', $yaml);
+        $template = $this->templates->saveCustom(RouteId::template($args['id'] ?? ''), $yaml);
         $this->audit->log((string) $user['id'], $this->address($request), 'template.save', (string) $template['id'], 'success', [
             'kind' => $template['kind'] ?? null,
             'source' => $template['source'] ?? 'custom',
@@ -81,7 +82,7 @@ final class TemplateController
     public function export(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $this->access->user($request);
-        $export = $this->templates->export($args['id'] ?? '');
+        $export = $this->templates->export(RouteId::template($args['id'] ?? ''));
         $response->getBody()->write($export['yaml']);
 
         return $response
@@ -104,9 +105,30 @@ final class TemplateController
         if ($file->getError() !== UPLOAD_ERR_OK) {
             throw new HttpException(400, 'The template upload did not complete.');
         }
+        $size = $file->getSize();
+        if ($size !== null && $size > TemplateRepository::MAX_YAML_BYTES) {
+            throw new HttpException(
+                422,
+                'The template is larger than ' . intdiv(TemplateRepository::MAX_YAML_BYTES, 1024) . ' KiB.',
+            );
+        }
         $stream = $file->getStream();
         $stream->rewind();
-        $template = $this->templates->import($stream->getContents());
+        $contents = '';
+        while (!$stream->eof() && strlen($contents) <= TemplateRepository::MAX_YAML_BYTES) {
+            $chunk = $stream->read(8192);
+            if ($chunk === '') {
+                break;
+            }
+            $contents .= $chunk;
+        }
+        if (strlen($contents) > TemplateRepository::MAX_YAML_BYTES) {
+            throw new HttpException(
+                422,
+                'The template is larger than ' . intdiv(TemplateRepository::MAX_YAML_BYTES, 1024) . ' KiB.',
+            );
+        }
+        $template = $this->templates->import($contents);
         $this->audit->log((string) $user['id'], $this->address($request), 'template.import', (string) $template['id'], 'success', [
             'kind' => $template['kind'] ?? null,
             'source' => $template['source'] ?? 'custom',
@@ -121,7 +143,7 @@ final class TemplateController
     public function duplicate(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->mutableUser($request);
-        $template = $this->templates->duplicate($args['id'] ?? '');
+        $template = $this->templates->duplicate(RouteId::template($args['id'] ?? ''));
         $this->audit->log((string) $user['id'], $this->address($request), 'template.duplicate', (string) $template['id'], 'success', [
             'from' => (string) ($args['id'] ?? ''),
             'kind' => $template['kind'] ?? null,
@@ -136,7 +158,7 @@ final class TemplateController
     public function delete(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $user = $this->mutableUser($request);
-        $this->templates->deleteCustom($args['id'] ?? '');
+        $this->templates->deleteCustom(RouteId::template($args['id'] ?? ''));
         $this->audit->log((string) $user['id'], $this->address($request), 'template.delete', (string) ($args['id'] ?? ''), 'success', [
             'source' => 'custom',
         ]);

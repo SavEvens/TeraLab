@@ -10,6 +10,9 @@ final class PasswordPolicy
 {
     public const MIN_LENGTH = 12;
 
+    /** Bound hashing work for a client-controlled password field. */
+    public const MAX_LENGTH = 256;
+
     /** @var list<string> */
     private const COMMON_PASSWORDS = [
         'password',
@@ -33,6 +36,9 @@ final class PasswordPolicy
 
         if (strlen($password) < self::MIN_LENGTH) {
             $errors[] = 'Password must be at least ' . self::MIN_LENGTH . ' characters.';
+        }
+        if (strlen($password) > self::MAX_LENGTH) {
+            $errors[] = 'Password must be at most ' . self::MAX_LENGTH . ' characters.';
         }
 
         $classes = 0;

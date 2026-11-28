@@ -17,6 +17,7 @@ use TeraLab\Api\Agent\AgentClient;
 use TeraLab\Api\App;
 use TeraLab\Api\Config;
 use TeraLab\Api\Database\Database;
+use TeraLab\Api\Templates\TemplateRepository;
 use TeraLab\Api\Tests\Support\SetupToken;
 
 /**
@@ -350,6 +351,131 @@ final class TemplateApiTest extends TestCase
         $details = json_decode((string) $row['details_json'], true);
         self::assertIsArray($details);
         self::assertSame('vpcs', $details['kind'] ?? null);
+    }
+
+    public function testTemplateYamlSizeAliasDepthAndKeyCaps(): void
+    {
+        $base = "schema: 1\nid: bounded\nname: Bounded\nkind: vpcs\n";
+
+        $oversized = $base . str_repeat("# padding padding padding padding\n", 8000);
+        self::assertGreaterThan(262144, strlen($oversized));
+        $response = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => $oversized],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('larger than 256 KiB', (string) $this->json($response)['message']);
+
+        $aliases = "schema: 1\nid: aliases\nname: Aliases\nkind: vpcs\nanchor: &base {cpu: 1}\n";
+        for ($index = 0; $index < 16; $index++) {
+            $aliases .= 'copy' . $index . ": *base\n";
+        }
+        $aliasResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/aliases',
+            ['yaml' => $aliases],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $aliasResponse->getStatusCode(), (string) $aliasResponse->getBody());
+
+        $deep = $base . 'options: ';
+        for ($index = 0; $index < 24; $index++) {
+            $deep .= '[';
+        }
+        $deep .= "'x'";
+        for ($index = 0; $index < 24; $index++) {
+            $deep .= ']';
+        }
+        $deep .= "\n";
+        $deepResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => $deep],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $deepResponse->getStatusCode(), (string) $deepResponse->getBody());
+
+        $manyOptions = $base . "options:\n";
+        for ($index = 0; $index < 65; $index++) {
+            $manyOptions .= '  option' . $index . ": 'x'\n";
+        }
+        $optionResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => $manyOptions],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $optionResponse->getStatusCode(), (string) $optionResponse->getBody());
+        self::assertStringContainsString('at most 64 keys', (string) $this->json($optionResponse)['message']);
+
+        $manyDefaults = $base . "defaults:\n";
+        for ($index = 0; $index < 17; $index++) {
+            $manyDefaults .= '  default' . $index . ": 'x'\n";
+        }
+        $defaultResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => $manyDefaults],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $defaultResponse->getStatusCode(), (string) $defaultResponse->getBody());
+        self::assertStringContainsString('at most 16 keys', (string) $this->json($defaultResponse)['message']);
+
+        $nameResponse = $this->request(
+            'PUT',
+            '/api/v2/templates/bounded',
+            ['yaml' => "schema: 1\nid: bounded\nname: \"" . str_repeat('n', 129) . "\"\nkind: vpcs\n"],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+        );
+        self::assertSame(422, $nameResponse->getStatusCode(), (string) $nameResponse->getBody());
+    }
+
+    public function testTemplateRouteIdShapeAndDockerConfigPathPolicy(): void
+    {
+        self::assertSame(
+            422,
+            $this->request('GET', '/api/v2/templates/' . str_repeat('t', 65), [], [], $this->cookie)->getStatusCode(),
+        );
+
+        $base = "schema: 1\nid: bad-path\nname: Bad path\nkind: docker\noptions:\n  docker:\n"
+            . "    image: alpine:3.20\n    config_path: ";
+        foreach (['/proc/self/environ', '/sys/kernel/x', '/dev/shm/x', '/etc/../proc/x'] as $path) {
+            $response = $this->request(
+                'PUT',
+                '/api/v2/templates/bad-path',
+                ['yaml' => $base . Yaml::dump($path) . "\n"],
+                ['X-CSRF-Token' => $this->csrf],
+                $this->cookie,
+            );
+            self::assertSame(422, $response->getStatusCode(), $path . ': ' . (string) $response->getBody());
+        }
+    }
+
+    public function testTemplateImportRejectsOversizedUploadBeforeParsing(): void
+    {
+        $oversized = "schema: 1\nid: oversized\nname: Oversized\nkind: vpcs\n"
+            . str_repeat("# padding padding padding padding\n", 8000);
+        self::assertGreaterThan(TemplateRepository::MAX_YAML_BYTES, strlen($oversized));
+
+        $response = $this->request(
+            'POST',
+            '/api/v2/templates/import',
+            [],
+            ['X-CSRF-Token' => $this->csrf],
+            $this->cookie,
+            $this->uploaded($oversized, 'oversized.yaml'),
+        );
+        self::assertSame(422, $response->getStatusCode(), (string) $response->getBody());
+        self::assertStringContainsString('larger than 256 KiB', (string) $this->json($response)['message']);
+        self::assertFileDoesNotExist($this->config->templatesDir . '/oversized.yaml');
     }
 
     /**
