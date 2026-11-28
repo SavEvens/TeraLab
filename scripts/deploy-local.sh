@@ -971,14 +971,19 @@ else
 fi
 
 log "backing up configuration and runtime data to $DATA_TAR"
-tar -czf "$DATA_TAR" -C / etc/teralab \
-	|| die "cannot back up /etc/teralab"
+backup_list="$(mktemp "${TMPDIR:-/tmp}/teralab-backup.XXXXXX")" \
+	|| die "cannot create the backup file list"
+printf '%s\n' /etc/teralab > "$backup_list"
 for entry in database.sdb database.sdb-wal database.sdb-shm labs logs backups; do
 	if [ -e "$DATA/$entry" ]; then
-		tar -rzf "$DATA_TAR" -C "$DATA" "$entry" \
-			|| die "cannot back up $DATA/$entry"
+		printf '%s\n' "$DATA/$entry" >> "$backup_list"
 	fi
 done
+# One archive pass: GNU tar cannot append to a compressed archive, so list
+# every path up front. Absolute names are stored without the leading slash.
+tar -czf "$DATA_TAR" -C / -T "$backup_list" 2>/dev/null \
+	|| { rm -f -- "$backup_list"; die "cannot back up $DATA"; }
+rm -f -- "$backup_list"
 [ -s "$DATA_TAR" ] || die "the data backup is empty"
 
 log "backing up the installed code to $CODE_TAR"
