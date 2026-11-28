@@ -59,9 +59,8 @@ a tree that once came from a source checkout converges to the packaged
 inventory. Configuration and data live in `/etc/teralab` and
 `/var/lib/teralab` and are never pruned.
 
-```sh
-sudo apt-get install ./teralab_<version>_amd64.deb
-```
+Development builds keep the Debian version `1.6~dev-1`; reinstall a new build
+of the same version with `sudo apt-get install --reinstall ./teralab_<version>_amd64.deb`.
 
 `apt-get install ./file.deb` resolves the dependencies: `acl`, `apache2`,
 `php8.4-fpm`, `php8.4-cli`, `php8.4-sqlite3`, `php8.4-mbstring`,
